@@ -23,13 +23,22 @@ Rectangle {
                t === "nor" || t === "xor" || t === "xnor"
     }
 
-    // 从 subList 根据 id 找子电路信息
     function findSubInfo(subId) {
         for (var i = 0; i < main.subList.length; ++i) {
             if (main.subList[i].id === subId) return main.subList[i]
         }
         return null
     }
+
+    readonly property var ledColorChoices: [
+        { name: "黄", value: "#ffd700" },
+        { name: "红", value: "#e05252" },
+        { name: "绿", value: "#4caf50" },
+        { name: "蓝", value: "#58a6ff" },
+        { name: "橙", value: "#ffb74d" },
+        { name: "紫", value: "#a371f7" },
+        { name: "白", value: "#ffffff" }
+    ]
 
     readonly property var elementGroups: [
         { name: "输入输出", items: [
@@ -156,7 +165,6 @@ Rectangle {
                         onClicked: main.subNameDialogRef.open() }
                 }
 
-                // ============ 子电路列表 ============
                 Repeater {
                     model: main.subList
                     delegate: Rectangle {
@@ -178,7 +186,6 @@ Rectangle {
                             elide: Text.ElideRight
                         }
 
-                        // 点击主体：选中子电路（同时用于属性显示 + 放置）
                         MouseArea {
                             id: subItemMa
                             anchors.left: parent.left
@@ -188,14 +195,12 @@ Rectangle {
                             acceptedButtons: Qt.LeftButton | Qt.RightButton
 
                             onPressAndHold: {
-                                // 移动端长按 = 弹出菜单
                                 subCtxMenu.subId = modelData.id
                                 subCtxMenu.subName = modelData.name
                                 subCtxMenu.popup()
                             }
                             onClicked: function(mouse) {
                                 if (mouse.button === Qt.LeftButton) {
-                                    // 选中该子电路 → 属性面板显示它
                                     main.selectedSubId = modelData.id
                                     main.placingType = "sub"
                                     main.placingSubId = modelData.id
@@ -208,7 +213,6 @@ Rectangle {
                             }
                         }
 
-                        // "⋯" 更多按钮：弹菜单（移动端/桌面端通用）
                         Rectangle {
                             id: moreBtn
                             width: 28; height: parent.height
@@ -332,7 +336,7 @@ Rectangle {
                     }
                 }
 
-                // ============ 子电路属性面板（选中子电路时显示） ============
+                // ============ 子电路属性面板 ============
                 Column {
                     id: subPropsColumn
                     visible: main.selectedSubId !== "" && main.mode !== "select"
@@ -350,7 +354,6 @@ Rectangle {
                         }
                     }
 
-                    // 名称（可编辑）
                     Row {
                         spacing: 4
                         Text {
@@ -384,7 +387,6 @@ Rectangle {
                         }
                     }
 
-                    // 统计信息
                     Text {
                         text: {
                             var info = leftPanel.findSubInfo(main.selectedSubId)
@@ -398,7 +400,6 @@ Rectangle {
                         width: parent.width
                     }
 
-                    // 操作按钮：重命名对话框（便于移动端）
                     Rectangle {
                         width: parent.width; height: 30; radius: Theme.smallRadius
                         visible: !main.circuitViewOnly
@@ -419,7 +420,6 @@ Rectangle {
                         }
                     }
 
-                    // 设为主电路
                     Rectangle {
                         width: parent.width; height: 30; radius: Theme.smallRadius
                         visible: !main.circuitViewOnly
@@ -444,7 +444,6 @@ Rectangle {
                         }
                     }
 
-                    // 进入浏览
                     Rectangle {
                         width: parent.width; height: 30; radius: Theme.smallRadius
                         color: enterBtn.pressed ? Theme.bgButtonHover : Theme.bgButton
@@ -459,7 +458,6 @@ Rectangle {
                         }
                     }
 
-                    // 删除
                     Rectangle {
                         width: parent.width; height: 30; radius: Theme.smallRadius
                         visible: !main.circuitViewOnly
@@ -489,7 +487,7 @@ Rectangle {
                     }
                 }
 
-                // ============ 没有选中任何东西时的提示 ============
+                // ============ 空选中提示 ============
                 Text {
                     visible: main.selectedComp === null
                              && main.selectedIds.length === 0
@@ -617,6 +615,49 @@ Rectangle {
                                 var b = main.selectedComp.displayBase || "bin"
                                 var map = { "bin":0, "udec":1, "sdec":2, "hex":3, "f32":4, "f64":5 }
                                 baseCombo.currentIndex = map[b] !== undefined ? map[b] : 0
+                            }
+                        }
+                    }
+
+                    // ============ 【新增】LED 颜色选择 ============
+                    Column {
+                        visible: main.selectedComp && main.selectedComp.type === "led"
+                        spacing: 4; width: parent.width
+
+                        Text {
+                            text: "LED 颜色"
+                            color: Theme.textGray
+                            font.pixelSize: Theme.fsSmall
+                        }
+
+                        Row {
+                            spacing: 6
+                            Repeater {
+                                model: leftPanel.ledColorChoices
+                                delegate: Rectangle {
+                                    width: 24; height: 24; radius: 4
+                                    color: modelData.value
+                                    border.width: {
+                                        if (!main.selectedComp) return 1
+                                        var cur = main.selectedComp.color || "#ffd700"
+                                        return (cur === modelData.value) ? 2 : 1
+                                    }
+                                    border.color: {
+                                        if (!main.selectedComp) return "#555555"
+                                        var cur = main.selectedComp.color || "#ffd700"
+                                        return (cur === modelData.value) ? "#ffffff" : "#555555"
+                                    }
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        enabled: !main.circuitViewOnly
+                                        onClicked: {
+                                            if (main.circuitViewOnly) return
+                                            if (main.selectedCompId === "") return
+                                            main.circuitRef.setComponentProp(
+                                                main.selectedCompId, "color", modelData.value)
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -767,7 +808,6 @@ Rectangle {
                         }
                     }
 
-                    // ---- 传输门 / 晶体管说明 ----
                     Column {
                         visible: main.selectedComp &&
                                  (main.selectedComp.type === "tgate" ||

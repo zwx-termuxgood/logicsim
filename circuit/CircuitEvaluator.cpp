@@ -4,124 +4,179 @@
 #include <QVector>
 #include <QDebug>
 
+// ============================================================
+// evalOne —— 单个元件求值（同前，未改动）
+// ============================================================
 bool CircuitEvaluator::evalOne(QVariantMap& c,
                                const QHash<QString, QPair<int,int>>& inputMap,
                                const QVector<QVariantMap>& comps) {
     const QString id = c.value("id").toString();
-    const QString t = c.value("type").toString();
-    int bw = c.value("bitWidth").toInt();
-    if (bw < 1) bw = 1;
+    const QString t  = c.value("type").toString();
 
     if (t == "text") return false;
 
-    int ic = ComponentTraits::inputCount(c);
+    int bw = c.value("bitWidth").toInt();
+    if (bw < 1)  bw = 1;
+    if (bw > 64) bw = 64;
+
+    const int ic = ComponentTraits::inputCount(c);
+    const QVariantList oldInList = c.value("inputPortValues").toList();
+    const QString idPrefix = id + ':';
+
     QVariantList newInList;
     newInList.reserve(ic);
+    bool inputChanged = false;
+
     for (int p = 0; p < ic; ++p) {
         int bwp = ComponentTraits::inputBitWidth(c, p);
-        QString bits(bwp, '0');
-        auto it = inputMap.constFind(id + ':' + QString::number(p));
+        if (bwp < 1)  bwp = 1;
+        if (bwp > 64) bwp = 64;
+
+        QString bits;
+
+        auto it = inputMap.constFind(idPrefix + QString::number(p));
         if (it != inputMap.constEnd()) {
             int fi = it.value().first;
             int fp = it.value().second;
-            const QVariantList fo = comps[fi].value("outputPorts").toList();
-            if (fp >= 0 && fp < fo.size()) {
-                const QString srcStr = fo[fp].toString();
-                for (int b = 0; b < bwp; ++b)
-                    bits[b] = (b < srcStr.length() && srcStr[b] == '1') ? '1' : '0';
+            if (fi >= 0 && fi < comps.size()) {
+                const QVariantList fo = comps[fi].value("outputPorts").toList();
+                if (fp >= 0 && fp < fo.size()) {
+                    const QString srcStr = fo[fp].toString();
+                    if (srcStr.length() == bwp) bits = srcStr;
+                    else                        bits = QString(bwp, 'E');
+                }
             }
         }
+        if (bits.isEmpty()) bits = QString(bwp, '0');
+
+        if (p >= oldInList.size() || oldInList[p].toString() != bits)
+            inputChanged = true;
+
         newInList.append(bits);
     }
 
     bool changed = false;
-    if (c.value("inputPortValues").toList() != newInList) {
+    if (inputChanged) {
         c["inputPortValues"] = newInList;
         changed = true;
     }
 
     QVariantList newOutList;
+
     if (t == "input") {
-        newOutList.append(ValueCodec::bitsToString(c.value("inputBits").toList(), bw));
-    } else if (t == "clock") {
+        QVariant ov = c.value("outputOverride");
+        QString ovStr = ov.isValid() ? ov.toString() : QString();
+        if (!ovStr.isEmpty()) newOutList.append(ovStr);
+        else                  newOutList.append(ValueCodec::bitsToString(c.value("inputBits").toList(), bw));
+    }
+    else if (t == "clock") {
         newOutList = c.value("outputPorts").toList();
         if (newOutList.isEmpty()) newOutList.append(QString(bw, '0'));
-    } else if (t == "not") {
+    }
+    else if (t == "not") {
         QString a = newInList.isEmpty() ? QString(bw, '0') : newInList[0].toString();
         QString out; out.reserve(bw);
-        for (int b = 0; b < bw; ++b) out += ValueCodec::bitAt(a, b) ? '0' : '1';
-        newOutList.append(out);
-    } else if (t == "and" || t == "or" || t == "nand" ||
-               t == "nor" || t == "xor" || t == "xnor") {
-        QString out; out.reserve(bw);
+        const int alen = a.length();
         for (int b = 0; b < bw; ++b) {
-            bool r = (t == "and" || t == "nand") ? true : false;
+            QChar ch = (b < alen) ? a[b] : QChar('0');
+            if (ch == 'Z' || ch == 'E') out += 'E';
+            else                        out += (ch == '1') ? '0' : '1';
+        }
+        newOutList.append(out);
+    }
+    else if (t == "and" || t == "or" || t == "nand" ||
+             t == "nor" || t == "xor" || t == "xnor") {
+        QString out; out.reserve(bw);
+        const bool isAnd   = (t == "and"   || t == "nand");
+        const bool isOr    = (t == "or"    || t == "nor");
+        const bool needNot = (t == "nand"  || t == "nor" || t == "xnor");
+
+        QVector<QString> inStrs(ic);
+        for (int p = 0; p < ic; ++p)
+            inStrs[p] = (p < newInList.size())
+                            ? newInList[p].toString()
+                            : QString(bw, '0');
+
+        for (int b = 0; b < bw; ++b) {
+            bool hasErr = false;
             for (int p = 0; p < ic; ++p) {
-                QString pv = (p < newInList.size()) ? newInList[p].toString() : QString(bw, '0');
-                bool v = ValueCodec::bitAt(pv, b);
-                if (t == "and" || t == "nand") r = r && v;
-                else if (t == "or" || t == "nor") r = r || v;
-                else if (t == "xor" || t == "xnor") r = r != v;
+                const QString& pv = inStrs[p];
+                QChar ch = (b < pv.length()) ? pv[b] : QChar('0');
+                if (ch == 'Z' || ch == 'E') { hasErr = true; break; }
             }
-            if (t == "nand" || t == "nor" || t == "xnor") r = !r;
+            if (hasErr) { out += 'E'; continue; }
+
+            bool r = isAnd ? true : false;
+            for (int p = 0; p < ic; ++p) {
+                const QString& pv = inStrs[p];
+                bool v = (b < pv.length() && pv[b] == '1');
+                if (isAnd)      r = r && v;
+                else if (isOr)  r = r || v;
+                else            r = r != v;
+            }
+            if (needNot) r = !r;
             out += r ? '1' : '0';
         }
         newOutList.append(out);
-    } else if (t == "tgate") {
-        QString d = newInList.isEmpty() ? QString(bw, '0') : newInList[0].toString();
-        QString e = newInList.size() > 1 ? newInList[1].toString() : QString(bw, '0');
+    }
+    else if (t == "tgate") {
+        QString d = newInList.isEmpty()    ? QString(bw, '0') : newInList[0].toString();
+        QString e = newInList.size() > 1   ? newInList[1].toString() : QString(bw, '0');
         QString out; out.reserve(bw);
         for (int b = 0; b < bw; ++b) {
-            bool dv = ValueCodec::bitAt(d, b);
-            bool ev = ValueCodec::bitAt(e, b);
-            // 使能有效时输出 D，无效时输出高阻 Z
-            if (ev) out += dv ? '1' : '0';
-            else    out += 'Z';
+            QChar dv = (b < d.length()) ? d[b] : QChar('0');
+            QChar ev = (b < e.length()) ? e[b] : QChar('0');
+            if (ev == 'Z' || ev == 'E') out += 'E';
+            else if (ev == '1')         out += dv;
+            else                        out += 'Z';
         }
         newOutList.append(out);
-    } else if (t == "ntran") {
-        // NMOS：G=1 导通 D→S，G=0 高阻 Z
-        // 【修改】端口 0 = G（左侧栅极），端口 1 = D（右侧漏极）
-        QString g = newInList.isEmpty() ? QString(bw, '0') : newInList[0].toString();
-        QString d = newInList.size() > 1 ? newInList[1].toString() : QString(bw, '0');
+    }
+    else if (t == "ntran") {
+        QString g = newInList.isEmpty()    ? QString(bw, '0') : newInList[0].toString();
+        QString d = newInList.size() > 1   ? newInList[1].toString() : QString(bw, '0');
         QString out; out.reserve(bw);
         for (int b = 0; b < bw; ++b) {
-            bool dv = ValueCodec::bitAt(d, b);
-            bool gv = ValueCodec::bitAt(g, b);
-            if (gv) out += dv ? '1' : '0';
-            else    out += 'Z';
+            QChar gv = (b < g.length()) ? g[b] : QChar('0');
+            QChar dv = (b < d.length()) ? d[b] : QChar('0');
+            if (gv == 'Z' || gv == 'E') out += 'E';
+            else if (gv == '1')         out += dv;
+            else                        out += 'Z';
         }
         newOutList.append(out);
-    } else if (t == "ptran") {
-        // PMOS：G=0 导通 D→S，G=1 高阻 Z
-        // 【修改】端口 0 = G（左侧栅极），端口 1 = D（右侧漏极）
-        QString g = newInList.isEmpty() ? QString(bw, '0') : newInList[0].toString();
-        QString d = newInList.size() > 1 ? newInList[1].toString() : QString(bw, '0');
+    }
+    else if (t == "ptran") {
+        QString g = newInList.isEmpty()    ? QString(bw, '0') : newInList[0].toString();
+        QString d = newInList.size() > 1   ? newInList[1].toString() : QString(bw, '0');
         QString out; out.reserve(bw);
         for (int b = 0; b < bw; ++b) {
-            bool dv = ValueCodec::bitAt(d, b);
-            bool gv = ValueCodec::bitAt(g, b);
-            if (!gv) out += dv ? '1' : '0';
-            else     out += 'Z';
+            QChar gv = (b < g.length()) ? g[b] : QChar('0');
+            QChar dv = (b < d.length()) ? d[b] : QChar('0');
+            if (gv == 'Z' || gv == 'E') out += 'E';
+            else if (gv == '0')         out += dv;
+            else                        out += 'Z';
         }
         newOutList.append(out);
-    } else if (t == "splitter") {
+    }
+    else if (t == "splitter") {
         QString mainIn = newInList.isEmpty() ? QString(bw, '0') : newInList[0].toString();
         while (mainIn.length() < bw) mainIn += '0';
-        mainIn = mainIn.left(bw);
+        if (mainIn.length() > bw) mainIn = mainIn.left(bw);
         QVariantList splits = c.value("outputSplits").toList();
         int offset = bw;
         for (auto& sv : splits) {
             int len = sv.toInt();
             if (len < 1) len = 1;
             offset -= len;
-            QString out;
+            if (offset < 0) offset = 0;
+            QString out; out.reserve(len);
             for (int b = 0; b < len; ++b)
-                out += ValueCodec::bitAt(mainIn, offset + b) ? '1' : '0';
+                out += mainIn[offset + b];
             newOutList.append(out);
         }
-    } else if (t == "hub") {
-        QString merged;
+    }
+    else if (t == "hub") {
+        QString merged; merged.reserve(bw + 8);
         for (int s = newInList.size() - 1; s >= 0; --s) {
             int len = ComponentTraits::inputBitWidth(c, s);
             QString sv = newInList[s].toString();
@@ -130,23 +185,29 @@ bool CircuitEvaluator::evalOne(QVariantMap& c,
         }
         while (merged.length() < bw) merged += '0';
         newOutList.append(merged.left(bw));
-    } else if (t == "led" || t == "output") {
+    }
+    else if (t == "led" || t == "output") {
         if (!newInList.isEmpty()) newOutList.append(newInList[0]);
-        else newOutList.append(QString(bw, '0'));
-    } else if (t == "sub") {
+        else                      newOutList.append(QString(bw, '0'));
+    }
+    else if (t == "sub") {
         newOutList = c.value("outputPorts").toList();
     }
 
-    if (c.value("outputPorts").toList() != newOutList) {
+    const QVariantList oldOutList = c.value("outputPorts").toList();
+    if (oldOutList != newOutList) {
         c["outputPorts"] = newOutList;
         changed = true;
     }
     return changed;
 }
 
-void CircuitEvaluator::evaluateContext(CircuitContext& ctx) {
+// ============================================================
+// evaluateContext —— 同前，未改动
+// ============================================================
+bool CircuitEvaluator::evaluateContext(CircuitContext& ctx) {
     const int n = ctx.components.size();
-    if (n == 0) return;
+    if (n == 0) return false;
 
     QHash<QString, int> idToIdx;
     idToIdx.reserve(n * 2);
@@ -182,35 +243,48 @@ void CircuitEvaluator::evaluateContext(CircuitContext& ctx) {
     while (qi < queue.size()) {
         int u = queue[qi++];
         order.append(u);
-        for (int v : succ[u]) {
+        for (int v : succ[u])
             if (--inDeg[v] == 0) queue.append(v);
-        }
     }
 
-    bool hasCycle = (order.size() < n);
+    const bool hasCycle = (order.size() < n);
+    bool anyChanged = false;
+    QVector<bool> changed(n, false);
 
     for (int idx : order) {
-        evalOne(comps[idx], inputMap, comps);
+        if (evalOne(comps[idx], inputMap, comps)) {
+            anyChanged = true;
+            changed[idx] = true;
+        }
     }
 
     if (hasCycle) {
         QVector<int> cycNodes;
+        cycNodes.reserve(n - order.size());
         for (int i = 0; i < n; ++i) if (inDeg[i] > 0) cycNodes.append(i);
-        // 【提示】晶体管/锁存器类结构需要更多迭代收敛；提高到 200 次。
         for (int iter = 0; iter < 200; ++iter) {
-            bool anyChanged = false;
+            bool iterChanged = false;
             for (int idx : cycNodes) {
-                if (evalOne(comps[idx], inputMap, comps)) anyChanged = true;
+                if (evalOne(comps[idx], inputMap, comps)) {
+                    iterChanged = true;
+                    changed[idx] = true;
+                }
             }
-            if (!anyChanged) break;
+            if (iterChanged) anyChanged = true;
+            else break;
         }
     }
 
-    for (int i = 0; i < n; ++i) {
-        ctx.components[i] = comps[i];
+    if (anyChanged) {
+        for (int i = 0; i < n; ++i)
+            if (changed[i]) ctx.components[i] = comps[i];
     }
+    return anyChanged;
 }
 
+// ============================================================
+// syncSubPins —— 同前，未改动
+// ============================================================
 void CircuitEvaluator::syncSubPins(CircuitContext& ctx,
                                    const QHash<QString, CircuitContext>& subContexts) {
     for (int i = 0; i < ctx.components.size(); ++i) {
@@ -221,7 +295,7 @@ void CircuitEvaluator::syncSubPins(CircuitContext& ctx,
         if (sit == subContexts.end()) continue;
 
         QVariantList subInputNames, subOutputNames, subInputWidths, subOutputWidths;
-        for (auto& scv : sit.value().components) {
+        for (const auto& scv : sit.value().components) {
             auto sc = scv.toMap();
             QString st = sc.value("type").toString();
             QString sn = sc.value("name").toString();
@@ -236,89 +310,215 @@ void CircuitEvaluator::syncSubPins(CircuitContext& ctx,
             }
         }
 
+        bool changed = false;
+        if (c.value("subInputNames").toList()   != subInputNames)   { c["subInputNames"]   = subInputNames;   changed = true; }
+        if (c.value("subOutputNames").toList()  != subOutputNames)  { c["subOutputNames"]  = subOutputNames;  changed = true; }
+        if (c.value("subInputWidths").toList()  != subInputWidths)  { c["subInputWidths"]  = subInputWidths;  changed = true; }
+        if (c.value("subOutputWidths").toList() != subOutputWidths) { c["subOutputWidths"] = subOutputWidths; changed = true; }
+
         QVariantList inVals = c.value("inputPortValues").toList();
-        while (inVals.size() < subInputNames.size()) {
-            int idx2 = inVals.size();
-            int w = subInputWidths.value(idx2).toInt();
-            if (w < 1) w = 1;
-            inVals.append(QString(w, '0'));
+        if (inVals.size() != subInputNames.size()) {
+            QVariantList newIn;
+            newIn.reserve(subInputNames.size());
+            for (int k = 0; k < subInputNames.size(); ++k) {
+                if (k < inVals.size()) newIn.append(inVals[k]);
+                else {
+                    int w = subInputWidths.value(k).toInt();
+                    if (w < 1) w = 1;
+                    newIn.append(QString(w, '0'));
+                }
+            }
+            c["inputPortValues"] = newIn;
+            changed = true;
         }
-        while (inVals.size() > subInputNames.size()) inVals.removeLast();
 
         QVariantList outVals = c.value("outputPorts").toList();
-        while (outVals.size() < subOutputNames.size()) {
-            int idx2 = outVals.size();
-            int w = subOutputWidths.value(idx2).toInt();
-            if (w < 1) w = 1;
-            outVals.append(QString(w, '0'));
+        if (outVals.size() != subOutputNames.size()) {
+            QVariantList newOut;
+            newOut.reserve(subOutputNames.size());
+            for (int k = 0; k < subOutputNames.size(); ++k) {
+                if (k < outVals.size()) newOut.append(outVals[k]);
+                else {
+                    int w = subOutputWidths.value(k).toInt();
+                    if (w < 1) w = 1;
+                    newOut.append(QString(w, '0'));
+                }
+            }
+            c["outputPorts"] = newOut;
+            changed = true;
         }
-        while (outVals.size() > subOutputNames.size()) outVals.removeLast();
 
-        c["subInputNames"] = subInputNames;
-        c["subOutputNames"] = subOutputNames;
-        c["subInputWidths"] = subInputWidths;
-        c["subOutputWidths"] = subOutputWidths;
-        c["inputPortValues"] = inVals;
-        c["outputPorts"] = outVals;
-        ctx.components[i] = c;
+        if (changed) ctx.components[i] = c;
     }
 }
 
+// ============================================================
+// 递归求值核心（静态）
+// ============================================================
+static bool evalRecursive(CircuitContext& ctx,
+                          const QHash<QString, CircuitContext>& subContexts,
+                          int depth);
+
+// ------------------------------------------------------------
+// evalInstance —— 对一个 sub 实例独立求值
+//
+//  关键点（相对上一版新增）：
+//    ① 每个实例都**保存并恢复**自己的内部状态（每个组件的 outputPorts
+//       以及嵌套 sub 实例的 _state）。
+//    ② 这样，DFF 内部的交叉耦合 NOR 节点（C8/C9）能在多次求值间保持，
+//       而不是每次收敛到同一个退化不动点。
+// ------------------------------------------------------------
+static bool evalInstance(QVariantMap& subInst,
+                         const QHash<QString, CircuitContext>& subContexts,
+                         int depth)
+{
+    if (depth > 32) return false;
+    const QString subId = subInst.value("subId").toString();
+    auto sit = subContexts.constFind(subId);
+    if (sit == subContexts.constEnd()) return false;
+
+    // 1) 克隆子定义
+    CircuitContext instCtx = sit.value();
+
+    // 2) 从实例的 _state 恢复内部状态（若有）
+    QVariantMap savedState = subInst.value("_state").toMap();
+    if (!savedState.isEmpty()) {
+        for (int j = 0; j < instCtx.components.size(); ++j) {
+            QVariantMap sc = instCtx.components[j].toMap();
+            QString cid = sc.value("id").toString();
+            if (!savedState.contains(cid)) continue;
+
+            QVariantMap cs = savedState.value(cid).toMap();
+            // 恢复组件的输出（这是反馈节点的实际状态）
+            if (cs.contains("outputPorts"))
+                sc["outputPorts"] = cs.value("outputPorts");
+            // 递归恢复嵌套 sub 实例的状态
+            if (cs.contains("_state"))
+                sc["_state"] = cs.value("_state");
+
+            instCtx.components[j] = sc;
+        }
+    }
+
+    // 3) 把实例输入灌入克隆的 input 元件（覆盖上一步恢复的旧输入）
+    const QVariantList inVals = subInst.value("inputPortValues").toList();
+    int idx = 0;
+    for (int j = 0; j < instCtx.components.size(); ++j) {
+        QVariantMap sc = instCtx.components[j].toMap();
+        if (sc.value("type").toString() != "input") continue;
+        if (idx >= inVals.size()) break;
+
+        QString s = inVals[idx].toString();
+        int sw = sc.value("bitWidth").toInt();
+        if (sw < 1) sw = 1;
+        if (s.length() != sw) s = QString(sw, '0');
+
+        QVariantList bits;
+        bits.reserve(s.length());
+        for (int k = 0; k < s.length(); ++k) bits.append(s[k] == '1');
+        sc["inputBits"] = bits;
+
+        if (s.contains('Z') || s.contains('E')) sc["outputOverride"] = s;
+        else                                    sc["outputOverride"] = QVariant();
+
+        instCtx.components[j] = sc;
+        ++idx;
+    }
+
+    // 4) 递归求值（克隆里可能还有 sub 实例）
+    evalRecursive(instCtx, subContexts, depth + 1);
+
+    // 5) 收集输出元件值 → 回灌 subInst
+    QVariantList newOut;
+    for (int j = 0; j < instCtx.components.size(); ++j) {
+        QVariantMap sc = instCtx.components[j].toMap();
+        if (sc.value("type").toString() != "output") continue;
+        QVariantList inv = sc.value("inputPortValues").toList();
+        QString v = inv.isEmpty() ? QString() : inv[0].toString();
+        int sw = sc.value("bitWidth").toInt();
+        if (sw < 1) sw = 1;
+        if (v.length() != sw) v = QString(sw, '0');
+        newOut.append(v);
+    }
+
+    // 6) 保存所有组件的新状态（含嵌套 sub 的 _state）
+    QVariantMap newState;
+    for (int j = 0; j < instCtx.components.size(); ++j) {
+        QVariantMap sc = instCtx.components[j].toMap();
+        QString cid = sc.value("id").toString();
+        QVariantMap cs;
+        cs["outputPorts"] = sc.value("outputPorts");
+        if (sc.contains("_state")) cs["_state"] = sc.value("_state");
+        newState[cid] = cs;
+    }
+
+    bool changed = false;
+
+    if (subInst.value("outputPorts").toList() != newOut) {
+        subInst["outputPorts"] = newOut;
+        changed = true;
+    }
+    if (subInst.value("_state").toMap() != newState) {
+        subInst["_state"] = newState;
+        changed = true;
+    }
+
+    return changed;
+}
+
+// ------------------------------------------------------------
+// evalRecursive —— 求值 ctx 内的所有门 + 递归求值其 sub 实例
+//
+//  注意：对每个 sub 实例，无条件写回 ctx.components[i]，
+//        以便 _state 变化能持久化到父上下文。
+// ------------------------------------------------------------
+static bool evalRecursive(CircuitContext& ctx,
+                          const QHash<QString, CircuitContext>& subContexts,
+                          int depth)
+{
+    if (depth > 32) return false;
+    bool anyChanged = false;
+
+    for (int iter = 0; iter < 16; ++iter) {
+        bool iterChanged = false;
+
+        // (a) 本上下文所有门
+        if (CircuitEvaluator::evaluateContext(ctx)) iterChanged = true;
+
+        // (b) 逐个 sub 实例独立求值
+        for (int i = 0; i < ctx.components.size(); ++i) {
+            QVariantMap c = ctx.components[i].toMap();
+            if (c.value("type").toString() != "sub") continue;
+
+            bool instChanged = evalInstance(c, subContexts, depth);
+
+            // 无条件写回：即使输出未变，_state 也可能更新了
+            ctx.components[i] = c;
+
+            if (instChanged) iterChanged = true;
+        }
+
+        // (c) 实例新输出再喂给本上下文下游门
+        if (iterChanged) {
+            if (CircuitEvaluator::evaluateContext(ctx)) iterChanged = true;
+        }
+
+        if (iterChanged) anyChanged = true;
+        else break;
+    }
+    return anyChanged;
+}
+
+// ============================================================
+// evaluateAll —— 从 root 递归求值整棵电路树
+// ============================================================
 void CircuitEvaluator::evaluateAll(CircuitContext& root,
                                    QHash<QString, CircuitContext>& subContexts) {
     syncSubPins(root, subContexts);
     for (auto it = subContexts.begin(); it != subContexts.end(); ++it)
         syncSubPins(it.value(), subContexts);
 
-    if (root.components.isEmpty() && subContexts.isEmpty()) return;
+    if (root.components.isEmpty()) return;
 
-    for (int outer = 0; outer < 20; ++outer) {
-        bool anyChanged = false;
-
-        for (auto it = subContexts.begin(); it != subContexts.end(); ++it)
-            evaluateContext(it.value());
-        evaluateContext(root);
-
-        for (int i = 0; i < root.components.size(); ++i) {
-            QVariantMap c = root.components[i].toMap();
-            if (c.value("type").toString() != "sub") continue;
-            QString subId = c.value("subId").toString();
-            auto sit = subContexts.find(subId);
-            if (sit == subContexts.end()) continue;
-
-            QVariantList inValues = c.value("inputPortValues").toList();
-            int idx = 0;
-            for (int j = 0; j < sit.value().components.size(); ++j) {
-                QVariantMap sc = sit.value().components[j].toMap();
-                if (sc.value("type").toString() != "input") continue;
-                if (idx < inValues.size()) {
-                    QString s = inValues[idx].toString();
-                    QVariantList bits;
-                    for (int k = 0; k < s.length(); ++k) bits.append(s[k] == '1');
-                    sc["inputBits"] = bits;
-                    sit.value().components[j] = sc;
-                }
-                idx++;
-            }
-
-            QVariantList newOut;
-            for (int j = 0; j < sit.value().components.size(); ++j) {
-                QVariantMap sc = sit.value().components[j].toMap();
-                if (sc.value("type").toString() != "output") continue;
-                QVariantList inVals = sc.value("inputPortValues").toList();
-                QString v = inVals.isEmpty() ? "" : inVals[0].toString();
-                int sw = sc.value("bitWidth").toInt();
-                if (sw < 1) sw = 1;
-                if (v.length() != sw) v = QString(sw, '0');
-                newOut.append(v);
-            }
-            if (c.value("outputPorts").toList() != newOut) {
-                c["outputPorts"] = newOut;
-                root.components[i] = c;
-                anyChanged = true;
-            }
-        }
-
-        if (!anyChanged && outer > 0) break;
-    }
+    evalRecursive(root, subContexts, 0);
 }

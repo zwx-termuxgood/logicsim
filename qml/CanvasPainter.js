@@ -31,20 +31,27 @@ function drawWire(ctx, w, compById, outPortsById, inPortsById,
 
     var cx = Math.max(Math.abs(s2.x - s1.x) / 2, 40 * viewScale)
 
-    // 读取源端口首字符，判断 '1' / '0' / 'Z'
-    var ch0 = '0'
+    // 读取源端口字符串：优先看有没有 E，再看 Z，再看 1/0
+    var srcStr = "0"
     if (fromC.outputPorts && fromC.outputPorts.length > w.fromPort) {
         var sv = fromC.outputPorts[w.fromPort]
-        if (sv && sv.length > 0) ch0 = sv.charAt(0)
+        if (sv && sv.length > 0) srcStr = sv
     }
 
+    var hasE = srcStr.indexOf('E') !== -1
+    var hasZ = !hasE && srcStr.indexOf('Z') !== -1
+    var has1 = !hasE && !hasZ && srcStr.indexOf('1') !== -1
+
     ctx.beginPath()
-    if (ch0 === '1') {
+    if (hasE) {
+        ctx.strokeStyle = "#e05252"
+        ctx.setLineDash([3, 3])
+    } else if (hasZ) {
+        ctx.strokeStyle = "#ffb74d"
+        ctx.setLineDash([6, 5])
+    } else if (has1) {
         ctx.strokeStyle = "#4caf50"
         ctx.setLineDash([])
-    } else if (ch0 === 'Z') {
-        ctx.strokeStyle = "#ffb74d"     // 高阻态橙色
-        ctx.setLineDash([6, 5])
     } else {
         ctx.strokeStyle = "#666666"
         ctx.setLineDash([])
@@ -67,6 +74,22 @@ function drawPendingWire(ctx, sp, wiringStartIsOutput, wireEndX, wireEndY) {
     }
     ctx.stroke()
     ctx.setLineDash([])
+}
+
+// 端口字符串的分类：返回 0（灰）1（绿）2（橙 Z）3（红 E）
+function classifyPortStr(s) {
+    if (!s || s.length === 0) return 0
+    if (s.indexOf('E') !== -1) return 3
+    if (s.indexOf('Z') !== -1) return 2
+    if (s.indexOf('1') !== -1) return 1
+    return 0
+}
+
+function fillPortColor(ctx, kind) {
+    if (kind === 3)      ctx.fillStyle = "#e05252"
+    else if (kind === 2) ctx.fillStyle = "#ffb74d"
+    else if (kind === 1) ctx.fillStyle = "#4caf50"
+    else                 ctx.fillStyle = "#999999"
 }
 
 function drawComponent(ctx, comp, compSize, viewScale, viewX, viewY,
@@ -203,7 +226,6 @@ function drawComponent(ctx, comp, compSize, viewScale, viewX, viewY,
         ctx.lineWidth = isSel ? 3 : 2
         Geometry.roundRect(ctx, sp.x, sp.y, w, h, 6 * viewScale); ctx.fill(); ctx.stroke()
     } else if (t === "tgate" || t === "ntran" || t === "ptran") {
-        // 传输门 / 晶体管
         ctx.fillStyle = "#1f1a2e"
         ctx.strokeStyle = isSel ? "#ffffff" : "#9c27b0"
         ctx.lineWidth = isSel ? 3 : 2
@@ -213,27 +235,22 @@ function drawComponent(ctx, comp, compSize, viewScale, viewX, viewY,
             var cy2 = sp.y + h / 2
             ctx.strokeStyle = isSel ? "#ffffff" : "#b388ff"
             ctx.lineWidth = Math.max(1.5, 2 * viewScale)
-            // 沟道竖线
             ctx.beginPath()
             ctx.moveTo(cx2, sp.y + h * 0.2)
             ctx.lineTo(cx2, sp.y + h * 0.8)
             ctx.stroke()
-            // 栅极竖线
             ctx.beginPath()
             ctx.moveTo(cx2 - 8*viewScale, sp.y + h * 0.2)
             ctx.lineTo(cx2 - 8*viewScale, sp.y + h * 0.8)
             ctx.stroke()
-            // 栅极横线（连接左侧）
             ctx.beginPath()
             ctx.moveTo(cx2 - 8*viewScale, sp.y + h * 0.5)
             ctx.lineTo(sp.x + 4*viewScale, sp.y + h * 0.5)
             ctx.stroke()
-            // 漏源连接线（右侧上下）
             ctx.beginPath()
             ctx.moveTo(cx2, sp.y + h * 0.25); ctx.lineTo(sp.x + w, sp.y + h * 0.25)
             ctx.moveTo(cx2, sp.y + h * 0.75); ctx.lineTo(sp.x + w, sp.y + h * 0.75)
             ctx.stroke()
-            // PMOS 圆圈
             if (t === "ptran") {
                 ctx.beginPath()
                 ctx.arc(cx2 - 8*viewScale - 4*viewScale, cy2, 4*viewScale, 0, Math.PI * 2)
@@ -285,14 +302,21 @@ function drawComponent(ctx, comp, compSize, viewScale, viewX, viewY,
                 var gy2 = sp.y + 4 * viewScale
                 var gw2 = 20 * viewScale
                 var gh2 = h - 8 * viewScale
-                var v2 = (i2 < ovStr.length && ovStr.charAt(i2) === '1')
-                ctx.fillStyle = v2 ? "#4caf50" : "#1a1a1a"
+                var ch = (i2 < ovStr.length) ? ovStr.charAt(i2) : '0'
+
+                if (ch === '1')      ctx.fillStyle = "#4caf50"
+                else if (ch === 'Z') ctx.fillStyle = "#ffb74d"
+                else if (ch === 'E') ctx.fillStyle = "#e05252"
+                else                 ctx.fillStyle = "#1a1a1a"
+
                 ctx.strokeStyle = "#555555"; ctx.lineWidth = 1
-                Geometry.roundRect(ctx, gx2, gy2, gw2, gh2, 3 * viewScale); ctx.fill(); ctx.stroke()
-                ctx.fillStyle = v2 ? "#ffffff" : "#888888"
+                Geometry.roundRect(ctx, gx2, gy2, gw2, gh2, 3 * viewScale)
+                ctx.fill(); ctx.stroke()
+
+                ctx.fillStyle = "#ffffff"
                 ctx.font = Math.max(8, Math.round(12 * viewScale)) + "px monospace"
                 ctx.textAlign = "center"; ctx.textBaseline = "middle"
-                ctx.fillText(v2 ? "1" : "0", gx2 + gw2/2, gy2 + gh2/2)
+                ctx.fillText(ch, gx2 + gw2/2, gy2 + gh2/2)
             }
         } else {
             var dispStr = circuit.formatValue(ovStr, base, bw)
@@ -305,9 +329,10 @@ function drawComponent(ctx, comp, compSize, viewScale, viewX, viewY,
         var lvStr = ""
         if (comp.inputPortValues && comp.inputPortValues.length > 0)
             lvStr = comp.inputPortValues[0] || ""
+        var ledColor = comp.color || "#ffd700"
         if (base !== "bin") {
             var ldStr = circuit.formatValue(lvStr, base, bw)
-            ctx.fillStyle = "#dddddd"
+            ctx.fillStyle = ledColor
             ctx.font = Math.max(9, Math.round(13 * viewScale)) + "px monospace"
             ctx.textAlign = "center"; ctx.textBaseline = "middle"
             ctx.fillText(ldStr, sp.x + w/2, sp.y + h/2)
@@ -315,12 +340,21 @@ function drawComponent(ctx, comp, compSize, viewScale, viewX, viewY,
             for (var i3 = 0; i3 < bw; ++i3) {
                 var cx3 = sp.x + (14 + i3 * 22) * viewScale
                 var cy3 = sp.y + h/2
-                var v3 = (i3 < lvStr.length && lvStr.charAt(i3) === '1')
-                ctx.fillStyle = v3 ? "#ffd700" : "#2a2a2a"
+                var ch3 = (i3 < lvStr.length) ? lvStr.charAt(i3) : '0'
+
+                if (ch3 === '1')      ctx.fillStyle = ledColor
+                else if (ch3 === 'Z') ctx.fillStyle = "#ffb74d"
+                else if (ch3 === 'E') ctx.fillStyle = "#e05252"
+                else                  ctx.fillStyle = "#2a2a2a"
+
                 ctx.beginPath()
                 ctx.arc(cx3, cy3, 8 * viewScale, 0, Math.PI*2)
                 ctx.fill()
-                ctx.strokeStyle = v3 ? "#ffeb3b" : "#444444"
+
+                ctx.strokeStyle = (ch3 === '1') ? ledColor
+                                : (ch3 === 'E') ? "#e05252"
+                                : (ch3 === 'Z') ? "#ffb74d"
+                                : "#444444"
                 ctx.lineWidth = 1.5 * viewScale
                 ctx.stroke()
             }
@@ -337,11 +371,9 @@ function drawComponent(ctx, comp, compSize, viewScale, viewX, viewY,
         else if (t === "splitter") label = "分线器"
         else if (t === "hub") label = "集线器"
         else if (t === "sub") {
-            // 【修改】显示子电路名字，而不是 "SUB"
             var subName = ""
             if (circuit && circuit.getSubcircuitName)
                 subName = circuit.getSubcircuitName(comp.subId) || ""
-            // 若实例自定义名（comp.name）与子电路定义名不同，则两个都显示
             if (comp.name && comp.name.length > 0 && comp.name !== subName)
                 label = comp.name + " [" + subName + "]"
             else
@@ -364,21 +396,14 @@ function drawComponent(ctx, comp, compSize, viewScale, viewX, viewY,
         var pIn = ins[k]
         var psp = Geometry.worldToScreen(viewScale, viewX, viewY,
                                           comp.x + pIn.x, comp.y + pIn.y)
-        var portVal = false
-        var portZ = false
-        if (comp.inputPortValues && comp.inputPortValues.length > k) {
-            var pvStr = comp.inputPortValues[k] || ""
-            if (pvStr.length > 0) {
-                portVal = (pvStr.charAt(0) === '1')
-                portZ   = (pvStr.charAt(0) === 'Z')
-            }
-        }
-        ctx.fillStyle = portZ ? "#ffb74d" : (portVal ? "#4caf50" : "#999999")
+        var pvStr = ""
+        if (comp.inputPortValues && comp.inputPortValues.length > k)
+            pvStr = comp.inputPortValues[k] || ""
+        fillPortColor(ctx, classifyPortStr(pvStr))
         ctx.beginPath()
         ctx.arc(psp.x, psp.y, 6 * viewScale, 0, Math.PI*2)
         ctx.fill()
 
-        // tgate/ntran/ptran 的端口标注
         if (!simplify && (t === "tgate" || t === "ntran" || t === "ptran")) {
             ctx.fillStyle = "#b388ff"
             ctx.font = "bold " + Math.max(9, Math.round(11 * viewScale)) + "px sans-serif"
@@ -386,7 +411,6 @@ function drawComponent(ctx, comp, compSize, viewScale, viewX, viewY,
                 ctx.textAlign = "right"; ctx.textBaseline = "middle"
                 ctx.fillText("G", psp.x - 10*viewScale, psp.y)
             } else if (k === 1) {
-                // D 输入：ntran 在右上、ptran 在右下；标签统一写 "D"
                 ctx.textAlign = "left"; ctx.textBaseline = "middle"
                 ctx.fillText("D", psp.x + 10*viewScale, psp.y)
             }
@@ -399,21 +423,14 @@ function drawComponent(ctx, comp, compSize, viewScale, viewX, viewY,
         var pOut = outs[k2]
         var psp2 = Geometry.worldToScreen(viewScale, viewX, viewY,
                                            comp.x + pOut.x, comp.y + pOut.y)
-        var outVal = false
-        var outZ = false
-        if (comp.outputPorts && comp.outputPorts.length > k2) {
-            var ovStr2 = comp.outputPorts[k2] || ""
-            if (ovStr2.length > 0) {
-                outVal = (ovStr2.charAt(0) === '1')
-                outZ   = (ovStr2.charAt(0) === 'Z')
-            }
-        }
-        ctx.fillStyle = outZ ? "#ffb74d" : (outVal ? "#4caf50" : "#999999")
+        var ovStr2 = ""
+        if (comp.outputPorts && comp.outputPorts.length > k2)
+            ovStr2 = comp.outputPorts[k2] || ""
+        fillPortColor(ctx, classifyPortStr(ovStr2))
         ctx.beginPath()
         ctx.arc(psp2.x, psp2.y, 6 * viewScale, 0, Math.PI*2)
         ctx.fill()
 
-        // tgate/ntran/ptran 的输出端口标注 "S"
         if (!simplify && (t === "ntran" || t === "ptran")) {
             ctx.fillStyle = "#b388ff"
             ctx.font = "bold " + Math.max(9, Math.round(11 * viewScale)) + "px sans-serif"
@@ -446,7 +463,7 @@ function drawComponent(ctx, comp, compSize, viewScale, viewX, viewY,
         }
     }
 
-    // ---- 元件名字：所有类型都显示在元件上方（sub 除外，sub 已内嵌显示）----
+    // ---- 元件名字 ----
     if (comp.name && comp.name.length > 0 && t !== "sub" && t !== "text") {
         ctx.fillStyle = "#cccccc"
         ctx.font = Math.max(8, Math.round(10 * viewScale)) + "px sans-serif"

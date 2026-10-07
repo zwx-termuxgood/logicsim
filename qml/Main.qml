@@ -410,7 +410,7 @@ ApplicationWindow {
                 root.selectedCompId = ""
                 root.selectedComp = null
                 root.selectedIds = []
-                root.selectedSubId = ""    // 【新增】
+                root.selectedSubId = ""
                 root.resetView()
                 root.statusText = "已打开：" + path
             } else {
