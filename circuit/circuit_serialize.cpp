@@ -4,6 +4,7 @@
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QFile>
+#include <QDebug>
 
 void Circuit::refreshErrors() {
     m_errors.clear();
@@ -39,6 +40,7 @@ void Circuit::refreshErrors() {
 }
 
 void Circuit::clear() {
+    qDebug() << "[CLEAR] clear()";
     if (m_viewOnly) return;
     pushUndo();
     m_root = Context();
@@ -87,6 +89,12 @@ QVariantMap Circuit::toJson() const {
 }
 
 bool Circuit::fromJson(const QVariantMap& data) {
+    CircuitUndoData* d = und();
+    bool wasRestoring = d ? d->restoring : false;
+    qDebug() << "[JSON] fromJson enter, wasRestoring=" << wasRestoring
+             << "data size=" << data.size();
+    if (d) d->restoring = true;
+
     m_root = Context();
     m_subContexts.clear();
     m_subNames.clear();
@@ -102,6 +110,9 @@ bool Circuit::fromJson(const QVariantMap& data) {
         m_root.wireCounter = r.value("wireCounter").toInt();
     }
     QVariantList subs = data.value("subcircuits").toList();
+    qDebug() << "[JSON] loading root comps=" << m_root.components.size()
+             << "wires=" << m_root.wires.size()
+             << "subs=" << subs.size();
     for (auto& sv : subs) {
         QVariantMap s = sv.toMap();
         QString id = s.value("id").toString();
@@ -119,6 +130,7 @@ bool Circuit::fromJson(const QVariantMap& data) {
     m_clockTickCount = data.value("clockTickCount").toInt();
     if (m_clockTickCount < 0) m_clockTickCount = 0;
 
+    qDebug() << "[JSON] fixCtx start";
     auto fixCtx = [&](Context& ctx) {
         for (int i = 0; i < ctx.components.size(); ++i) {
             QVariantMap c = ctx.components[i].toMap();
@@ -144,23 +156,37 @@ bool Circuit::fromJson(const QVariantMap& data) {
     };
     fixCtx(m_root);
     for (auto it = m_subContexts.begin(); it != m_subContexts.end(); ++it) fixCtx(it.value());
+    qDebug() << "[JSON] fixCtx done";
 
-    // 非撤销/重做时（即从文件加载），清空撤销/重做栈
-    if (!m_undoRestoring) {
-        m_undoStack.clear();
-        m_redoStack.clear();
-        m_lastMergeKey.clear();
-        m_lastUndoTime = QDateTime();
-        emit undoRedoChanged();
+    qDebug() << "[JSON] evaluateAll start";
+    evaluateAll();
+    qDebug() << "[JSON] evaluateAll done";
+
+    if (!wasRestoring) {
+        qDebug() << "[JSON] file-load mode, clearing undo/redo stacks";
+        if (d) {
+            d->undoStack.clear();
+            d->redoStack.clear();
+            d->lastMergeKey.clear();
+            d->lastUndoTime = QDateTime();
+        }
     }
 
-    evaluateAll();
+    if (d) d->restoring = wasRestoring;
+
+    if (wasRestoring) {
+        qDebug() << "[JSON] restore mode, return without signals";
+        return true;
+    }
+
+    qDebug() << "[JSON] emitting signals";
     emit contextChanged();
     emit subcircuitsChanged();
     emit editContextsChanged();
     emit errorsChanged();
     emit clockChanged();
     emit changed();
+    qDebug() << "[JSON] fromJson done";
     return true;
 }
 
@@ -189,78 +215,149 @@ bool Circuit::loadFromFile(const QString& path) {
 }
 
 // ============================================================
-// 撤销 / 重做实现
+// 撤销 / 重做实现（全部通过 und() 访问堆上的 CircuitUndoData）
 // ============================================================
 
 void Circuit::pushUndo(const QString& mergeKey) {
-    if (m_viewOnly) return;
-    if (m_undoRestoring) return;
+    CircuitUndoData* d = und();
+    qDebug() << "========================================================";
+    qDebug() << "[UNDO] pushUndo ENTER mergeKey=" << mergeKey;
+    dumpInternalState("pushUndo-entry");
 
-    // 合并逻辑：相同 key 且间隔 < 500ms 时合并为一次
-    if (!mergeKey.isEmpty() && mergeKey == m_lastMergeKey) {
-        if (m_lastUndoTime.isValid() &&
-            m_lastUndoTime.msecsTo(QDateTime::currentDateTime()) < 500) {
-            m_lastUndoTime = QDateTime::currentDateTime();
+    if (!d)               { qDebug() << "[UNDO] abort: no UndoData"; return; }
+    if (m_viewOnly)       { qDebug() << "[UNDO] abort: viewOnly";    return; }
+    if (d->restoring)     { qDebug() << "[UNDO] abort: restoring";   return; }
+    if (d->redoRunning)   { qDebug() << "[UNDO] abort: redoRunning"; return; }
+
+    if (!mergeKey.isEmpty() && mergeKey == d->lastMergeKey) {
+        if (d->lastUndoTime.isValid() &&
+            d->lastUndoTime.msecsTo(QDateTime::currentDateTime()) < 500) {
+            d->lastUndoTime = QDateTime::currentDateTime();
+            qDebug() << "[UNDO] merged, skip";
             return;
         }
     }
 
-    m_undoStack.append(toJson());
-    while (m_undoStack.size() > m_maxUndo) m_undoStack.removeFirst();
-    m_redoStack.clear();
-    m_lastMergeKey = mergeKey;
-    m_lastUndoTime = QDateTime::currentDateTime();
+    qDebug() << "[UNDO] toJson() start";
+    QVariantMap snap = toJson();
+    qDebug() << "[UNDO] toJson() done, keys=" << snap.size();
+
+    qDebug() << "[UNDO] push_back start (undoSize before="
+             << (int)d->undoStack.size() << ")";
+    d->undoStack.push_back(snap);
+    qDebug() << "[UNDO] push_back done (undoSize after="
+             << (int)d->undoStack.size() << ")";
+
+    while (d->undoStack.size() > static_cast<size_t>(d->maxUndo))
+        d->undoStack.erase(d->undoStack.begin());
+    qDebug() << "[UNDO] trimming done (undoSize=" << (int)d->undoStack.size() << ")";
+
+    d->redoStack.clear();
+    qDebug() << "[UNDO] redo cleared";
+
+    d->lastMergeKey = mergeKey;
+    d->lastUndoTime = QDateTime::currentDateTime();
     emit undoRedoChanged();
+    qDebug() << "[UNDO] pushUndo DONE";
+    qDebug() << "========================================================";
 }
 
 void Circuit::breakUndoMerge() {
-    m_lastMergeKey.clear();
-    m_lastUndoTime = QDateTime();
+    CircuitUndoData* d = und();
+    if (!d) return;
+    d->lastMergeKey.clear();
+    d->lastUndoTime = QDateTime();
 }
 
 void Circuit::undo() {
-    if (m_viewOnly) return;
-    if (m_undoStack.isEmpty()) return;
+    CircuitUndoData* d = und();
+    if (!d) return;
+    qDebug() << "[UNDO] undo() enter, canUndo=" << canUndo()
+             << "stackSize=" << (int)d->undoStack.size()
+             << "viewOnly=" << m_viewOnly
+             << "running=" << d->redoRunning;
+
+    if (m_viewOnly)         { qDebug() << "[UNDO] undo viewOnly abort"; return; }
+    if (d->redoRunning)     { qDebug() << "[UNDO] undo reentered abort"; return; }
+    if (d->undoStack.empty()){ qDebug() << "[UNDO] undo empty abort"; return; }
+
+    d->redoRunning = true;
 
     QVariantMap cur = toJson();
-    QVariantMap prev = m_undoStack.takeLast();
-    m_redoStack.append(cur);
-    while (m_redoStack.size() > m_maxUndo) m_redoStack.removeFirst();
+    QVariantMap prev = d->undoStack.back();
+    d->undoStack.pop_back();
+    d->redoStack.push_back(cur);
+    while (d->redoStack.size() > static_cast<size_t>(d->maxUndo))
+        d->redoStack.erase(d->redoStack.begin());
     breakUndoMerge();
-    restoreSnapshot(prev);
+
+    restoreSnapshot(prev, true);
+
+    d->redoRunning = false;
     emit undoRedoChanged();
+    qDebug() << "[UNDO] undo() done";
 }
 
 void Circuit::redo() {
-    if (m_viewOnly) return;
-    if (m_redoStack.isEmpty()) return;
+    CircuitUndoData* d = und();
+    if (!d) return;
+    qDebug() << "[UNDO] redo() enter, canRedo=" << canRedo()
+             << "redoSize=" << (int)d->redoStack.size()
+             << "viewOnly=" << m_viewOnly
+             << "running=" << d->redoRunning;
+
+    if (m_viewOnly)          { qDebug() << "[UNDO] redo viewOnly abort"; return; }
+    if (d->redoRunning)      { qDebug() << "[UNDO] redo reentered abort"; return; }
+    if (d->redoStack.empty()){ qDebug() << "[UNDO] redo empty abort"; return; }
+
+    d->redoRunning = true;
 
     QVariantMap cur = toJson();
-    QVariantMap next = m_redoStack.takeLast();
-    m_undoStack.append(cur);
-    while (m_undoStack.size() > m_maxUndo) m_undoStack.removeFirst();
+    QVariantMap next = d->redoStack.back();
+    d->redoStack.pop_back();
+    d->undoStack.push_back(cur);
+    while (d->undoStack.size() > static_cast<size_t>(d->maxUndo))
+        d->undoStack.erase(d->undoStack.begin());
     breakUndoMerge();
-    restoreSnapshot(next);
+
+    restoreSnapshot(next, true);
+
+    d->redoRunning = false;
     emit undoRedoChanged();
+    qDebug() << "[UNDO] redo() done";
 }
 
-void Circuit::restoreSnapshot(const QVariantMap& snap) {
+void Circuit::restoreSnapshot(const QVariantMap& snap, bool emitSignals) {
+    CircuitUndoData* d = und();
+    if (!d) return;
+    qDebug() << "[RESTORE] enter, emitSignals=" << emitSignals
+             << "restoring=" << d->restoring;
+
+    if (d->restoring) { qDebug() << "[RESTORE] already restoring, abort"; return; }
+
     QString savedCtx = m_currentCtxId;
     bool savedView = m_viewOnly;
 
-    m_undoRestoring = true;
+    d->restoring = true;
     fromJson(snap);
-    m_undoRestoring = false;
+    d->restoring = false;
 
-    // 如果之前的上下文已不存在（例如撤销掉了该子电路），回到主电路
     if (!savedCtx.isEmpty() && !m_subContexts.contains(savedCtx)) {
         savedCtx = "";
         savedView = false;
     }
-    if (savedCtx != m_currentCtxId || savedView != m_viewOnly) {
-        m_currentCtxId = savedCtx;
-        m_viewOnly = savedView;
-        emit contextChanged();
-    }
+
+    bool ctxChanged = (savedCtx != m_currentCtxId) || (savedView != m_viewOnly);
+    m_currentCtxId = savedCtx;
+    m_viewOnly = savedView;
+
+    if (!emitSignals) return;
+
+    if (ctxChanged) emit contextChanged();
+    emit subcircuitsChanged();
+    emit editContextsChanged();
+    emit errorsChanged();
+    emit clockChanged();
     emit changed();
+    qDebug() << "[RESTORE] done";
 }

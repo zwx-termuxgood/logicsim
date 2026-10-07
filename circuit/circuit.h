@@ -10,13 +10,14 @@
 #include <QSet>
 #include <QTimer>
 #include <QDateTime>
-#include <QList>
 
 #include "CircuitContext.h"
+#include "UndoData.h"
 
 class Circuit : public QObject
 {
     Q_OBJECT
+    Q_DISABLE_COPY_MOVE(Circuit)
     Q_PROPERTY(QVariantList components READ components NOTIFY changed)
     Q_PROPERTY(QVariantList wires READ wires NOTIFY changed)
     Q_PROPERTY(QString contextId READ contextId NOTIFY contextChanged)
@@ -35,6 +36,7 @@ class Circuit : public QObject
 
 public:
     explicit Circuit(QObject* parent = nullptr);
+    ~Circuit() override;
 
     QVariantList components() const;
     QVariantList wires() const;
@@ -49,8 +51,9 @@ public:
     bool clockRunning() const { return m_clockRunning; }
     int clockFrequency() const { return m_clockFrequency; }
     int clockTickCount() const { return m_clockTickCount; }
-    bool canUndo() const { return !m_undoStack.isEmpty(); }
-    bool canRedo() const { return !m_redoStack.isEmpty(); }
+
+    bool canUndo() const;
+    bool canRedo() const;
 
     static int componentInputCount(const QVariantMap& comp);
     static int componentOutputCount(const QVariantMap& comp);
@@ -127,10 +130,11 @@ public:
     Q_INVOKABLE QString addText(double x, double y, const QString& text = QString("文本"));
     Q_INVOKABLE void setTextContent(const QString& id, const QString& content);
 
-    // ---- 撤销 / 重做 ----
     Q_INVOKABLE void undo();
     Q_INVOKABLE void redo();
     Q_INVOKABLE void breakUndoMerge();
+
+    void dumpInternalState(const QString& where) const;
 
 signals:
     void changed();
@@ -149,6 +153,7 @@ private slots:
 private:
     using Context = CircuitContext;
 
+    // ---- 常规数据（都在 Circuit 对象里，但都是 8 字节大小的 Qt 类型）----
     Context m_root;
     QHash<QString, Context> m_subContexts;
     QHash<QString, QString> m_subNames;
@@ -164,13 +169,9 @@ private:
     QTimer* m_clockTimer = nullptr;
     QHash<QString, bool> m_clockStates;
 
-    // ---- 撤销 / 重做栈 ----
-    QList<QVariantMap> m_undoStack;
-    QList<QVariantMap> m_redoStack;
-    QString m_lastMergeKey;
-    QDateTime m_lastUndoTime;
-    bool m_undoRestoring = false;
-    int m_maxUndo = 200;
+    // ⚠️ undo/redo 数据全部搬到 dynamic property（见 UndoData.h）
+    // Circuit 对象里不再有任何 std::vector / QList 成员
+    CircuitUndoData* und() const;
 
     Context& currentCtx();
     const Context& currentCtx() const;
@@ -188,7 +189,7 @@ private:
     bool hasSubCycle(const QString& fromCtx, const QString& targetId, QSet<QString>& visited) const;
 
     void pushUndo(const QString& mergeKey = QString());
-    void restoreSnapshot(const QVariantMap& snap);
+    void restoreSnapshot(const QVariantMap& snap, bool emitSignals = true);
 };
 
 #endif // CIRCUIT_H

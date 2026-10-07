@@ -2,8 +2,10 @@
 #include <QVariantMap>
 #include <QSet>
 #include <QtGlobal>
+#include <QDebug>
 
 void Circuit::removeComponent(const QString& id) {
+    qDebug() << "[DEL] removeComponent id=" << id;
     if (m_viewOnly) return;
     int idx = indexOfComponent(id);
     if (idx < 0) return;
@@ -22,6 +24,7 @@ void Circuit::removeComponent(const QString& id) {
 }
 
 void Circuit::removeComponents(const QStringList& ids) {
+    qDebug() << "[DEL] removeComponents count=" << ids.size();
     if (m_viewOnly) return;
     if (ids.isEmpty()) return;
     bool any = false;
@@ -131,12 +134,12 @@ void Circuit::setBitValue(const QString& id, int bit, bool value) {
 }
 
 void Circuit::setComponentProp(const QString& id, const QString& key, const QVariant& value) {
+    qDebug() << "[PROP] setComponentProp id=" << id << "key=" << key << "val=" << value;
     if (m_viewOnly) return;
     int idx = indexOfComponent(id);
     if (idx < 0) return;
     Context& ctx = currentCtx();
     QVariantMap c = ctx.components[idx].toMap();
-    // 检查值是否发生变化
     if (key == "bitWidth" || key == "inputCount") {
         if (c.value(key).toInt() == value.toInt()) return;
     } else {

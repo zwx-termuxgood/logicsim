@@ -17,7 +17,6 @@ ApplicationWindow {
     minimumWidth: 500
     minimumHeight: 320
 
-    // ★ 暴露给子组件
     property alias circuitRef: circuit
     readonly property bool circuitViewOnly: circuit.isViewOnly
 
@@ -35,18 +34,15 @@ ApplicationWindow {
     property var outPortsById: ({})
     property var inPortsById: ({})
 
-    // 视图
     property real viewScale: 1.0
     property real viewX: 0
     property real viewY: 0
 
-    // 放置
     property string placingType: ""
     property int placingBitWidth: 1
     property int placingInputCount: 2
     property string placingSubId: ""
 
-    // 连线
     property string wiringFromComp: ""
     property int wiringFromPort: -1
     property bool wiring: false
@@ -54,38 +50,31 @@ ApplicationWindow {
     property real wireEndX: 0
     property real wireEndY: 0
 
-    // 选中
     property string selectedCompId: ""
     property var selectedComp: null
     property var selectedIds: []
 
-    // 状态
     property string statusText: "编辑模式"
     property string inputError: ""
     property string mode: "edit"
     property var errorList: []
     property var clipboardData: null
 
-    // 文件
     property bool dirty: false
     property string currentFilePath: ""
 
-    // 框选
     property bool boxSelecting: false
     property real boxStartX: 0
     property real boxStartY: 0
     property real boxCurrentX: 0
     property real boxCurrentY: 0
 
-    // 多选拖拽
     property bool draggingSelection: false
     property real lastDragWorldX: 0
     property real lastDragWorldY: 0
 
-    // 供 LeftPanel 使用
     readonly property int windowHeight: height
 
-    // ============ Dialog / Popup 引用 ============
     property alias subNameDialogRef: subNameDialog
     property alias closeConfirmRef: closeConfirm
     property alias exitConfirmRef: exitConfirm
@@ -100,14 +89,19 @@ ApplicationWindow {
     Circuit {
         id: circuit
         onChanged: {
+            console.log("[QML] onChanged enter, ctxId=" + circuit.contextId
+                        + " comps=" + circuit.components.length
+                        + " selectedId=" + root.selectedCompId)
             root.rebuildCaches()
+            console.log("[QML] rebuildCaches done")
             canvasView.requestPaint()
             root.refreshSel()
+            console.log("[QML] refreshSel done")
             errorDebounce.restart()
-            // 任何修改都会触发 changed，标记为脏
             if (!root.forceQuit) {
                 root.dirty = true
             }
+            console.log("[QML] onChanged done")
         }
         onGeometryChanged: {
             var comps = circuit.components
@@ -118,6 +112,7 @@ ApplicationWindow {
             canvasView.requestPaint()
         }
         onContextChanged: {
+            console.log("[QML] onContextChanged")
             canvasView.requestPaint()
             root.selectedCompId = ""
             root.selectedComp = null
@@ -131,9 +126,12 @@ ApplicationWindow {
         onErrorsChanged: { root.errorList = circuit.errors }
         onRecentFilesChanged: { root.recentList = circuit.recentFiles }
         onClockChanged: { canvasView.requestPaint() }
+        onUndoRedoChanged: {
+            console.log("[QML] onUndoRedoChanged canUndo=" + circuit.canUndo
+                        + " canRedo=" + circuit.canRedo)
+        }
     }
 
-    // 时钟属性转发
     readonly property bool clockRunning: circuit.clockRunning
     readonly property int clockFrequency: circuit.clockFrequency
     readonly property int clockTickCount: circuit.clockTickCount
@@ -144,8 +142,8 @@ ApplicationWindow {
         onTriggered: circuit.refreshErrors()
     }
 
-    // ============ 缓存重建 ============
     function rebuildCaches() {
+        console.log("[QML] rebuildCaches start")
         var comps = circuit.components
         var wrs = circuit.wires
         cachedComps = comps
@@ -154,12 +152,14 @@ ApplicationWindow {
         for (var i = 0; i < comps.length; i++) {
             var c = comps[i]
             m[c.id] = c
+            console.log("[QML]   comp " + i + " id=" + c.id + " type=" + c.type)
             op[c.id] = circuit.outputPortsInfo(c.id)
             ip[c.id] = circuit.inputPortsInfo(c.id)
         }
         compById = m
         outPortsById = op
         inPortsById = ip
+        console.log("[QML] rebuildCaches done")
     }
 
     Timer {
@@ -172,6 +172,7 @@ ApplicationWindow {
     onHeightChanged: triggerRepaint()
 
     Component.onCompleted: {
+        console.log("[QML] Component.onCompleted")
         subList = circuit.subcircuits
         editCtxList = circuit.editContexts
         errorList = circuit.errors
@@ -179,22 +180,38 @@ ApplicationWindow {
         rebuildCaches()
         triggerRepaint()
         root.dirty = false
+        console.log("[QML] Component.onCompleted done")
     }
 
     // ============ 快捷键 ============
     Shortcut {
-        sequence: StandardKey.Undo
+        sequences: [StandardKey.Undo]
+        context: Qt.WindowShortcut
         enabled: circuit.canUndo && !circuit.isViewOnly
-        onActivated: circuit.undo()
+        onActivated: {
+            console.log("[QML] Shortcut Undo activated")
+            circuit.undo()
+        }
     }
     Shortcut {
-        sequence: StandardKey.Redo
+        sequences: [StandardKey.Redo]
+        context: Qt.WindowShortcut
         enabled: circuit.canRedo && !circuit.isViewOnly
-        onActivated: circuit.redo()
+        onActivated: {
+            console.log("[QML] Shortcut Redo activated")
+            circuit.redo()
+        }
+    }
+    Shortcut {
+        sequence: "Back"
+        context: Qt.ApplicationShortcut
+        enabled: !root.forceQuit
+        onActivated: root.doExit()
     }
 
     // ============ 辅助函数 ============
     function refreshSel() {
+        console.log("[QML] refreshSel selectedCompId=" + selectedCompId)
         selectedComp = (selectedCompId !== "") ? compById[selectedCompId] : null
         if (selectedComp && (selectedComp.type === "splitter" || selectedComp.type === "hub"))
             leftPanel.splitterSplitsInput.text = circuit.getSplitterSplitsStr(selectedCompId)
@@ -205,6 +222,7 @@ ApplicationWindow {
         if (selectedComp && selectedComp.type === "text") {
             leftPanel.textContentField.text = selectedComp.content || ""
         }
+        console.log("[QML] refreshSel done")
     }
 
     function resetView() {
@@ -257,9 +275,6 @@ ApplicationWindow {
         else exitConfirm.open()
     }
 
-    Keys.onReleased: function(event) {
-        if (event.key === Qt.Key_Back) { event.accepted = true; doExit() }
-    }
     onClosing: function(close) {
         if (root.forceQuit) { close.accepted = true; return }
         close.accepted = false
@@ -349,7 +364,6 @@ ApplicationWindow {
         }
     }
 
-    // ============ Dialog / Popup ============
     SubNameDialog { id: subNameDialog; main: root }
     CloseConfirmDialog { id: closeConfirm; main: root }
     ExitConfirmDialog { id: exitConfirm; main: root }

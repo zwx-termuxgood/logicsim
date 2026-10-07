@@ -10,6 +10,7 @@ find_package(Qt6 6.5 REQUIRED COMPONENTS Quick QuickControls2 Qml)
 qt_standard_project_setup(REQUIRES 6.5)
 
 set(CIRCUIT_SOURCES
+    circuit/UndoData.h
     circuit/CircuitContext.h
     circuit/CircuitContext.cpp
     circuit/ComponentTraits.h
@@ -55,8 +56,12 @@ set(QML_SOURCES
 # Theme.qml 声明为单例
 set_source_files_properties(qml/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 
+# 把 CIRCUIT_SOURCES 加进可执行文件：AUTOMOC 会正确生成 moc_circuit.cpp
 qt_add_executable(applogicsim main.cpp ${CIRCUIT_SOURCES})
 
+# 关键修改：qml 模块里 **不再** 传 SOURCES，
+# 避免 qmltyperegistrar 为 Circuit 自动生成元信息，
+# 防止和 main.cpp 里 qmlRegisterType 手动注册冲突。
 qt_add_qml_module(applogicsim
     URI LogicSim
     VERSION 1.0
@@ -64,7 +69,7 @@ qt_add_qml_module(applogicsim
     RESOURCES
         qml/Geometry.js
         qml/CanvasPainter.js
-    SOURCES ${CIRCUIT_SOURCES}
+        SOURCES circuit/UndoData.h
 )
 
 target_include_directories(applogicsim PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/circuit)

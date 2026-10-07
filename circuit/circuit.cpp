@@ -3,11 +3,89 @@
 #include "PortGeometry.h"
 #include <QVariantMap>
 #include <QString>
+#include <QDebug>
+
+static const char* kUndoPropName = "__logicsim_undo_v1";
 
 Circuit::Circuit(QObject* parent) : QObject(parent) {
+    // ⚠️ undo 数据挂到 dynamic property，不占 Circuit 对象内存
+    CircuitUndoData* d = new CircuitUndoData();
+    setProperty(kUndoPropName, QVariant::fromValue(static_cast<void*>(d)));
+
+    qDebug() << "========================================================";
+    qDebug() << "[CTOR] Circuit ctor ENTER, this=" << (void*)this;
+    dumpInternalState("ctor-entry");
+
     loadRecentFiles();
+    dumpInternalState("after-loadRecentFiles");
+
     m_clockTimer = new QTimer(this);
     connect(m_clockTimer, &QTimer::timeout, this, &Circuit::tick);
+
+    dumpInternalState("ctor-end");
+    qDebug() << "[CTOR] Circuit ctor DONE";
+    qDebug() << "========================================================";
+}
+
+Circuit::~Circuit() {
+    CircuitUndoData* d = und();
+    if (d) {
+        delete d;
+        setProperty(kUndoPropName, QVariant());
+    }
+}
+
+CircuitUndoData* Circuit::und() const {
+    return static_cast<CircuitUndoData*>(
+        property(kUndoPropName).value<void*>());
+}
+
+bool Circuit::canUndo() const {
+    CircuitUndoData* d = und();
+    return d && !d->undoStack.empty();
+}
+
+bool Circuit::canRedo() const {
+    CircuitUndoData* d = und();
+    return d && !d->redoStack.empty();
+}
+
+void Circuit::dumpInternalState(const QString& where) const {
+    auto off = [this](const void* p) -> long {
+        return (long)((const char*)p - (const char*)this);
+    };
+
+    qDebug().nospace()
+        << "[DUMP] (" << where << ")"
+        << " this=" << (void*)this
+        << " sizeof(Circuit)=" << sizeof(Circuit)
+        << " off(root)="        << off(&m_root)
+        << " off(errors)="      << off(&m_errors)
+        << " off(recent)="      << off(&m_recentFiles)
+        << " off(clockStates)=" << off(&m_clockStates);
+
+    CircuitUndoData* d = und();
+    if (!d) {
+        qDebug().nospace() << "[DUMP] (" << where << ") und=NULL";
+        return;
+    }
+
+    const size_t uSize = d->undoStack.size();
+    const size_t rSize = d->redoStack.size();
+
+    qDebug().nospace()
+        << "[DUMP] (" << where << ")"
+        << " undPtr=" << (void*)d
+        << " undoSize=" << (int)uSize
+        << " redoSize=" << (int)rSize
+        << " undoData=" << (void*)d->undoStack.data()
+        << " redoData=" << (void*)d->redoStack.data()
+        << " errorsSize=" << m_errors.size()
+        << " recentSize=" << m_recentFiles.size()
+        << " clockStatesSize=" << m_clockStates.size()
+        << " subCtxsSize=" << m_subContexts.size()
+        << " rootCompsSize=" << m_root.components.size()
+        << " rootWiresSize=" << m_root.wires.size();
 }
 
 Circuit::Context& Circuit::currentCtx() {
@@ -92,7 +170,6 @@ int Circuit::indexOfWire(const QString& id) const {
     return currentCtx().indexOfWire(id);
 }
 
-// 静态转发到 ComponentTraits
 int Circuit::componentInputCount(const QVariantMap& comp) {
     return ComponentTraits::inputCount(comp);
 }
@@ -108,15 +185,28 @@ int Circuit::inputPortBitWidth(const QVariantMap& comp, int portIdx) {
 
 QString Circuit::addComponent(const QString& type, double x, double y,
                               int bitWidth, int inputCount, const QString& subId) {
-    if (m_viewOnly) return QString();
+    qDebug() << "[ADD] enter type=" << type
+             << "x=" << x << "y=" << y
+             << "bw=" << bitWidth << "ic=" << inputCount
+             << "subId=" << subId
+             << "viewOnly=" << m_viewOnly
+             << "ctxId=" << m_currentCtxId;
+
+    if (m_viewOnly) { qDebug() << "[ADD] viewOnly, abort"; return QString(); }
     if (bitWidth < 1) bitWidth = 1;
     if (bitWidth > 64) bitWidth = 64;
     if (inputCount < 2) inputCount = 2;
     if (inputCount > 64) inputCount = 64;
 
-    if (type == "sub" && !canAddSubInstance(subId)) return QString();
+    if (type == "sub") {
+        bool ok = canAddSubInstance(subId);
+        qDebug() << "[ADD] sub check canAddSubInstance=" << ok;
+        if (!ok) { qDebug() << "[ADD] sub cycle, abort"; return QString(); }
+    }
 
+    qDebug() << "[ADD] calling pushUndo";
     pushUndo();
+    qDebug() << "[ADD] pushUndo returned";
 
     QVariantMap c;
     Context& ctx = currentCtx();
@@ -167,7 +257,6 @@ QString Circuit::addComponent(const QString& type, double x, double y,
         }
         outPorts.append(QString(bitWidth, '0'));
     } else if (type == "tgate" || type == "ntran" || type == "ptran") {
-        // 传输门/晶体管：2 路输入（数据 D、控制 G），1 路输出
         c["inputCount"] = 2;
         outPorts.append(QString(bitWidth, '0'));
         inPorts.append(QString(bitWidth, '0'));
@@ -188,22 +277,28 @@ QString Circuit::addComponent(const QString& type, double x, double y,
     c["outputPorts"] = outPorts;
     c["inputPortValues"] = inPorts;
 
+    qDebug() << "[ADD] appending component, id=" << c["id"].toString();
     ctx.components.append(c);
 
     if (type == "clock") m_clockStates[c["id"].toString()] = false;
 
+    qDebug() << "[ADD] calling evaluateAll";
     evaluateAll();
+    qDebug() << "[ADD] evaluateAll returned, emitting changed";
     emit changed();
+    qDebug() << "[ADD] done, id=" << c["id"].toString();
     return c["id"].toString();
 }
 
 QString Circuit::addText(double x, double y, const QString& text) {
+    qDebug() << "[ADD] addText";
     QString id = addComponent("text", x, y, 1, 2, "");
     if (!id.isEmpty()) setTextContent(id, text);
     return id;
 }
 
 void Circuit::setTextContent(const QString& id, const QString& content) {
+    qDebug() << "[PROP] setTextContent id=" << id;
     if (m_viewOnly) return;
     int idx = indexOfComponent(id);
     if (idx < 0) return;

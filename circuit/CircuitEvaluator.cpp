@@ -2,6 +2,7 @@
 #include "ComponentTraits.h"
 #include "ValueCodec.h"
 #include <QVector>
+#include <QDebug>
 
 bool CircuitEvaluator::evalOne(QVariantMap& c,
                                const QHash<QString, QPair<int,int>>& inputMap,
@@ -67,7 +68,6 @@ bool CircuitEvaluator::evalOne(QVariantMap& c,
         }
         newOutList.append(out);
     } else if (t == "tgate") {
-        // 传输门：D=in0, EN=in1，EN=1 时 Y=D；否则 Y=0
         QString d = newInList.isEmpty() ? QString(bw, '0') : newInList[0].toString();
         QString e = newInList.size() > 1 ? newInList[1].toString() : QString(bw, '0');
         QString out; out.reserve(bw);
@@ -78,7 +78,6 @@ bool CircuitEvaluator::evalOne(QVariantMap& c,
         }
         newOutList.append(out);
     } else if (t == "ntran") {
-        // N 型晶体管：G=1 时导通，Y = D AND G
         QString d = newInList.isEmpty() ? QString(bw, '0') : newInList[0].toString();
         QString g = newInList.size() > 1 ? newInList[1].toString() : QString(bw, '0');
         QString out; out.reserve(bw);
@@ -89,7 +88,6 @@ bool CircuitEvaluator::evalOne(QVariantMap& c,
         }
         newOutList.append(out);
     } else if (t == "ptran") {
-        // P 型晶体管：G=0 时导通，Y = D AND (NOT G)
         QString d = newInList.isEmpty() ? QString(bw, '0') : newInList[0].toString();
         QString g = newInList.size() > 1 ? newInList[1].toString() : QString(bw, '0');
         QString out; out.reserve(bw);
@@ -259,11 +257,19 @@ void CircuitEvaluator::syncSubPins(CircuitContext& ctx,
 
 void CircuitEvaluator::evaluateAll(CircuitContext& root,
                                    QHash<QString, CircuitContext>& subContexts) {
+    qDebug() << "[EVAL] evaluateAll enter, rootComp=" << root.components.size()
+    << "rootWires=" << root.wires.size()
+    << "subCtxs=" << subContexts.size();
+
     syncSubPins(root, subContexts);
     for (auto it = subContexts.begin(); it != subContexts.end(); ++it)
         syncSubPins(it.value(), subContexts);
+    qDebug() << "[EVAL] syncSubPins done";
 
-    if (root.components.isEmpty() && subContexts.isEmpty()) return;
+    if (root.components.isEmpty() && subContexts.isEmpty()) {
+        qDebug() << "[EVAL] both empty, return";
+        return;
+    }
 
     for (int outer = 0; outer < 20; ++outer) {
         bool anyChanged = false;
@@ -312,6 +318,10 @@ void CircuitEvaluator::evaluateAll(CircuitContext& root,
             }
         }
 
-        if (!anyChanged && outer > 0) break;
+        if (!anyChanged && outer > 0) {
+            qDebug() << "[EVAL] converged at outer=" << outer;
+            break;
+        }
     }
+    qDebug() << "[EVAL] evaluateAll done";
 }
