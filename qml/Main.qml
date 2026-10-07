@@ -54,6 +54,9 @@ ApplicationWindow {
     property var selectedComp: null
     property var selectedIds: []
 
+    // 【新增】当前选中的子电路（用于属性面板显示）
+    property string selectedSubId: ""
+
     property string statusText: "编辑模式"
     property string inputError: ""
     property string mode: "edit"
@@ -120,6 +123,7 @@ ApplicationWindow {
             root.placingType = ""
             root.placingSubId = ""
             root.selectedIds = []
+            root.selectedSubId = ""     // 【新增】切换上下文时清空子电路选中
         }
         onSubcircuitsChanged: { root.subList = circuit.subcircuits }
         onEditContextsChanged: { root.editCtxList = circuit.editContexts }
@@ -406,6 +410,7 @@ ApplicationWindow {
                 root.selectedCompId = ""
                 root.selectedComp = null
                 root.selectedIds = []
+                root.selectedSubId = ""    // 【新增】
                 root.resetView()
                 root.statusText = "已打开：" + path
             } else {

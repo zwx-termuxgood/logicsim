@@ -23,6 +23,14 @@ Rectangle {
                t === "nor" || t === "xor" || t === "xnor"
     }
 
+    // 从 subList 根据 id 找子电路信息
+    function findSubInfo(subId) {
+        for (var i = 0; i < main.subList.length; ++i) {
+            if (main.subList[i].id === subId) return main.subList[i]
+        }
+        return null
+    }
+
     readonly property var elementGroups: [
         { name: "输入输出", items: [
             { type: "input", name: "输入开关" },
@@ -147,6 +155,8 @@ Rectangle {
                     MouseArea { id: newSubMa; anchors.fill: parent
                         onClicked: main.subNameDialogRef.open() }
                 }
+
+                // ============ 子电路列表 ============
                 Repeater {
                     model: main.subList
                     delegate: Rectangle {
@@ -158,23 +168,63 @@ Rectangle {
                         border.color: (main.placingType === "sub" && main.placingSubId === modelData.id)
                                       ? Theme.accentPurple : Theme.borderWeak
                         border.width: 1
+
                         Text {
                             anchors.left: parent.left; anchors.leftMargin: 10
-                            anchors.right: parent.right; anchors.rightMargin: 6
+                            anchors.right: moreBtn.left; anchors.rightMargin: 4
                             anchors.verticalCenter: parent.verticalCenter
                             text: modelData.name + " [" + modelData.inCount + "/" + modelData.outCount + "]"
                             color: Theme.text; font.pixelSize: Theme.fsSmall
                             elide: Text.ElideRight
                         }
+
+                        // 点击主体：选中子电路（同时用于属性显示 + 放置）
                         MouseArea {
-                            id: subItemMa; anchors.fill: parent
+                            id: subItemMa
+                            anchors.left: parent.left
+                            anchors.top: parent.top
+                            anchors.bottom: parent.bottom
+                            anchors.right: moreBtn.left
                             acceptedButtons: Qt.LeftButton | Qt.RightButton
+
+                            onPressAndHold: {
+                                // 移动端长按 = 弹出菜单
+                                subCtxMenu.subId = modelData.id
+                                subCtxMenu.subName = modelData.name
+                                subCtxMenu.popup()
+                            }
                             onClicked: function(mouse) {
                                 if (mouse.button === Qt.LeftButton) {
+                                    // 选中该子电路 → 属性面板显示它
+                                    main.selectedSubId = modelData.id
                                     main.placingType = "sub"
                                     main.placingSubId = modelData.id
                                     main.statusText = "已选择 " + modelData.name + "，点画布放置"
                                 } else if (mouse.button === Qt.RightButton) {
+                                    subCtxMenu.subId = modelData.id
+                                    subCtxMenu.subName = modelData.name
+                                    subCtxMenu.popup()
+                                }
+                            }
+                        }
+
+                        // "⋯" 更多按钮：弹菜单（移动端/桌面端通用）
+                        Rectangle {
+                            id: moreBtn
+                            width: 28; height: parent.height
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            color: moreMa.pressed ? Theme.bgButtonHover : "transparent"
+                            radius: Theme.smallRadius
+                            Text {
+                                anchors.centerIn: parent
+                                text: "⋯"
+                                color: Theme.textGray
+                                font.pixelSize: 16
+                            }
+                            MouseArea {
+                                id: moreMa; anchors.fill: parent
+                                onClicked: {
                                     subCtxMenu.subId = modelData.id
                                     subCtxMenu.subName = modelData.name
                                     subCtxMenu.popup()
@@ -218,6 +268,7 @@ Rectangle {
                     font.pixelSize: Theme.fsSmall; font.bold: true
                 }
 
+                // ============ 多选操作区 ============
                 Column {
                     visible: main.mode === "select"
                     x: 6; width: parent.width - 12; spacing: 4
@@ -281,8 +332,168 @@ Rectangle {
                     }
                 }
 
+                // ============ 子电路属性面板（选中子电路时显示） ============
+                Column {
+                    id: subPropsColumn
+                    visible: main.selectedSubId !== "" && main.mode !== "select"
+                    x: 6; width: parent.width - 12; spacing: 5
+
+                    Rectangle {
+                        width: parent.width; height: 24; radius: Theme.smallRadius
+                        color: Theme.bgDialogHeader
+                        Text {
+                            anchors.left: parent.left; anchors.leftMargin: 8
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: "子电路"
+                            color: Theme.accentPurple
+                            font.pixelSize: Theme.fsSmall; font.bold: true
+                        }
+                    }
+
+                    // 名称（可编辑）
+                    Row {
+                        spacing: 4
+                        Text {
+                            text: "名称"; color: Theme.textGray
+                            font.pixelSize: Theme.fsSmall; width: 36
+                            anchors.verticalCenter: parent.verticalCenter
+                        }
+                        Rectangle {
+                            width: parent.parent.width - 42; height: 26
+                            color: Theme.bgInput
+                            border.color: Theme.borderStrong; border.width: 1
+                            radius: Theme.smallRadius
+                            TextField {
+                                id: subNameField
+                                anchors.fill: parent
+                                anchors.leftMargin: 5; anchors.rightMargin: 5
+                                color: Theme.text; font.pixelSize: Theme.fsSmall
+                                background: null
+                                selectByMouse: true
+                                readOnly: main.circuitViewOnly
+                                text: {
+                                    var info = leftPanel.findSubInfo(main.selectedSubId)
+                                    return info ? info.name : ""
+                                }
+                                onEditingFinished: {
+                                    if (main.selectedSubId === "" || main.circuitViewOnly) return
+                                    if (text.trim().length === 0) return
+                                    main.circuitRef.setSubcircuitName(main.selectedSubId, text.trim())
+                                }
+                            }
+                        }
+                    }
+
+                    // 统计信息
+                    Text {
+                        text: {
+                            var info = leftPanel.findSubInfo(main.selectedSubId)
+                            if (!info) return ""
+                            return "ID：" + info.id + "\n输入端口：" + info.inCount
+                                 + "    输出端口：" + info.outCount
+                        }
+                        color: Theme.textGray
+                        font.pixelSize: Theme.fsSmall
+                        wrapMode: Text.Wrap
+                        width: parent.width
+                    }
+
+                    // 操作按钮：重命名对话框（便于移动端）
+                    Rectangle {
+                        width: parent.width; height: 30; radius: Theme.smallRadius
+                        visible: !main.circuitViewOnly
+                        color: renameBtn.pressed ? Theme.bgButtonHover : Theme.bgButton
+                        border.color: Theme.borderStrong; border.width: 1
+                        Text {
+                            anchors.centerIn: parent; text: "重命名…"
+                            color: Theme.text; font.pixelSize: Theme.fsSmall
+                        }
+                        MouseArea {
+                            id: renameBtn; anchors.fill: parent
+                            onClicked: {
+                                var info = leftPanel.findSubInfo(main.selectedSubId)
+                                renameDialog.subId = main.selectedSubId
+                                renameInput.text = info ? info.name : ""
+                                renameDialog.open()
+                            }
+                        }
+                    }
+
+                    // 设为主电路
+                    Rectangle {
+                        width: parent.width; height: 30; radius: Theme.smallRadius
+                        visible: !main.circuitViewOnly
+                        color: setRootBtn.pressed ? Theme.bgButtonHover : Theme.bgButton
+                        border.color: Theme.borderStrong; border.width: 1
+                        Text {
+                            anchors.centerIn: parent; text: "设为主电路"
+                            color: Theme.text; font.pixelSize: Theme.fsSmall
+                        }
+                        MouseArea {
+                            id: setRootBtn; anchors.fill: parent
+                            onClicked: {
+                                main.confirmDialogRef.title = "设为主电路"
+                                main.confirmDialogRef.message =
+                                    "确定把该子电路设为主电路？\n当前主电路内容将被移动到原位置。"
+                                main.confirmDialogRef.action = function() {
+                                    main.circuitRef.setSubcircuitAsRoot(main.selectedSubId)
+                                    main.selectedSubId = ""
+                                }
+                                main.confirmDialogRef.open()
+                            }
+                        }
+                    }
+
+                    // 进入浏览
+                    Rectangle {
+                        width: parent.width; height: 30; radius: Theme.smallRadius
+                        color: enterBtn.pressed ? Theme.bgButtonHover : Theme.bgButton
+                        border.color: Theme.borderStrong; border.width: 1
+                        Text {
+                            anchors.centerIn: parent; text: "进入浏览"
+                            color: Theme.text; font.pixelSize: Theme.fsSmall
+                        }
+                        MouseArea {
+                            id: enterBtn; anchors.fill: parent
+                            onClicked: main.circuitRef.enterSubcircuit(main.selectedSubId)
+                        }
+                    }
+
+                    // 删除
+                    Rectangle {
+                        width: parent.width; height: 30; radius: Theme.smallRadius
+                        visible: !main.circuitViewOnly
+                        color: delSubBtn.pressed ? "#6e2020" : Theme.bgButtonDanger
+                        border.color: Theme.borderDanger; border.width: 1
+                        Text {
+                            anchors.centerIn: parent; text: "删除子电路"
+                            color: Theme.textWhite; font.pixelSize: Theme.fsSmall
+                        }
+                        MouseArea {
+                            id: delSubBtn; anchors.fill: parent
+                            onClicked: {
+                                var sid = main.selectedSubId
+                                main.confirmDialogRef.title = "删除子电路"
+                                main.confirmDialogRef.message = "确定删除该子电路及其所有实例？"
+                                main.confirmDialogRef.action = function() {
+                                    main.circuitRef.deleteSubcircuit(sid)
+                                    main.selectedSubId = ""
+                                }
+                                main.confirmDialogRef.open()
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        width: parent.width; height: 1; color: Theme.border
+                    }
+                }
+
+                // ============ 没有选中任何东西时的提示 ============
                 Text {
-                    visible: main.selectedComp === null && main.selectedIds.length === 0
+                    visible: main.selectedComp === null
+                             && main.selectedIds.length === 0
+                             && main.selectedSubId === ""
                     x: 8; width: parent.width - 16
                     text: main.mode === "select"
                           ? "拖拽画布空白处框选，或点元件选中"
@@ -292,8 +503,11 @@ Rectangle {
                     wrapMode: Text.Wrap
                 }
 
+                // ============ 普通元件属性面板 ============
                 Column {
-                    visible: main.selectedComp !== null && main.mode !== "select"
+                    visible: main.selectedComp !== null
+                             && main.selectedSubId === ""
+                             && main.mode !== "select"
                     x: 6; width: parent.width - 12; spacing: 5
 
                     Text {
@@ -623,6 +837,14 @@ Rectangle {
         property string subName: ""
 
         MenuItem {
+            text: "选中（显示属性）"
+            onTriggered: {
+                main.selectedSubId = subCtxMenu.subId
+                main.placingType = "sub"
+                main.placingSubId = subCtxMenu.subId
+            }
+        }
+        MenuItem {
             text: "重命名"
             onTriggered: {
                 renameDialog.subId = subCtxMenu.subId
@@ -642,6 +864,7 @@ Rectangle {
                 main.confirmDialogRef.message = "确定删除该子电路及其所有实例？"
                 main.confirmDialogRef.action = function() {
                     main.circuitRef.deleteSubcircuit(subCtxMenu.subId)
+                    main.selectedSubId = ""
                 }
                 main.confirmDialogRef.open()
             }
