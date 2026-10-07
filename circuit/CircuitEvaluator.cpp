@@ -66,6 +66,39 @@ bool CircuitEvaluator::evalOne(QVariantMap& c,
             out += r ? '1' : '0';
         }
         newOutList.append(out);
+    } else if (t == "tgate") {
+        // 传输门：D=in0, EN=in1，EN=1 时 Y=D；否则 Y=0
+        QString d = newInList.isEmpty() ? QString(bw, '0') : newInList[0].toString();
+        QString e = newInList.size() > 1 ? newInList[1].toString() : QString(bw, '0');
+        QString out; out.reserve(bw);
+        for (int b = 0; b < bw; ++b) {
+            bool dv = ValueCodec::bitAt(d, b);
+            bool ev = ValueCodec::bitAt(e, b);
+            out += (dv && ev) ? '1' : '0';
+        }
+        newOutList.append(out);
+    } else if (t == "ntran") {
+        // N 型晶体管：G=1 时导通，Y = D AND G
+        QString d = newInList.isEmpty() ? QString(bw, '0') : newInList[0].toString();
+        QString g = newInList.size() > 1 ? newInList[1].toString() : QString(bw, '0');
+        QString out; out.reserve(bw);
+        for (int b = 0; b < bw; ++b) {
+            bool dv = ValueCodec::bitAt(d, b);
+            bool gv = ValueCodec::bitAt(g, b);
+            out += (dv && gv) ? '1' : '0';
+        }
+        newOutList.append(out);
+    } else if (t == "ptran") {
+        // P 型晶体管：G=0 时导通，Y = D AND (NOT G)
+        QString d = newInList.isEmpty() ? QString(bw, '0') : newInList[0].toString();
+        QString g = newInList.size() > 1 ? newInList[1].toString() : QString(bw, '0');
+        QString out; out.reserve(bw);
+        for (int b = 0; b < bw; ++b) {
+            bool dv = ValueCodec::bitAt(d, b);
+            bool gv = ValueCodec::bitAt(g, b);
+            out += (dv && !gv) ? '1' : '0';
+        }
+        newOutList.append(out);
     } else if (t == "splitter") {
         QString mainIn = newInList.isEmpty() ? QString(bw, '0') : newInList[0].toString();
         while (mainIn.length() < bw) mainIn += '0';

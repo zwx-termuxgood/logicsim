@@ -189,6 +189,35 @@ function drawComponent(ctx, comp, compSize, viewScale, viewX, viewY,
         ctx.fillStyle = "#1a2433"; ctx.strokeStyle = isSel ? "#ffffff" : "#a371f7"
         ctx.lineWidth = isSel ? 3 : 2
         Geometry.roundRect(ctx, sp.x, sp.y, w, h, 6 * viewScale); ctx.fill(); ctx.stroke()
+    } else if (t === "tgate" || t === "ntran" || t === "ptran") {
+        // 传输门 / 晶体管
+        ctx.fillStyle = "#1f1a2e"
+        ctx.strokeStyle = isSel ? "#ffffff" : "#9c27b0"
+        ctx.lineWidth = isSel ? 3 : 2
+        Geometry.roundRect(ctx, sp.x, sp.y, w, h, 4 * viewScale); ctx.fill(); ctx.stroke()
+        if (!simplify) {
+            // 简单符号：中间竖直粗线（沟道），左侧栅极
+            var cx2 = sp.x + w * 0.45
+            var cy2 = sp.y + h / 2
+            ctx.strokeStyle = isSel ? "#ffffff" : "#b388ff"
+            ctx.lineWidth = Math.max(1.5, 2 * viewScale)
+            // 沟道竖线
+            ctx.beginPath()
+            ctx.moveTo(cx2, sp.y + h * 0.25)
+            ctx.lineTo(cx2, sp.y + h * 0.75)
+            ctx.stroke()
+            // 栅极竖线
+            ctx.beginPath()
+            ctx.moveTo(cx2 - 6*viewScale, sp.y + h * 0.25)
+            ctx.lineTo(cx2 - 6*viewScale, sp.y + h * 0.75)
+            ctx.stroke()
+            // PMOS 圆圈
+            if (t === "ptran") {
+                ctx.beginPath()
+                ctx.arc(cx2 + 10*viewScale, cy2, 4*viewScale, 0, Math.PI * 2)
+                ctx.stroke()
+            }
+        }
     } else {
         ctx.fillStyle = "#2d2d2d"; ctx.strokeStyle = isSel ? "#ffffff" : "#555555"
         ctx.lineWidth = isSel ? 3 : 2
@@ -286,11 +315,14 @@ function drawComponent(ctx, comp, compSize, viewScale, viewX, viewY,
         else if (t === "splitter") label = "分线器"
         else if (t === "hub") label = "集线器"
         else if (t === "sub") label = comp.name || "SUB"
+        else if (t === "tgate") label = "传输门"
+        else if (t === "ntran") label = "NMOS"
+        else if (t === "ptran") label = "PMOS"
         if (label.length > 0) {
             ctx.fillStyle = "#e0e0e0"
             ctx.font = Math.max(8, Math.round(11 * viewScale)) + "px sans-serif"
             ctx.textAlign = "center"; ctx.textBaseline = "middle"
-            ctx.fillText(label, sp.x + w/2, sp.y + h/2)
+            ctx.fillText(label, sp.x + w/2, sp.y + h/2 + (t === "tgate" || t === "ntran" || t === "ptran" ? 14 * viewScale : 0))
         }
     }
 

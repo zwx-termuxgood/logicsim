@@ -116,6 +116,8 @@ QString Circuit::addComponent(const QString& type, double x, double y,
 
     if (type == "sub" && !canAddSubInstance(subId)) return QString();
 
+    pushUndo();
+
     QVariantMap c;
     Context& ctx = currentCtx();
     c["id"] = QString("C%1").arg(++ctx.compCounter);
@@ -164,6 +166,12 @@ QString Circuit::addComponent(const QString& type, double x, double y,
             inPorts.append(QString(w, '0'));
         }
         outPorts.append(QString(bitWidth, '0'));
+    } else if (type == "tgate" || type == "ntran" || type == "ptran") {
+        // 传输门/晶体管：2 路输入（数据 D、控制 G），1 路输出
+        c["inputCount"] = 2;
+        outPorts.append(QString(bitWidth, '0'));
+        inPorts.append(QString(bitWidth, '0'));
+        inPorts.append(QString(bitWidth, '0'));
     } else {
         int n = 0;
         if (type == "input" || type == "clock" || type == "not" ||
@@ -202,6 +210,8 @@ void Circuit::setTextContent(const QString& id, const QString& content) {
     Context& ctx = currentCtx();
     QVariantMap c = ctx.components[idx].toMap();
     if (c.value("type").toString() != "text") return;
+    if (c.value("content").toString() == content) return;
+    pushUndo("text:" + id);
     c["content"] = content;
     ctx.components[idx] = c;
     emit changed();

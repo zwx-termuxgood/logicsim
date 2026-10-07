@@ -9,6 +9,8 @@
 #include <QHash>
 #include <QSet>
 #include <QTimer>
+#include <QDateTime>
+#include <QList>
 
 #include "CircuitContext.h"
 
@@ -28,6 +30,8 @@ class Circuit : public QObject
     Q_PROPERTY(bool clockRunning READ clockRunning NOTIFY clockChanged)
     Q_PROPERTY(int clockFrequency READ clockFrequency NOTIFY clockChanged)
     Q_PROPERTY(int clockTickCount READ clockTickCount NOTIFY clockChanged)
+    Q_PROPERTY(bool canUndo READ canUndo NOTIFY undoRedoChanged)
+    Q_PROPERTY(bool canRedo READ canRedo NOTIFY undoRedoChanged)
 
 public:
     explicit Circuit(QObject* parent = nullptr);
@@ -45,6 +49,8 @@ public:
     bool clockRunning() const { return m_clockRunning; }
     int clockFrequency() const { return m_clockFrequency; }
     int clockTickCount() const { return m_clockTickCount; }
+    bool canUndo() const { return !m_undoStack.isEmpty(); }
+    bool canRedo() const { return !m_redoStack.isEmpty(); }
 
     static int componentInputCount(const QVariantMap& comp);
     static int componentOutputCount(const QVariantMap& comp);
@@ -121,6 +127,11 @@ public:
     Q_INVOKABLE QString addText(double x, double y, const QString& text = QString("文本"));
     Q_INVOKABLE void setTextContent(const QString& id, const QString& content);
 
+    // ---- 撤销 / 重做 ----
+    Q_INVOKABLE void undo();
+    Q_INVOKABLE void redo();
+    Q_INVOKABLE void breakUndoMerge();
+
 signals:
     void changed();
     void geometryChanged();
@@ -130,6 +141,7 @@ signals:
     void errorsChanged();
     void recentFilesChanged();
     void clockChanged();
+    void undoRedoChanged();
 
 private slots:
     void tick();
@@ -152,6 +164,14 @@ private:
     QTimer* m_clockTimer = nullptr;
     QHash<QString, bool> m_clockStates;
 
+    // ---- 撤销 / 重做栈 ----
+    QList<QVariantMap> m_undoStack;
+    QList<QVariantMap> m_redoStack;
+    QString m_lastMergeKey;
+    QDateTime m_lastUndoTime;
+    bool m_undoRestoring = false;
+    int m_maxUndo = 200;
+
     Context& currentCtx();
     const Context& currentCtx() const;
     Context* ctxById(const QString& id);
@@ -166,6 +186,9 @@ private:
     void saveRecentFiles();
 
     bool hasSubCycle(const QString& fromCtx, const QString& targetId, QSet<QString>& visited) const;
+
+    void pushUndo(const QString& mergeKey = QString());
+    void restoreSnapshot(const QVariantMap& snap);
 };
 
 #endif // CIRCUIT_H

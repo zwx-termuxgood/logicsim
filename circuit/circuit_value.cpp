@@ -15,6 +15,8 @@ void Circuit::setInputBase(const QString& id, const QString& base) {
     if (idx < 0) return;
     Context& ctx = currentCtx();
     QVariantMap c = ctx.components[idx].toMap();
+    if (c.value("displayBase").toString() == base) return;
+    pushUndo("base:" + id);
     c["displayBase"] = base;
     ctx.components[idx] = c;
     emit changed();
@@ -53,6 +55,8 @@ QString Circuit::setInputFromString(const QString& id, const QString& text) {
     QString err;
     QVariantList bits = ValueCodec::parse(text, base, bw, &err);
     if (!err.isEmpty()) return err;
+    if (c.value("inputBits").toList() == bits) return "";
+    pushUndo("inputval:" + id);
     c["inputBits"] = bits;
     ctx.components[idx] = c;
     evaluateAll();

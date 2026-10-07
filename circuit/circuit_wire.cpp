@@ -11,6 +11,8 @@ QString Circuit::addWire(const QString& fromComp, int fromPort,
     if (fromComp == toComp) return QString();
     Context& ctx = currentCtx();
 
+    pushUndo();
+
     for (int i = ctx.wires.size() - 1; i >= 0; --i) {
         auto w = ctx.wires[i].toMap();
         if (w.value("toComp").toString() == toComp && w.value("toPort").toInt() == toPort)
@@ -33,6 +35,7 @@ void Circuit::removeWire(const QString& id) {
     if (m_viewOnly) return;
     int idx = indexOfWire(id);
     if (idx < 0) return;
+    pushUndo();
     currentCtx().wires.removeAt(idx);
     evaluateAll();
     emit changed();

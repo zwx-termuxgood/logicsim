@@ -104,6 +104,10 @@ ApplicationWindow {
             canvasView.requestPaint()
             root.refreshSel()
             errorDebounce.restart()
+            // 任何修改都会触发 changed，标记为脏
+            if (!root.forceQuit) {
+                root.dirty = true
+            }
         }
         onGeometryChanged: {
             var comps = circuit.components
@@ -174,6 +178,19 @@ ApplicationWindow {
         recentList = circuit.recentFiles
         rebuildCaches()
         triggerRepaint()
+        root.dirty = false
+    }
+
+    // ============ 快捷键 ============
+    Shortcut {
+        sequence: StandardKey.Undo
+        enabled: circuit.canUndo && !circuit.isViewOnly
+        onActivated: circuit.undo()
+    }
+    Shortcut {
+        sequence: StandardKey.Redo
+        enabled: circuit.canRedo && !circuit.isViewOnly
+        onActivated: circuit.redo()
     }
 
     // ============ 辅助函数 ============

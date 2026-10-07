@@ -56,21 +56,39 @@ void Circuit::setClockFrequency(int hz) {
 void Circuit::singleStep() { tick(); }
 
 void Circuit::resetAllInputs() {
+    if (m_viewOnly) return;
+    pushUndo();
+
+    // 复位时钟拍数
+    m_clockTickCount = 0;
+
+    // 复位所有时钟状态
+    for (auto it = m_clockStates.begin(); it != m_clockStates.end(); ++it)
+        it.value() = false;
+
     auto resetCtx = [&](Context& ctx) {
         for (int i = 0; i < ctx.components.size(); ++i) {
             QVariantMap c = ctx.components[i].toMap();
-            if (c.value("type").toString() != "input") continue;
+            QString t = c.value("type").toString();
             int bw = c.value("bitWidth").toInt();
             if (bw < 1) bw = 1;
-            QVariantList bits;
-            for (int k = 0; k < bw; ++k) bits.append(false);
-            c["inputBits"] = bits;
-            ctx.components[i] = c;
+            if (t == "input") {
+                QVariantList bits;
+                for (int k = 0; k < bw; ++k) bits.append(false);
+                c["inputBits"] = bits;
+                ctx.components[i] = c;
+            } else if (t == "clock") {
+                QVariantList out;
+                out.append(QString(bw, '0'));
+                c["outputPorts"] = out;
+                ctx.components[i] = c;
+            }
         }
     };
     resetCtx(m_root);
     for (auto it = m_subContexts.begin(); it != m_subContexts.end(); ++it)
         resetCtx(it.value());
     evaluateAll();
+    emit clockChanged();
     emit changed();
 }

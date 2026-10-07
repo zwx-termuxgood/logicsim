@@ -41,6 +41,11 @@ Rectangle {
             { type: "xor", name: "异或" },
             { type: "xnor", name: "同或" }
         ]},
+        { name: "传输门 / 晶体管", items: [
+            { type: "tgate", name: "传输门" },
+            { type: "ntran", name: "NMOS 管" },
+            { type: "ptran", name: "PMOS 管" }
+        ]},
         { name: "工具", items: [
             { type: "splitter", name: "分线器" },
             { type: "hub", name: "集线器" }
@@ -541,6 +546,25 @@ Rectangle {
                                     main.circuitRef.setTextContent(main.selectedCompId, text)
                                 }
                             }
+                        }
+                    }
+
+                    // ---- 传输门 / 晶体管说明 ----
+                    Column {
+                        visible: main.selectedComp &&
+                                 (main.selectedComp.type === "tgate" ||
+                                  main.selectedComp.type === "ntran" ||
+                                  main.selectedComp.type === "ptran")
+                        spacing: 4; width: parent.width
+                        Text {
+                            text: main.selectedComp && main.selectedComp.type === "tgate"
+                                  ? "端口：D(数据) / EN(使能) → Y\nEN=1 时 Y=D，否则 Y=0"
+                                  : (main.selectedComp && main.selectedComp.type === "ntran"
+                                     ? "端口：D(数据) / G(栅极) → Y\nG=1 时导通：Y=D"
+                                     : "端口：D(数据) / G(栅极) → Y\nG=0 时导通：Y=D")
+                            color: Theme.textFaint
+                            font.pixelSize: Theme.fsTiny
+                            width: parent.width; wrapMode: Text.Wrap
                         }
                     }
 

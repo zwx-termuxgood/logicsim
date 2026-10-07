@@ -64,6 +64,40 @@ Rectangle {
 
         Rectangle { width: 1; height: 22; color: Theme.borderStrong }
 
+        // ============ 撤销 / 重做 ============
+        Rectangle {
+            Layout.preferredWidth: 28; Layout.preferredHeight: 28
+            radius: Theme.buttonRadius
+            color: undoBtn.pressed && main.circuitRef.canUndo
+                   ? Theme.bgButtonHover : Theme.bgButton
+            border.color: Theme.borderStrong; border.width: 1
+            opacity: main.circuitRef.canUndo ? 1 : 0.4
+            Text { anchors.centerIn: parent; text: "↶"
+                color: Theme.text; font.pixelSize: 15 }
+            MouseArea {
+                id: undoBtn; anchors.fill: parent
+                enabled: main.circuitRef.canUndo && !main.circuitViewOnly
+                onClicked: main.circuitRef.undo()
+            }
+        }
+        Rectangle {
+            Layout.preferredWidth: 28; Layout.preferredHeight: 28
+            radius: Theme.buttonRadius
+            color: redoBtn.pressed && main.circuitRef.canRedo
+                   ? Theme.bgButtonHover : Theme.bgButton
+            border.color: Theme.borderStrong; border.width: 1
+            opacity: main.circuitRef.canRedo ? 1 : 0.4
+            Text { anchors.centerIn: parent; text: "↷"
+                color: Theme.text; font.pixelSize: 15 }
+            MouseArea {
+                id: redoBtn; anchors.fill: parent
+                enabled: main.circuitRef.canRedo && !main.circuitViewOnly
+                onClicked: main.circuitRef.redo()
+            }
+        }
+
+        Rectangle { width: 1; height: 22; color: Theme.borderStrong }
+
         Rectangle {
             Layout.preferredWidth: 42; Layout.preferredHeight: 28
             radius: Theme.buttonRadius

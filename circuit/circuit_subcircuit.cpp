@@ -2,6 +2,7 @@
 
 QString Circuit::addSubcircuit(const QString& name) {
     if (m_viewOnly) return QString();
+    pushUndo();
     QString id = QString("S%1").arg(++m_subCounter);
     Context ctx;
     m_subContexts[id] = ctx;
@@ -15,6 +16,7 @@ QString Circuit::addSubcircuit(const QString& name) {
 void Circuit::deleteSubcircuit(const QString& subId) {
     if (m_viewOnly) return;
     if (!m_subContexts.contains(subId)) return;
+    pushUndo();
     m_subContexts.remove(subId);
     m_subNames.remove(subId);
     auto removeFrom = [&](Context& ctx) {
@@ -40,6 +42,8 @@ void Circuit::deleteSubcircuit(const QString& subId) {
 void Circuit::setSubcircuitName(const QString& subId, const QString& name) {
     if (m_viewOnly) return;
     if (!m_subNames.contains(subId)) return;
+    if (m_subNames.value(subId) == name) return;
+    pushUndo();
     m_subNames[subId] = name;
     emit subcircuitsChanged();
     emit editContextsChanged();

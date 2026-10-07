@@ -38,8 +38,9 @@ QVariantList outputPorts(const QVariantMap& comp) {
         p["bitWidth"] = ComponentTraits::outputBitWidth(comp, 0);
         result.append(p);
     } else if (t == "not" || t == "and" || t == "or" || t == "nand" ||
-               t == "nor" || t == "xor" || t == "xnor" || t == "sub") {
-        W = t == "sub" ? 110.0 : 80.0;
+               t == "nor" || t == "xor" || t == "xnor" || t == "sub" ||
+               t == "tgate" || t == "ntran" || t == "ptran") {
+        W = (t == "sub") ? 110.0 : 80.0;
         int ic = ComponentTraits::inputCount(comp);
         int oc = n; if (oc < 1) oc = 1;
         H = qMax(60.0, (double)qMax(ic, oc) * 24.0);
@@ -95,8 +96,9 @@ QVariantList inputPorts(const QVariantMap& comp) {
         p["bitWidth"] = ComponentTraits::inputBitWidth(comp, 0);
         result.append(p);
     } else if (t == "and" || t == "or" || t == "nand" ||
-               t == "nor" || t == "xor" || t == "xnor" || t == "sub") {
-        W = t == "sub" ? 110.0 : 80.0;
+               t == "nor" || t == "xor" || t == "xnor" || t == "sub" ||
+               t == "tgate" || t == "ntran" || t == "ptran") {
+        W = (t == "sub") ? 110.0 : 80.0;
         H = qMax(60.0, (double)n * 24.0);
         for (int i = 0; i < n; ++i) {
             QVariantMap p;

@@ -15,6 +15,7 @@ int inputCount(const QVariantMap& comp) {
     if (t == "splitter") return 1;
     if (t == "hub") return qMax(1, comp.value("outputSplits").toList().size());
     if (t == "sub") return comp.value("subInputNames").toList().size();
+    if (t == "tgate" || t == "ntran" || t == "ptran") return 2; // D, G/EN
     return 0;
 }
 
@@ -28,6 +29,7 @@ int outputCount(const QVariantMap& comp) {
     if (t == "hub") return 1;
     if (t == "led" || t == "output") return 0;
     if (t == "sub") return comp.value("subOutputNames").toList().size();
+    if (t == "tgate" || t == "ntran" || t == "ptran") return 1;
     return 0;
 }
 
@@ -37,6 +39,7 @@ int outputBitWidth(const QVariantMap& comp, int portIdx) {
     if (bw < 1) bw = 1;
     if (t == "input" || t == "clock" || t == "not" || t == "and" || t == "or" ||
         t == "nand" || t == "nor" || t == "xor" || t == "xnor") return bw;
+    if (t == "tgate" || t == "ntran" || t == "ptran") return bw;
     if (t == "splitter") {
         QVariantList splits = comp.value("outputSplits").toList();
         if (portIdx >= 0 && portIdx < splits.size()) {

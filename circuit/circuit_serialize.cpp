@@ -39,6 +39,8 @@ void Circuit::refreshErrors() {
 }
 
 void Circuit::clear() {
+    if (m_viewOnly) return;
+    pushUndo();
     m_root = Context();
     m_subContexts.clear();
     m_subNames.clear();
@@ -59,7 +61,7 @@ void Circuit::clear() {
 
 QVariantMap Circuit::toJson() const {
     QVariantMap result;
-    result["version"] = 9;
+    result["version"] = 10;
     result["root"] = QVariantMap{
         {"components", m_root.components},
         {"wires", m_root.wires},
@@ -80,6 +82,7 @@ QVariantMap Circuit::toJson() const {
     result["subcircuits"] = subs;
     result["subCounter"] = m_subCounter;
     result["clockFrequency"] = m_clockFrequency;
+    result["clockTickCount"] = m_clockTickCount;
     return result;
 }
 
@@ -113,6 +116,8 @@ bool Circuit::fromJson(const QVariantMap& data) {
     m_subCounter = data.value("subCounter").toInt();
     m_clockFrequency = qBound(1, data.value("clockFrequency").toInt(), 1000);
     if (m_clockFrequency < 1) m_clockFrequency = 2;
+    m_clockTickCount = data.value("clockTickCount").toInt();
+    if (m_clockTickCount < 0) m_clockTickCount = 0;
 
     auto fixCtx = [&](Context& ctx) {
         for (int i = 0; i < ctx.components.size(); ++i) {
@@ -139,6 +144,15 @@ bool Circuit::fromJson(const QVariantMap& data) {
     };
     fixCtx(m_root);
     for (auto it = m_subContexts.begin(); it != m_subContexts.end(); ++it) fixCtx(it.value());
+
+    // 非撤销/重做时（即从文件加载），清空撤销/重做栈
+    if (!m_undoRestoring) {
+        m_undoStack.clear();
+        m_redoStack.clear();
+        m_lastMergeKey.clear();
+        m_lastUndoTime = QDateTime();
+        emit undoRedoChanged();
+    }
 
     evaluateAll();
     emit contextChanged();
@@ -172,4 +186,81 @@ bool Circuit::loadFromFile(const QString& path) {
     bool ok = fromJson(doc.object().toVariantMap());
     if (ok) addRecentFile(path);
     return ok;
+}
+
+// ============================================================
+// 撤销 / 重做实现
+// ============================================================
+
+void Circuit::pushUndo(const QString& mergeKey) {
+    if (m_viewOnly) return;
+    if (m_undoRestoring) return;
+
+    // 合并逻辑：相同 key 且间隔 < 500ms 时合并为一次
+    if (!mergeKey.isEmpty() && mergeKey == m_lastMergeKey) {
+        if (m_lastUndoTime.isValid() &&
+            m_lastUndoTime.msecsTo(QDateTime::currentDateTime()) < 500) {
+            m_lastUndoTime = QDateTime::currentDateTime();
+            return;
+        }
+    }
+
+    m_undoStack.append(toJson());
+    while (m_undoStack.size() > m_maxUndo) m_undoStack.removeFirst();
+    m_redoStack.clear();
+    m_lastMergeKey = mergeKey;
+    m_lastUndoTime = QDateTime::currentDateTime();
+    emit undoRedoChanged();
+}
+
+void Circuit::breakUndoMerge() {
+    m_lastMergeKey.clear();
+    m_lastUndoTime = QDateTime();
+}
+
+void Circuit::undo() {
+    if (m_viewOnly) return;
+    if (m_undoStack.isEmpty()) return;
+
+    QVariantMap cur = toJson();
+    QVariantMap prev = m_undoStack.takeLast();
+    m_redoStack.append(cur);
+    while (m_redoStack.size() > m_maxUndo) m_redoStack.removeFirst();
+    breakUndoMerge();
+    restoreSnapshot(prev);
+    emit undoRedoChanged();
+}
+
+void Circuit::redo() {
+    if (m_viewOnly) return;
+    if (m_redoStack.isEmpty()) return;
+
+    QVariantMap cur = toJson();
+    QVariantMap next = m_redoStack.takeLast();
+    m_undoStack.append(cur);
+    while (m_undoStack.size() > m_maxUndo) m_undoStack.removeFirst();
+    breakUndoMerge();
+    restoreSnapshot(next);
+    emit undoRedoChanged();
+}
+
+void Circuit::restoreSnapshot(const QVariantMap& snap) {
+    QString savedCtx = m_currentCtxId;
+    bool savedView = m_viewOnly;
+
+    m_undoRestoring = true;
+    fromJson(snap);
+    m_undoRestoring = false;
+
+    // 如果之前的上下文已不存在（例如撤销掉了该子电路），回到主电路
+    if (!savedCtx.isEmpty() && !m_subContexts.contains(savedCtx)) {
+        savedCtx = "";
+        savedView = false;
+    }
+    if (savedCtx != m_currentCtxId || savedView != m_viewOnly) {
+        m_currentCtxId = savedCtx;
+        m_viewOnly = savedView;
+        emit contextChanged();
+    }
+    emit changed();
 }

@@ -1,11 +1,13 @@
 #include "circuit.h"
 #include <QVariantMap>
 #include <QSet>
+#include <QtGlobal>
 
 void Circuit::removeComponent(const QString& id) {
     if (m_viewOnly) return;
     int idx = indexOfComponent(id);
     if (idx < 0) return;
+    pushUndo();
     Context& ctx = currentCtx();
     QVariantMap c = ctx.components[idx].toMap();
     if (c.value("type").toString() == "clock") m_clockStates.remove(id);
@@ -21,6 +23,13 @@ void Circuit::removeComponent(const QString& id) {
 
 void Circuit::removeComponents(const QStringList& ids) {
     if (m_viewOnly) return;
+    if (ids.isEmpty()) return;
+    bool any = false;
+    for (const auto& cv : currentCtx().components) {
+        if (ids.contains(cv.toMap().value("id").toString())) { any = true; break; }
+    }
+    if (!any) return;
+    pushUndo();
     Context& ctx = currentCtx();
     for (int i = ctx.components.size() - 1; i >= 0; --i) {
         auto c = ctx.components[i].toMap();
@@ -46,6 +55,10 @@ void Circuit::moveComponent(const QString& id, double x, double y) {
     if (idx < 0) return;
     Context& ctx = currentCtx();
     QVariantMap c = ctx.components[idx].toMap();
+    double ox = c.value("x").toDouble();
+    double oy = c.value("y").toDouble();
+    if (qAbs(ox - x) < 1e-9 && qAbs(oy - y) < 1e-9) return;
+    pushUndo("move:" + id);
     c["x"] = x; c["y"] = y;
     ctx.components[idx] = c;
     emit geometryChanged();
@@ -54,9 +67,16 @@ void Circuit::moveComponent(const QString& id, double x, double y) {
 void Circuit::moveSelection(const QStringList& ids, double dx, double dy) {
     if (m_viewOnly) return;
     if (ids.isEmpty()) return;
+    if (qAbs(dx) < 1e-9 && qAbs(dy) < 1e-9) return;
     Context& ctx = currentCtx();
     QSet<QString> idSet;
     for (const auto& id : ids) idSet.insert(id);
+    bool any = false;
+    for (int i = 0; i < ctx.components.size(); ++i) {
+        if (idSet.contains(ctx.components[i].toMap().value("id").toString())) { any = true; break; }
+    }
+    if (!any) return;
+    pushUndo("moveSel");
     for (int i = 0; i < ctx.components.size(); ++i) {
         QVariantMap c = ctx.components[i].toMap();
         if (idSet.contains(c.value("id").toString())) {
@@ -75,6 +95,7 @@ void Circuit::toggleInput(const QString& id) {
     Context& ctx = currentCtx();
     QVariantMap c = ctx.components[idx].toMap();
     if (c.value("type").toString() != "input") return;
+    pushUndo();
     QVariantList bits = c.value("inputBits").toList();
     int bw = c.value("bitWidth").toInt();
     if (bw < 1) bw = 1;
@@ -100,6 +121,8 @@ void Circuit::setBitValue(const QString& id, int bit, bool value) {
     while (bits.size() < bw) bits.append(false);
     while (bits.size() > bw) bits.removeLast();
     if (bit < 0 || bit >= bits.size()) return;
+    if (bits[bit].toBool() == value) return;
+    pushUndo("bit:" + id);
     bits[bit] = value;
     c["inputBits"] = bits;
     ctx.components[idx] = c;
@@ -113,6 +136,13 @@ void Circuit::setComponentProp(const QString& id, const QString& key, const QVar
     if (idx < 0) return;
     Context& ctx = currentCtx();
     QVariantMap c = ctx.components[idx].toMap();
+    // 检查值是否发生变化
+    if (key == "bitWidth" || key == "inputCount") {
+        if (c.value(key).toInt() == value.toInt()) return;
+    } else {
+        if (c.value(key) == value) return;
+    }
+    pushUndo("prop:" + id + ":" + key);
     if (key == "bitWidth") {
         int bw = value.toInt();
         if (bw < 1) bw = 1;
@@ -152,6 +182,8 @@ void Circuit::renameComponent(const QString& id, const QString& name) {
     if (idx < 0) return;
     Context& ctx = currentCtx();
     QVariantMap c = ctx.components[idx].toMap();
+    if (c.value("name").toString() == name) return;
+    pushUndo("rename:" + id);
     c["name"] = name;
     ctx.components[idx] = c;
     emit changed();
@@ -179,6 +211,8 @@ void Circuit::setSplitterSplits(const QString& id, const QString& splitsStr) {
         splits.append(v); sum += v;
     }
     if (sum != bw || splits.isEmpty()) return;
+    if (c.value("outputSplits").toList() == splits) return;
+    pushUndo("splits:" + id);
     c["outputSplits"] = splits;
     ctx.components[idx] = c;
     evaluateAll();

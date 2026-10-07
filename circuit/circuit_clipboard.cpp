@@ -30,6 +30,10 @@ QStringList Circuit::pasteSelection(const QVariantList& data, double dx, double 
     QVariantMap d = data[0].toMap();
     QVariantList comps = d.value("components").toList();
     QVariantList wires = d.value("wires").toList();
+    if (comps.isEmpty()) return newIds;
+
+    pushUndo();
+
     Context& ctx = currentCtx();
 
     QHash<QString, QString> idMap;

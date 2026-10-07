@@ -9,7 +9,7 @@ Popup {
 
     anchors.centerIn: parent
     width: 340
-    height: 440
+    height: 500
     modal: true
     focus: true
     closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
@@ -89,6 +89,9 @@ Popup {
         statModel.append({ k: "  或非 NOR", v: s.byType["nor"] || 0 })
         statModel.append({ k: "  异或 XOR", v: s.byType["xor"] || 0 })
         statModel.append({ k: "  同或 XNOR", v: s.byType["xnor"] || 0 })
+        statModel.append({ k: "  传输门 TG", v: s.byType["tgate"] || 0 })
+        statModel.append({ k: "  NMOS 管", v: s.byType["ntran"] || 0 })
+        statModel.append({ k: "  PMOS 管", v: s.byType["ptran"] || 0 })
         statModel.append({ k: "输入元件", v: s.totalInputs })
         statModel.append({ k: "输出 / LED", v: s.totalOutputs })
         statModel.append({ k: "分线器", v: s.totalSplits })
