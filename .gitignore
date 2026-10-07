@@ -1,0 +1,107 @@
+# =========================
+# 项目构建目录
+# =========================
+/build/
+/win_static/
+/build-*/
+/cmake-build-*/
+/out/
+
+# =========================
+# CMake / Ninja / Make
+# =========================
+CMakeCache.txt*
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+install_manifest.txt
+compile_commands.json
+build.ninja
+rules.ninja
+.ninja_deps
+.ninja_log
+Makefile
+*.make
+
+# =========================
+# Qt 自动生成文件
+# =========================
+*_autogen/
+moc_*.cpp
+moc_*.h
+moc_predefs.h
+qrc_*.cpp
+ui_*.h
+*_qmltyperegistrations.cpp
+*_qml_module_dir_map.qrc
+qmlcache/
+*.qmlc
+*.jsc
+.qmake.stash
+
+# =========================
+# 编译产物 / 二进制
+# =========================
+*.o
+*.obj
+*.lo
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.out
+*.app
+*.class
+*.dex
+*.apk
+*.aab
+*.ap_
+*.pdb
+*.ilk
+*.idb
+*.exp
+*.d
+
+# =========================
+# Android / Gradle
+# =========================
+.gradle/
+/local.properties
+/captures/
+/.externalNativeBuild/
+/.cxx/
+/android-build*/
+
+# =========================
+# IDE / 编辑器
+# =========================
+.idea/
+.vscode/
+*.iml
+*.pro.user
+*.pro.user.*
+*.qmlproject.user
+*.qmlproject.user.*
+CMakeLists.txt.user
+CMakeLists.txt.user.*
+*.autosave
+*.swp
+*~
+
+# =========================
+# 系统文件
+# =========================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# =========================
+# 日志 / 临时文件
+# =========================
+*.log
+*.tmp
+*.bak
+Testing/Temporary/
