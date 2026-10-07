@@ -5,7 +5,14 @@
 #include <QDebug>
 
 // ============================================================
-// evalOne —— 单个元件求值（同前，未改动）
+// 前置声明
+// ============================================================
+static bool evalRecursive(CircuitContext& ctx,
+                          const QHash<QString, CircuitContext>& subContexts,
+                          int depth);
+
+// ============================================================
+// evalOne —— 单个元件求值
 // ============================================================
 bool CircuitEvaluator::evalOne(QVariantMap& c,
                                const QHash<QString, QPair<int,int>>& inputMap,
@@ -23,6 +30,7 @@ bool CircuitEvaluator::evalOne(QVariantMap& c,
     const QVariantList oldInList = c.value("inputPortValues").toList();
     const QString idPrefix = id + ':';
 
+    // ---------- 1. 计算输入端口的当前值 ----------
     QVariantList newInList;
     newInList.reserve(ic);
     bool inputChanged = false;
@@ -42,8 +50,11 @@ bool CircuitEvaluator::evalOne(QVariantMap& c,
                 const QVariantList fo = comps[fi].value("outputPorts").toList();
                 if (fp >= 0 && fp < fo.size()) {
                     const QString srcStr = fo[fp].toString();
-                    if (srcStr.length() == bwp) bits = srcStr;
-                    else                        bits = QString(bwp, 'E');
+                    if (srcStr.length() == bwp) {
+                        bits = srcStr;
+                    } else {
+                        bits = QString(bwp, 'E');
+                    }
                 }
             }
         }
@@ -61,13 +72,16 @@ bool CircuitEvaluator::evalOne(QVariantMap& c,
         changed = true;
     }
 
+    // ---------- 2. 计算输出端口的值 ----------
     QVariantList newOutList;
 
     if (t == "input") {
         QVariant ov = c.value("outputOverride");
         QString ovStr = ov.isValid() ? ov.toString() : QString();
-        if (!ovStr.isEmpty()) newOutList.append(ovStr);
-        else                  newOutList.append(ValueCodec::bitsToString(c.value("inputBits").toList(), bw));
+        if (!ovStr.isEmpty())
+            newOutList.append(ovStr);
+        else
+            newOutList.append(ValueCodec::bitsToString(c.value("inputBits").toList(), bw));
     }
     else if (t == "clock") {
         newOutList = c.value("outputPorts").toList();
@@ -169,14 +183,16 @@ bool CircuitEvaluator::evalOne(QVariantMap& c,
             if (len < 1) len = 1;
             offset -= len;
             if (offset < 0) offset = 0;
-            QString out; out.reserve(len);
+            QString out;
+            out.reserve(len);
             for (int b = 0; b < len; ++b)
                 out += mainIn[offset + b];
             newOutList.append(out);
         }
     }
     else if (t == "hub") {
-        QString merged; merged.reserve(bw + 8);
+        QString merged;
+        merged.reserve(bw + 8);
         for (int s = newInList.size() - 1; s >= 0; --s) {
             int len = ComponentTraits::inputBitWidth(c, s);
             QString sv = newInList[s].toString();
@@ -203,7 +219,7 @@ bool CircuitEvaluator::evalOne(QVariantMap& c,
 }
 
 // ============================================================
-// evaluateContext —— 同前，未改动
+// evaluateContext —— 单个上下文求值
 // ============================================================
 bool CircuitEvaluator::evaluateContext(CircuitContext& ctx) {
     const int n = ctx.components.size();
@@ -283,7 +299,7 @@ bool CircuitEvaluator::evaluateContext(CircuitContext& ctx) {
 }
 
 // ============================================================
-// syncSubPins —— 同前，未改动
+// syncSubPins —— 子电路引脚元信息同步
 // ============================================================
 void CircuitEvaluator::syncSubPins(CircuitContext& ctx,
                                    const QHash<QString, CircuitContext>& subContexts) {
@@ -321,8 +337,9 @@ void CircuitEvaluator::syncSubPins(CircuitContext& ctx,
             QVariantList newIn;
             newIn.reserve(subInputNames.size());
             for (int k = 0; k < subInputNames.size(); ++k) {
-                if (k < inVals.size()) newIn.append(inVals[k]);
-                else {
+                if (k < inVals.size()) {
+                    newIn.append(inVals[k]);
+                } else {
                     int w = subInputWidths.value(k).toInt();
                     if (w < 1) w = 1;
                     newIn.append(QString(w, '0'));
@@ -337,8 +354,9 @@ void CircuitEvaluator::syncSubPins(CircuitContext& ctx,
             QVariantList newOut;
             newOut.reserve(subOutputNames.size());
             for (int k = 0; k < subOutputNames.size(); ++k) {
-                if (k < outVals.size()) newOut.append(outVals[k]);
-                else {
+                if (k < outVals.size()) {
+                    newOut.append(outVals[k]);
+                } else {
                     int w = subOutputWidths.value(k).toInt();
                     if (w < 1) w = 1;
                     newOut.append(QString(w, '0'));
@@ -353,21 +371,8 @@ void CircuitEvaluator::syncSubPins(CircuitContext& ctx,
 }
 
 // ============================================================
-// 递归求值核心（静态）
+// evalInstance —— 对一个 sub 实例独立求值（克隆式）
 // ============================================================
-static bool evalRecursive(CircuitContext& ctx,
-                          const QHash<QString, CircuitContext>& subContexts,
-                          int depth);
-
-// ------------------------------------------------------------
-// evalInstance —— 对一个 sub 实例独立求值
-//
-//  关键点（相对上一版新增）：
-//    ① 每个实例都**保存并恢复**自己的内部状态（每个组件的 outputPorts
-//       以及嵌套 sub 实例的 _state）。
-//    ② 这样，DFF 内部的交叉耦合 NOR 节点（C8/C9）能在多次求值间保持，
-//       而不是每次收敛到同一个退化不动点。
-// ------------------------------------------------------------
 static bool evalInstance(QVariantMap& subInst,
                          const QHash<QString, CircuitContext>& subContexts,
                          int depth)
@@ -377,30 +382,10 @@ static bool evalInstance(QVariantMap& subInst,
     auto sit = subContexts.constFind(subId);
     if (sit == subContexts.constEnd()) return false;
 
-    // 1) 克隆子定义
+    // 1) 克隆子定义（值拷贝，不再共享）
     CircuitContext instCtx = sit.value();
 
-    // 2) 从实例的 _state 恢复内部状态（若有）
-    QVariantMap savedState = subInst.value("_state").toMap();
-    if (!savedState.isEmpty()) {
-        for (int j = 0; j < instCtx.components.size(); ++j) {
-            QVariantMap sc = instCtx.components[j].toMap();
-            QString cid = sc.value("id").toString();
-            if (!savedState.contains(cid)) continue;
-
-            QVariantMap cs = savedState.value(cid).toMap();
-            // 恢复组件的输出（这是反馈节点的实际状态）
-            if (cs.contains("outputPorts"))
-                sc["outputPorts"] = cs.value("outputPorts");
-            // 递归恢复嵌套 sub 实例的状态
-            if (cs.contains("_state"))
-                sc["_state"] = cs.value("_state");
-
-            instCtx.components[j] = sc;
-        }
-    }
-
-    // 3) 把实例输入灌入克隆的 input 元件（覆盖上一步恢复的旧输入）
+    // 2) 把实例的输入灌入克隆的 input 元件
     const QVariantList inVals = subInst.value("inputPortValues").toList();
     int idx = 0;
     for (int j = 0; j < instCtx.components.size(); ++j) {
@@ -425,10 +410,10 @@ static bool evalInstance(QVariantMap& subInst,
         ++idx;
     }
 
-    // 4) 递归求值（克隆里可能还有 sub 实例）
+    // 3) 递归求值
     evalRecursive(instCtx, subContexts, depth + 1);
 
-    // 5) 收集输出元件值 → 回灌 subInst
+    // 4) 收集 output 元件的值 → 回灌 subInst
     QVariantList newOut;
     for (int j = 0; j < instCtx.components.size(); ++j) {
         QVariantMap sc = instCtx.components[j].toMap();
@@ -441,37 +426,16 @@ static bool evalInstance(QVariantMap& subInst,
         newOut.append(v);
     }
 
-    // 6) 保存所有组件的新状态（含嵌套 sub 的 _state）
-    QVariantMap newState;
-    for (int j = 0; j < instCtx.components.size(); ++j) {
-        QVariantMap sc = instCtx.components[j].toMap();
-        QString cid = sc.value("id").toString();
-        QVariantMap cs;
-        cs["outputPorts"] = sc.value("outputPorts");
-        if (sc.contains("_state")) cs["_state"] = sc.value("_state");
-        newState[cid] = cs;
-    }
-
-    bool changed = false;
-
     if (subInst.value("outputPorts").toList() != newOut) {
         subInst["outputPorts"] = newOut;
-        changed = true;
+        return true;
     }
-    if (subInst.value("_state").toMap() != newState) {
-        subInst["_state"] = newState;
-        changed = true;
-    }
-
-    return changed;
+    return false;
 }
 
-// ------------------------------------------------------------
+// ============================================================
 // evalRecursive —— 求值 ctx 内的所有门 + 递归求值其 sub 实例
-//
-//  注意：对每个 sub 实例，无条件写回 ctx.components[i]，
-//        以便 _state 变化能持久化到父上下文。
-// ------------------------------------------------------------
+// ============================================================
 static bool evalRecursive(CircuitContext& ctx,
                           const QHash<QString, CircuitContext>& subContexts,
                           int depth)
@@ -479,23 +443,20 @@ static bool evalRecursive(CircuitContext& ctx,
     if (depth > 32) return false;
     bool anyChanged = false;
 
-    for (int iter = 0; iter < 16; ++iter) {
+    for (int iter = 0; iter < 8; ++iter) {
         bool iterChanged = false;
 
         // (a) 本上下文所有门
         if (CircuitEvaluator::evaluateContext(ctx)) iterChanged = true;
 
-        // (b) 逐个 sub 实例独立求值
+        // (b) 逐个 sub 实例独立求值（克隆式）
         for (int i = 0; i < ctx.components.size(); ++i) {
             QVariantMap c = ctx.components[i].toMap();
             if (c.value("type").toString() != "sub") continue;
-
-            bool instChanged = evalInstance(c, subContexts, depth);
-
-            // 无条件写回：即使输出未变，_state 也可能更新了
-            ctx.components[i] = c;
-
-            if (instChanged) iterChanged = true;
+            if (evalInstance(c, subContexts, depth)) {
+                ctx.components[i] = c;
+                iterChanged = true;
+            }
         }
 
         // (c) 实例新输出再喂给本上下文下游门
@@ -514,6 +475,7 @@ static bool evalRecursive(CircuitContext& ctx,
 // ============================================================
 void CircuitEvaluator::evaluateAll(CircuitContext& root,
                                    QHash<QString, CircuitContext>& subContexts) {
+    // 结构元数据同步（引脚名、位宽、端口数）
     syncSubPins(root, subContexts);
     for (auto it = subContexts.begin(); it != subContexts.end(); ++it)
         syncSubPins(it.value(), subContexts);
@@ -521,4 +483,17 @@ void CircuitEvaluator::evaluateAll(CircuitContext& root,
     if (root.components.isEmpty()) return;
 
     evalRecursive(root, subContexts, 0);
+}
+
+// ============================================================
+// evaluateStandalone —— 独立求值一个上下文
+// 把它当作自己的“根”：使用其内部 input 元件的当前值作为输入源，
+// 递归求值内部所有门和 sub 实例，更新其 output 元件的值。
+// 用于子电路编辑上下文——不依赖 root，与父电路完全无关。
+// ============================================================
+bool CircuitEvaluator::evaluateStandalone(
+    CircuitContext& ctx,
+    const QHash<QString, CircuitContext>& subContexts)
+{
+    return evalRecursive(ctx, subContexts, 0);
 }
