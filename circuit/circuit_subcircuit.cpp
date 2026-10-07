@@ -100,3 +100,29 @@ void Circuit::switchEditContext(const QString& ctxId) {
     m_currentCtxId = ctxId; m_viewOnly = false;
     emit contextChanged(); emit changed();
 }
+
+void Circuit::setSubcircuitAsRoot(const QString& subId) {
+    if (m_viewOnly) return;
+    if (subId.isEmpty()) return;
+    if (!m_subContexts.contains(subId)) return;
+
+    pushUndo();
+
+    // 交换 root 与该子电路的内容
+    Context oldRoot = m_root;
+    m_root = m_subContexts[subId];
+    m_subContexts[subId] = oldRoot;
+
+    // 【修改】不自动重命名 —— 子电路槽位保留原本的名字，
+    //        主电路名称也不变（主电路固定叫"主电路"）。
+
+    // 切回主电路视图
+    m_currentCtxId = "";
+    m_viewOnly = false;
+
+    evaluateAll();
+    emit contextChanged();
+    emit subcircuitsChanged();
+    emit editContextsChanged();
+    emit changed();
+}

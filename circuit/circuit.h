@@ -95,6 +95,7 @@ public:
     Q_INVOKABLE void setSubcircuitName(const QString& subId, const QString& name);
     Q_INVOKABLE QString getSubcircuitName(const QString& subId) const;
     Q_INVOKABLE bool canAddSubInstance(const QString& targetSubId) const;
+    Q_INVOKABLE void setSubcircuitAsRoot(const QString& subId);
 
     Q_INVOKABLE void enterSubcircuit(const QString& subId);
     Q_INVOKABLE void leaveSubcircuit();
@@ -153,7 +154,6 @@ private slots:
 private:
     using Context = CircuitContext;
 
-    // ---- 常规数据（都在 Circuit 对象里，但都是 8 字节大小的 Qt 类型）----
     Context m_root;
     QHash<QString, Context> m_subContexts;
     QHash<QString, QString> m_subNames;
@@ -169,8 +169,6 @@ private:
     QTimer* m_clockTimer = nullptr;
     QHash<QString, bool> m_clockStates;
 
-    // ⚠️ undo/redo 数据全部搬到 dynamic property（见 UndoData.h）
-    // Circuit 对象里不再有任何 std::vector / QList 成员
     CircuitUndoData* und() const;
 
     Context& currentCtx();

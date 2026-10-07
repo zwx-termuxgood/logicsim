@@ -7,7 +7,6 @@ Rectangle {
     id: leftPanel
     property QtObject main: null
 
-    // 暴露给 Main.refreshSel() 使用
     property alias inputValueField: inputValueField
     property alias splitterSplitsInput: splitterSplitsInput
     property alias textContentField: textContentField
@@ -169,10 +168,17 @@ Rectangle {
                         }
                         MouseArea {
                             id: subItemMa; anchors.fill: parent
-                            onClicked: {
-                                main.placingType = "sub"
-                                main.placingSubId = modelData.id
-                                main.statusText = "已选择 " + modelData.name + "，点画布放置"
+                            acceptedButtons: Qt.LeftButton | Qt.RightButton
+                            onClicked: function(mouse) {
+                                if (mouse.button === Qt.LeftButton) {
+                                    main.placingType = "sub"
+                                    main.placingSubId = modelData.id
+                                    main.statusText = "已选择 " + modelData.name + "，点画布放置"
+                                } else if (mouse.button === Qt.RightButton) {
+                                    subCtxMenu.subId = modelData.id
+                                    subCtxMenu.subName = modelData.name
+                                    subCtxMenu.popup()
+                                }
                             }
                         }
                     }
@@ -212,7 +218,6 @@ Rectangle {
                     font.pixelSize: Theme.fsSmall; font.bold: true
                 }
 
-                // 多选操作
                 Column {
                     visible: main.mode === "select"
                     x: 6; width: parent.width - 12; spacing: 4
@@ -287,7 +292,6 @@ Rectangle {
                     wrapMode: Text.Wrap
                 }
 
-                // 单选中属性
                 Column {
                     visible: main.selectedComp !== null && main.mode !== "select"
                     x: 6; width: parent.width - 12; spacing: 5
@@ -558,10 +562,10 @@ Rectangle {
                         spacing: 4; width: parent.width
                         Text {
                             text: main.selectedComp && main.selectedComp.type === "tgate"
-                                  ? "端口：D(数据) / EN(使能) → Y\nEN=1 时 Y=D，否则 Y=0"
+                                  ? "端口：D / EN → Y\nEN=1 时 Y=D；EN=0 时输出高阻 Z"
                                   : (main.selectedComp && main.selectedComp.type === "ntran"
-                                     ? "端口：D(数据) / G(栅极) → Y\nG=1 时导通：Y=D"
-                                     : "端口：D(数据) / G(栅极) → Y\nG=0 时导通：Y=D")
+                                     ? "端口：G(左) / D(右上) / S(右下)\nG=1 时导通 S=D；G=0 时输出高阻 Z"
+                                     : "端口：G(左) / S(右上) / D(右下)\nG=0 时导通 S=D；G=1 时输出高阻 Z")
                             color: Theme.textFaint
                             font.pixelSize: Theme.fsTiny
                             width: parent.width; wrapMode: Text.Wrap
@@ -609,6 +613,115 @@ Rectangle {
 
                 Item { width: 1; height: 20 }
             }
+        }
+    }
+
+    // ============ 子电路右键菜单 ============
+    Menu {
+        id: subCtxMenu
+        property string subId: ""
+        property string subName: ""
+
+        MenuItem {
+            text: "重命名"
+            onTriggered: {
+                renameDialog.subId = subCtxMenu.subId
+                renameInput.text = subCtxMenu.subName
+                renameDialog.open()
+            }
+        }
+        MenuItem {
+            text: "设为主电路"
+            onTriggered: main.circuitRef.setSubcircuitAsRoot(subCtxMenu.subId)
+        }
+        MenuSeparator { }
+        MenuItem {
+            text: "删除"
+            onTriggered: {
+                main.confirmDialogRef.title = "删除子电路"
+                main.confirmDialogRef.message = "确定删除该子电路及其所有实例？"
+                main.confirmDialogRef.action = function() {
+                    main.circuitRef.deleteSubcircuit(subCtxMenu.subId)
+                }
+                main.confirmDialogRef.open()
+            }
+        }
+    }
+
+    Dialog {
+        id: renameDialog
+        property string subId: ""
+
+        anchors.centerIn: parent
+        modal: true
+        title: "重命名子电路"
+        standardButtons: Dialog.NoButton
+        width: 300
+        padding: 20
+
+        background: Rectangle {
+            color: Theme.bgDialog
+            border.color: Theme.borderDialog
+            border.width: 1
+            radius: Theme.dialogRadius
+        }
+
+        contentItem: ColumnLayout {
+            spacing: 12
+            Text {
+                text: "输入新名称"
+                color: Theme.textStrong
+                font.pixelSize: Theme.fsMedium
+            }
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 32
+                color: Theme.bgInput
+                border.color: Theme.borderDialog
+                border.width: 1
+                radius: Theme.smallRadius
+                TextField {
+                    id: renameInput
+                    anchors.fill: parent
+                    anchors.leftMargin: 8; anchors.rightMargin: 8
+                    color: Theme.text
+                    font.pixelSize: Theme.fsNormal
+                    background: null
+                    selectByMouse: true
+                    onAccepted: renameDialog.doRename()
+                }
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Item { Layout.fillWidth: true }
+                Rectangle {
+                    Layout.preferredWidth: 70; Layout.preferredHeight: 30
+                    radius: Theme.buttonRadius
+                    color: cc1r.pressed ? Theme.bgButtonHover : Theme.bgButton
+                    border.color: Theme.borderDialog; border.width: 1
+                    Text { anchors.centerIn: parent; text: "取消"
+                        color: Theme.text; font.pixelSize: Theme.fsNormal }
+                    MouseArea { id: cc1r; anchors.fill: parent
+                        onClicked: renameDialog.close() }
+                }
+                Rectangle {
+                    Layout.preferredWidth: 80; Layout.preferredHeight: 30
+                    radius: Theme.buttonRadius
+                    color: cc2r.pressed ? Theme.bgButtonSuccessHi : Theme.bgButtonSuccess
+                    border.color: Theme.borderSuccess; border.width: 1
+                    Text { anchors.centerIn: parent; text: "确定"
+                        color: Theme.textWhite; font.pixelSize: Theme.fsNormal }
+                    MouseArea { id: cc2r; anchors.fill: parent
+                        onClicked: renameDialog.doRename() }
+                }
+            }
+        }
+
+        function doRename() {
+            var name = renameInput.text.trim()
+            if (name.length === 0) return
+            main.circuitRef.setSubcircuitName(renameDialog.subId, name)
+            renameDialog.close()
         }
     }
 }

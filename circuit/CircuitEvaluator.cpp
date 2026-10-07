@@ -74,27 +74,35 @@ bool CircuitEvaluator::evalOne(QVariantMap& c,
         for (int b = 0; b < bw; ++b) {
             bool dv = ValueCodec::bitAt(d, b);
             bool ev = ValueCodec::bitAt(e, b);
-            out += (dv && ev) ? '1' : '0';
+            // 使能有效时输出 D，无效时输出高阻 Z
+            if (ev) out += dv ? '1' : '0';
+            else    out += 'Z';
         }
         newOutList.append(out);
     } else if (t == "ntran") {
-        QString d = newInList.isEmpty() ? QString(bw, '0') : newInList[0].toString();
-        QString g = newInList.size() > 1 ? newInList[1].toString() : QString(bw, '0');
+        // NMOS：G=1 导通 D→S，G=0 高阻 Z
+        // 【修改】端口 0 = G（左侧栅极），端口 1 = D（右侧漏极）
+        QString g = newInList.isEmpty() ? QString(bw, '0') : newInList[0].toString();
+        QString d = newInList.size() > 1 ? newInList[1].toString() : QString(bw, '0');
         QString out; out.reserve(bw);
         for (int b = 0; b < bw; ++b) {
             bool dv = ValueCodec::bitAt(d, b);
             bool gv = ValueCodec::bitAt(g, b);
-            out += (dv && gv) ? '1' : '0';
+            if (gv) out += dv ? '1' : '0';
+            else    out += 'Z';
         }
         newOutList.append(out);
     } else if (t == "ptran") {
-        QString d = newInList.isEmpty() ? QString(bw, '0') : newInList[0].toString();
-        QString g = newInList.size() > 1 ? newInList[1].toString() : QString(bw, '0');
+        // PMOS：G=0 导通 D→S，G=1 高阻 Z
+        // 【修改】端口 0 = G（左侧栅极），端口 1 = D（右侧漏极）
+        QString g = newInList.isEmpty() ? QString(bw, '0') : newInList[0].toString();
+        QString d = newInList.size() > 1 ? newInList[1].toString() : QString(bw, '0');
         QString out; out.reserve(bw);
         for (int b = 0; b < bw; ++b) {
             bool dv = ValueCodec::bitAt(d, b);
             bool gv = ValueCodec::bitAt(g, b);
-            out += (dv && !gv) ? '1' : '0';
+            if (!gv) out += dv ? '1' : '0';
+            else     out += 'Z';
         }
         newOutList.append(out);
     } else if (t == "splitter") {
@@ -188,7 +196,8 @@ void CircuitEvaluator::evaluateContext(CircuitContext& ctx) {
     if (hasCycle) {
         QVector<int> cycNodes;
         for (int i = 0; i < n; ++i) if (inDeg[i] > 0) cycNodes.append(i);
-        for (int iter = 0; iter < 50; ++iter) {
+        // 【提示】晶体管/锁存器类结构需要更多迭代收敛；提高到 200 次。
+        for (int iter = 0; iter < 200; ++iter) {
             bool anyChanged = false;
             for (int idx : cycNodes) {
                 if (evalOne(comps[idx], inputMap, comps)) anyChanged = true;
@@ -257,19 +266,11 @@ void CircuitEvaluator::syncSubPins(CircuitContext& ctx,
 
 void CircuitEvaluator::evaluateAll(CircuitContext& root,
                                    QHash<QString, CircuitContext>& subContexts) {
-    qDebug() << "[EVAL] evaluateAll enter, rootComp=" << root.components.size()
-    << "rootWires=" << root.wires.size()
-    << "subCtxs=" << subContexts.size();
-
     syncSubPins(root, subContexts);
     for (auto it = subContexts.begin(); it != subContexts.end(); ++it)
         syncSubPins(it.value(), subContexts);
-    qDebug() << "[EVAL] syncSubPins done";
 
-    if (root.components.isEmpty() && subContexts.isEmpty()) {
-        qDebug() << "[EVAL] both empty, return";
-        return;
-    }
+    if (root.components.isEmpty() && subContexts.isEmpty()) return;
 
     for (int outer = 0; outer < 20; ++outer) {
         bool anyChanged = false;
@@ -318,10 +319,6 @@ void CircuitEvaluator::evaluateAll(CircuitContext& root,
             }
         }
 
-        if (!anyChanged && outer > 0) {
-            qDebug() << "[EVAL] converged at outer=" << outer;
-            break;
-        }
+        if (!anyChanged && outer > 0) break;
     }
-    qDebug() << "[EVAL] evaluateAll done";
 }

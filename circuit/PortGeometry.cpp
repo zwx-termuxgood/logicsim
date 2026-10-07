@@ -37,9 +37,27 @@ QVariantList outputPorts(const QVariantMap& comp) {
         p["index"] = 0; p["x"] = W/2; p["y"] = 0;
         p["bitWidth"] = ComponentTraits::outputBitWidth(comp, 0);
         result.append(p);
+    } else if (t == "ntran") {
+        // NMOS：输出 S 在右下
+        W = 80.0; H = 60.0;
+        QVariantMap p;
+        p["index"] = 0;
+        p["x"] = W/2;
+        p["y"] = H/4;         // 右下
+        p["bitWidth"] = ComponentTraits::outputBitWidth(comp, 0);
+        result.append(p);
+    } else if (t == "ptran") {
+        // PMOS：输出 S 在右上
+        W = 80.0; H = 60.0;
+        QVariantMap p;
+        p["index"] = 0;
+        p["x"] = W/2;
+        p["y"] = -H/4;        // 右上
+        p["bitWidth"] = ComponentTraits::outputBitWidth(comp, 0);
+        result.append(p);
     } else if (t == "not" || t == "and" || t == "or" || t == "nand" ||
                t == "nor" || t == "xor" || t == "xnor" || t == "sub" ||
-               t == "tgate" || t == "ntran" || t == "ptran") {
+               t == "tgate") {
         W = (t == "sub") ? 110.0 : 80.0;
         int ic = ComponentTraits::inputCount(comp);
         int oc = n; if (oc < 1) oc = 1;
@@ -95,9 +113,41 @@ QVariantList inputPorts(const QVariantMap& comp) {
         p["index"] = 0; p["x"] = -W/2; p["y"] = 0;
         p["bitWidth"] = ComponentTraits::inputBitWidth(comp, 0);
         result.append(p);
+    } else if (t == "ntran") {
+        // NMOS：G 左侧，D 右上
+        W = 80.0; H = 60.0;
+        QVariantMap pg;
+        pg["index"] = 0;
+        pg["x"] = -W/2;
+        pg["y"] = 0;
+        pg["bitWidth"] = ComponentTraits::inputBitWidth(comp, 0);
+        result.append(pg);
+
+        QVariantMap pd;
+        pd["index"] = 1;
+        pd["x"] = W/2;
+        pd["y"] = -H/4;       // 右上
+        pd["bitWidth"] = ComponentTraits::inputBitWidth(comp, 1);
+        result.append(pd);
+    } else if (t == "ptran") {
+        // PMOS：G 左侧，D 右下
+        W = 80.0; H = 60.0;
+        QVariantMap pg;
+        pg["index"] = 0;
+        pg["x"] = -W/2;
+        pg["y"] = 0;
+        pg["bitWidth"] = ComponentTraits::inputBitWidth(comp, 0);
+        result.append(pg);
+
+        QVariantMap pd;
+        pd["index"] = 1;
+        pd["x"] = W/2;
+        pd["y"] = H/4;        // 右下
+        pd["bitWidth"] = ComponentTraits::inputBitWidth(comp, 1);
+        result.append(pd);
     } else if (t == "and" || t == "or" || t == "nand" ||
                t == "nor" || t == "xor" || t == "xnor" || t == "sub" ||
-               t == "tgate" || t == "ntran" || t == "ptran") {
+               t == "tgate") {
         W = (t == "sub") ? 110.0 : 80.0;
         H = qMax(60.0, (double)n * 24.0);
         for (int i = 0; i < n; ++i) {
