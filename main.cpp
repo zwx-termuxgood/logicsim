@@ -2,7 +2,7 @@
 #include <QQmlApplicationEngine>
 #include <QQuickStyle>
 
-#include "circuit.h"
+#include "circuit/Circuit.h"
 
 int main(int argc, char *argv[])
 {

@@ -1,0 +1,4747 @@
+circuit/
+app/
+├── Circuit_catalog.cpp
+│   内容:
+│     #include "../Circuit.h"
+│     #include "../logic/ComponentLogic.h"
+│     
+│     // ============================================================
+│     // 元件目录：Circuit 静态函数转发到 ComponentLogic
+│     //
+│     // 这些 static 函数是 QML 侧通过 Circuit::componentInputCount(...)
+│     // 等方式调用元件基础属性的唯一入口。集中在此，便于 QML 侧查询，
+│     // 也便于将来若需要从注册表导出元件清单时在此扩展。
+│     // ============================================================
+│     
+│     int Circuit::componentInputCount(const QVariantMap& comp) {
+│         return ComponentLogic::inputCount(comp);
+│     }
+│     
+│     int Circuit::componentOutputCount(const QVariantMap& comp) {
+│         return ComponentLogic::outputCount(comp);
+│     }
+│     
+│     int Circuit::outputPortBitWidth(const QVariantMap& comp, int portIdx) {
+│         return ComponentLogic::outputBitWidth(comp, portIdx);
+│     }
+│     
+│     int Circuit::inputPortBitWidth(const QVariantMap& comp, int portIdx) {
+│         return ComponentLogic::inputBitWidth(comp, portIdx);
+│     }
+
+├── Circuit_component.cpp
+│   内容:
+│     #include "../Circuit.h"
+│     #include "../core/IdAllocator.h"
+│     #include "../logic/event/EventEngine.h"
+│     #include <QVariantMap>
+│     #include <QSet>
+│     #include <QtGlobal>
+│     #include <QDebug>
+│     
+│     QString Circuit::addComponent(const QString& type, double x, double y,
+│                                   int bitWidth, int inputCount, const QString& subId) {
+│         if (m_viewOnly) return QString();
+│         if (bitWidth < 1) bitWidth = 1;
+│         if (bitWidth > 64) bitWidth = 64;
+│         if (inputCount < 2) inputCount = 2;
+│         if (inputCount > 64) inputCount = 64;
+│     
+│         if (type == "sub") {
+│             if (!canAddSubInstance(subId)) return QString();
+│         }
+│     
+│         pushUndo();
+│     
+│         QVariantMap c;
+│         Context& ctx = currentCtx();
+│         c["id"] = IdAllocator::nextComponentId(ctx);
+│         c["type"] = type;
+│         c["x"] = x; c["y"] = y;
+│         c["bitWidth"] = bitWidth;
+│         c["inputCount"] = inputCount;
+│         c["displayBase"] = "bin";
+│         c["name"] = "";
+│     
+│         QVariantList bits;
+│         bits.reserve(bitWidth);
+│         for (int i = 0; i < bitWidth; ++i) bits.append(false);
+│         c["inputBits"] = bits;
+│     
+│         QVariantList outPorts, inPorts;
+│     
+│         if (type == "text") {
+│             c["content"] = "文本";
+│         } else if (type == "clock") {
+│             c["name"] = "CLK";
+│         } else if (type == "const") {
+│             c["name"] = "CONST";
+│         } else if (type == "sub") {
+│             c["subId"] = subId;
+│             c["subInputNames"] = QVariantList();
+│             c["subOutputNames"] = QVariantList();
+│             c["subInputWidths"] = QVariantList();
+│             c["subOutputWidths"] = QVariantList();
+│         } else if (type == "splitter") {
+│             QVariantList splits;
+│             splits.reserve(bitWidth);
+│             for (int i = 0; i < bitWidth; ++i) splits.append(1);
+│             c["outputSplits"] = splits;
+│             int segN = splits.size();
+│             inPorts.append(QString(bitWidth, '0'));
+│             for (int i = 0; i < segN; ++i) {
+│                 int w = splits[i].toInt(); if (w < 1) w = 1;
+│                 outPorts.append(QString(w, '0'));
+│             }
+│         } else if (type == "hub") {
+│             QVariantList splits;
+│             splits.reserve(bitWidth);
+│             for (int i = 0; i < bitWidth; ++i) splits.append(1);
+│             c["outputSplits"] = splits;
+│             int segN = splits.size();
+│             for (int i = 0; i < segN; ++i) {
+│                 int w = splits[i].toInt(); if (w < 1) w = 1;
+│                 inPorts.append(QString(w, '0'));
+│             }
+│             outPorts.append(QString(bitWidth, '0'));
+│         } else if (type == "tgate" || type == "ntran" || type == "ptran") {
+│             c["inputCount"] = 2;
+│             outPorts.append(QString(bitWidth, '0'));
+│             inPorts.append(QString(bitWidth, '0'));
+│             inPorts.append(QString(bitWidth, '0'));
+│         } else {
+│             int n = 0;
+│             if (type == "input" || type == "const" || type == "clock" || type == "not" ||
+│                 type == "and" || type == "or" || type == "nand" ||
+│                 type == "nor" || type == "xor" || type == "xnor") n = 1;
+│             for (int i = 0; i < n; ++i) outPorts.append(QString(bitWidth, '0'));
+│             int ic = 0;
+│             if (type == "not" || type == "led" || type == "output") ic = 1;
+│             else if (type == "and" || type == "or" || type == "nand" ||
+│                      type == "nor" || type == "xor" || type == "xnor") ic = inputCount;
+│             for (int i = 0; i < ic; ++i) inPorts.append(QString(bitWidth, '0'));
+│         }
+│     
+│         c["outputPorts"] = outPorts;
+│         c["inputPortValues"] = inPorts;
+│     
+│         ctx.components.append(c);
+│         if (type == "clock") m_clockStates[c["id"].toString()] = false;
+│     
+│         evaluateAll();
+│         emit changed();
+│         emit structureChanged();
+│         return c["id"].toString();
+│     }
+│     
+│     void Circuit::removeComponent(const QString& id) {
+│         if (m_viewOnly) return;
+│         int idx = indexOfComponent(id);
+│         if (idx < 0) return;
+│         pushUndo();
+│         Context& ctx = currentCtx();
+│         QVariantMap c = ctx.components[idx].toMap();
+│         if (c.value("type").toString() == "clock") m_clockStates.remove(id);
+│         ctx.components.removeAt(idx);
+│         for (int i = ctx.wires.size() - 1; i >= 0; --i) {
+│             auto w = ctx.wires[i].toMap();
+│             if (w.value("fromComp").toString() == id || w.value("toComp").toString() == id)
+│                 ctx.wires.removeAt(i);
+│         }
+│         evaluateAll();
+│         emit changed();
+│         emit structureChanged();
+│     }
+│     
+│     void Circuit::removeComponents(const QStringList& ids) {
+│         if (m_viewOnly) return;
+│         if (ids.isEmpty()) return;
+│         QSet<QString> idSet;
+│         for (const auto& id : ids) idSet.insert(id);
+│         bool any = false;
+│         for (const auto& cv : currentCtx().components) {
+│             if (idSet.contains(cv.toMap().value("id").toString())) { any = true; break; }
+│         }
+│         if (!any) return;
+│         pushUndo();
+│         Context& ctx = currentCtx();
+│         for (int i = ctx.components.size() - 1; i >= 0; --i) {
+│             auto c = ctx.components[i].toMap();
+│             if (idSet.contains(c.value("id").toString())) {
+│                 if (c.value("type").toString() == "clock")
+│                     m_clockStates.remove(c.value("id").toString());
+│                 ctx.components.removeAt(i);
+│             }
+│         }
+│         for (int i = ctx.wires.size() - 1; i >= 0; --i) {
+│             auto w = ctx.wires[i].toMap();
+│             if (idSet.contains(w.value("fromComp").toString()) ||
+│                 idSet.contains(w.value("toComp").toString()))
+│                 ctx.wires.removeAt(i);
+│         }
+│         evaluateAll();
+│         emit changed();
+│         emit structureChanged();
+│     }
+│     
+│     void Circuit::moveComponent(const QString& id, double x, double y) {
+│         if (m_viewOnly) return;
+│         int idx = indexOfComponent(id);
+│         if (idx < 0) return;
+│         Context& ctx = currentCtx();
+│         QVariantMap c = ctx.components[idx].toMap();
+│         double ox = c.value("x").toDouble();
+│         double oy = c.value("y").toDouble();
+│         if (qAbs(ox - x) < 1e-9 && qAbs(oy - y) < 1e-9) return;
+│         pushUndo("move:" + id);
+│         c["x"] = x; c["y"] = y;
+│         ctx.components[idx] = c;
+│         emit geometryChanged();
+│     }
+│     
+│     void Circuit::moveSelection(const QStringList& ids, double dx, double dy) {
+│         if (m_viewOnly) return;
+│         if (ids.isEmpty()) return;
+│         if (qAbs(dx) < 1e-9 && qAbs(dy) < 1e-9) return;
+│         Context& ctx = currentCtx();
+│         QSet<QString> idSet;
+│         for (const auto& id : ids) idSet.insert(id);
+│         bool any = false;
+│         for (int i = 0; i < ctx.components.size(); ++i) {
+│             if (idSet.contains(ctx.components[i].toMap().value("id").toString())) { any = true; break; }
+│         }
+│         if (!any) return;
+│         pushUndo("moveSel");
+│         for (int i = 0; i < ctx.components.size(); ++i) {
+│             QVariantMap c = ctx.components[i].toMap();
+│             if (idSet.contains(c.value("id").toString())) {
+│                 c["x"] = c.value("x").toDouble() + dx;
+│                 c["y"] = c.value("y").toDouble() + dy;
+│                 ctx.components[i] = c;
+│             }
+│         }
+│         emit geometryChanged();
+│     }
+│     
+│     void Circuit::toggleInput(const QString& id) {
+│         if (m_viewOnly) return;
+│         int idx = indexOfComponent(id);
+│         if (idx < 0) return;
+│         Context& ctx = currentCtx();
+│         QVariantMap c = ctx.components[idx].toMap();
+│         if (c.value("type").toString() != "input") return;
+│         QVariantList bits = c.value("inputBits").toList();
+│         int bw = c.value("bitWidth").toInt();
+│         if (bw < 1) bw = 1;
+│         while (bits.size() < bw) bits.append(false);
+│         while (bits.size() > bw) bits.removeLast();
+│         bool v = !bits[0].toBool();
+│         for (int i = 0; i < bits.size(); ++i) bits[i] = v;
+│         c["inputBits"] = bits;
+│         ctx.components[idx] = c;
+│     
+│         if (m_engineType == "event" && m_eventEngine) {
+│             QString binStr;
+│             binStr.reserve(bw);
+│             for (int i = 0; i < bw; ++i) binStr += v ? '1' : '0';
+│             QStringList qids = engineQidsFor(m_currentCtxId, id);
+│             for (const auto& qid : qids)
+│                 m_eventEngine->triggerInputString(qid, binStr);
+│             applyEngineOutputsToContexts();
+│             emit simulationTick();
+│         } else {
+│             evaluateAll();
+│         }
+│         emit changed();
+│     }
+│     
+│     void Circuit::setBitValue(const QString& id, int bit, bool value) {
+│         if (m_viewOnly) return;
+│         int idx = indexOfComponent(id);
+│         if (idx < 0) return;
+│         Context& ctx = currentCtx();
+│         QVariantMap c = ctx.components[idx].toMap();
+│         QString t = c.value("type").toString();
+│         if (t != "input" && t != "const") return;
+│         QVariantList bits = c.value("inputBits").toList();
+│         int bw = c.value("bitWidth").toInt();
+│         if (bw < 1) bw = 1;
+│         while (bits.size() < bw) bits.append(false);
+│         while (bits.size() > bw) bits.removeLast();
+│         if (bit < 0 || bit >= bits.size()) return;
+│         if (bits[bit].toBool() == value) return;
+│         bits[bit] = value;
+│         c["inputBits"] = bits;
+│         ctx.components[idx] = c;
+│     
+│         if (m_engineType == "event" && m_eventEngine) {
+│             QStringList qids = engineQidsFor(m_currentCtxId, id);
+│             for (const auto& qid : qids)
+│                 m_eventEngine->triggerInputBit(qid, bit, value);
+│             applyEngineOutputsToContexts();
+│             emit simulationTick();
+│         } else {
+│             evaluateAll();
+│         }
+│         emit changed();
+│     }
+│     
+│     void Circuit::setComponentProp(const QString& id, const QString& key, const QVariant& value) {
+│         if (m_viewOnly) return;
+│         int idx = indexOfComponent(id);
+│         if (idx < 0) return;
+│         Context& ctx = currentCtx();
+│         QVariantMap c = ctx.components[idx].toMap();
+│         if (key == "bitWidth" || key == "inputCount" || key == "rotation") {
+│             if (c.value(key).toInt() == value.toInt()) return;
+│         } else {
+│             if (c.value(key) == value) return;
+│         }
+│         pushUndo("prop:" + id + ":" + key);
+│         bool structural = false;
+│         if (key == "bitWidth") {
+│             int bw = value.toInt();
+│             if (bw < 1) bw = 1;
+│             if (bw > 64) bw = 64;
+│             c["bitWidth"] = bw;
+│             QVariantList bits = c.value("inputBits").toList();
+│             while (bits.size() < bw) bits.prepend(false);
+│             while (bits.size() > bw) bits.removeFirst();
+│             c["inputBits"] = bits;
+│             QString t = c.value("type").toString();
+│             if (t == "splitter" || t == "hub") {
+│                 QVariantList splits = c.value("outputSplits").toList();
+│                 int sum = 0;
+│                 for (auto& sv : splits) sum += sv.toInt();
+│                 if (sum != bw) {
+│                     QVariantList ns;
+│                     ns.reserve(bw);
+│                     for (int i = 0; i < bw; ++i) ns.append(1);
+│                     c["outputSplits"] = ns;
+│                 }
+│             }
+│             structural = true;
+│         } else if (key == "inputCount") {
+│             int v = value.toInt();
+│             if (v < 2) v = 2;
+│             if (v > 64) v = 64;
+│             c[key] = v;
+│             structural = true;
+│         } else if (key == "rotation") {
+│             int v = value.toInt();
+│             v = ((v % 4) + 4) % 4;
+│             c["rotation"] = v;
+│             structural = true;
+│         } else {
+│             c[key] = value;
+│         }
+│         ctx.components[idx] = c;
+│         evaluateAll();
+│         emit changed();
+│         if (structural) emit structureChanged();
+│     }
+│     
+│     void Circuit::rotateComponent(const QString& id, int delta) {
+│         if (m_viewOnly) return;
+│         int idx = indexOfComponent(id);
+│         if (idx < 0) return;
+│         Context& ctx = currentCtx();
+│         QVariantMap c = ctx.components[idx].toMap();
+│         int cur = c.value("rotation").toInt();
+│         int nw = ((cur + delta) % 4 + 4) % 4;
+│         if (nw == cur) return;
+│         pushUndo("rot:" + id);
+│         c["rotation"] = nw;
+│         ctx.components[idx] = c;
+│         emit changed();
+│         emit structureChanged();
+│     }
+│     
+│     void Circuit::renameComponent(const QString& id, const QString& name) {
+│         if (m_viewOnly) return;
+│         int idx = indexOfComponent(id);
+│         if (idx < 0) return;
+│         Context& ctx = currentCtx();
+│         QVariantMap c = ctx.components[idx].toMap();
+│         if (c.value("name").toString() == name) return;
+│         pushUndo("rename:" + id);
+│         c["name"] = name;
+│         ctx.components[idx] = c;
+│         emit changed();
+│     }
+│     
+│     void Circuit::setSplitterSplits(const QString& id, const QString& splitsStr) {
+│         if (m_viewOnly) return;
+│         int idx = indexOfComponent(id);
+│         if (idx < 0) return;
+│         Context& ctx = currentCtx();
+│         QVariantMap c = ctx.components[idx].toMap();
+│         QString t = c.value("type").toString();
+│         if (t != "splitter" && t != "hub") return;
+│         int bw = c.value("bitWidth").toInt();
+│         if (bw < 1) bw = 1;
+│         QString s = splitsStr;
+│         s.replace(',', ' ');
+│         QStringList parts = s.split(' ', Qt::SkipEmptyParts);
+│         QVariantList splits;
+│         int sum = 0;
+│         for (auto& p : parts) {
+│             bool ok = false;
+│             int v = p.toInt(&ok);
+│             if (!ok || v < 1) continue;
+│             splits.append(v); sum += v;
+│         }
+│         if (sum != bw || splits.isEmpty()) return;
+│         if (c.value("outputSplits").toList() == splits) return;
+│         pushUndo("splits:" + id);
+│         c["outputSplits"] = splits;
+│         ctx.components[idx] = c;
+│         evaluateAll();
+│         emit changed();
+│         emit structureChanged();
+│     }
+│     
+│     QString Circuit::getSplitterSplitsStr(const QString& id) const {
+│         int idx = indexOfComponent(id);
+│         if (idx < 0) return {};
+│         QVariantMap c = currentCtx().components[idx].toMap();
+│         QString t = c.value("type").toString();
+│         if (t != "splitter" && t != "hub") return {};
+│         QVariantList splits = c.value("outputSplits").toList();
+│         QStringList parts;
+│         for (auto& v : splits) parts.append(QString::number(v.toInt()));
+│         return parts.join(",");
+│     }
+│     
+│     QString Circuit::addText(double x, double y, const QString& text) {
+│         QString id = addComponent("text", x, y, 1, 2, "");
+│         if (!id.isEmpty()) setTextContent(id, text);
+│         return id;
+│     }
+│     
+│     void Circuit::setTextContent(const QString& id, const QString& content) {
+│         if (m_viewOnly) return;
+│         int idx = indexOfComponent(id);
+│         if (idx < 0) return;
+│         Context& ctx = currentCtx();
+│         QVariantMap c = ctx.components[idx].toMap();
+│         if (c.value("type").toString() != "text") return;
+│         if (c.value("content").toString() == content) return;
+│         pushUndo("text:" + id);
+│         c["content"] = content;
+│         ctx.components[idx] = c;
+│         emit changed();
+│     }
+
+├── Circuit_lifecycle.cpp
+│   内容:
+│     #include "../Circuit.h"
+│     #include "../core/Component.h"
+│     #include "../core/ValueCodec.h"
+│     #include "../logic/ComponentLogic.h"
+│     #include "../logic/iter/IterEngine.h"
+│     #include "../logic/event/EventEngine.h"
+│     #include "../io/JsonCodec.h"
+│     #include "../io/RecentStore.h"
+│     #include <QJsonDocument>
+│     #include <QJsonObject>
+│     #include <QFile>
+│     #include <QFileInfo>
+│     #include <QDateTime>
+│     #include <QDebug>
+│     
+│     // ============================================================
+│     // 上下文查询
+│     // ============================================================
+│     
+│     QVariantList Circuit::subcircuits() const {
+│         QVariantList out;
+│         for (auto it = m_subNames.begin(); it != m_subNames.end(); ++it) {
+│             QVariantMap m;
+│             m["id"] = it.key();
+│             m["name"] = it.value();
+│             const Context* ctx = ctxById(it.key());
+│             int inCount = 0, outCount = 0;
+│             if (ctx) {
+│                 for (auto& cv : ctx->components) {
+│                     QString t = cv.toMap().value("type").toString();
+│                     if (t == "input") inCount++;
+│                     else if (t == "output") outCount++;
+│                 }
+│             }
+│             m["inCount"] = inCount;
+│             m["outCount"] = outCount;
+│             out.append(m);
+│         }
+│         return out;
+│     }
+│     
+│     QVariantList Circuit::editContexts() const {
+│         QVariantList out;
+│         QVariantMap rootMap;
+│         rootMap["id"] = "";
+│         rootMap["name"] = "主电路";
+│         out.append(rootMap);
+│         QStringList ids = m_subNames.keys();
+│         std::sort(ids.begin(), ids.end());
+│         for (auto& id : ids) {
+│             QVariantMap m;
+│             m["id"] = id;
+│             m["name"] = m_subNames.value(id);
+│             out.append(m);
+│         }
+│         return out;
+│     }
+│     
+│     // ============================================================
+│     // 引擎切换
+│     // ============================================================
+│     
+│     void Circuit::setEngineType(const QString& t) {
+│         if (m_engineType == t) return;
+│         if (t != "iter" && t != "event") return;
+│     
+│         if (m_simulationRunning) pauseSimulation();
+│         if (m_clockRunning) stopClock();
+│     
+│         m_engineType = t;
+│     
+│         if (m_engineType == "event") {
+│             rebuildEventEngine();
+│             applyEngineOutputsToContexts();
+│         } else {
+│             applyEngineOutputsToContexts();
+│             evaluateAll();
+│         }
+│     
+│         emit engineChanged();
+│         emit engineSettingsChanged();
+│         emit changed();
+│         emit structureChanged();
+│     }
+│     
+│     // ============================================================
+│     // 求值
+│     // ============================================================
+│     
+│     void Circuit::evaluateAll() {
+│         IterEngine::syncSubPins(m_root, m_subContexts);
+│         for (auto it = m_subContexts.begin(); it != m_subContexts.end(); ++it)
+│             IterEngine::syncSubPins(it.value(), m_subContexts);
+│     
+│         if (m_viewOnly && !m_currentCtxId.isEmpty()) {
+│             syncSubStateFromParent(m_currentCtxId);
+│         }
+│     
+│         if (m_engineType == "event") {
+│             m_engineDirty = true;
+│             emit subcircuitsChanged();
+│             return;
+│         }
+│     
+│         IterEngine::evaluateAll(m_root, m_subContexts);
+│     
+│         if (!m_currentCtxId.isEmpty()) {
+│             auto it = m_subContexts.find(m_currentCtxId);
+│             if (it != m_subContexts.end())
+│                 IterEngine::evaluateStandalone(it.value(), m_subContexts);
+│         }
+│     
+│         emit subcircuitsChanged();
+│     }
+│     
+│     void Circuit::evaluate() {
+│         evaluateAll();
+│     }
+│     
+│     // ============================================================
+│     // 事件引擎重建 / 输出回填
+│     // ============================================================
+│     
+│     void Circuit::rebuildEventEngine() {
+│         if (!m_eventEngine) return;
+│     
+│         IterEngine::syncSubPins(m_root, m_subContexts);
+│         for (auto it = m_subContexts.begin(); it != m_subContexts.end(); ++it)
+│             IterEngine::syncSubPins(it.value(), m_subContexts);
+│     
+│         QHash<QString, QVariantList> subComps;
+│         QHash<QString, QVariantList> subWires;
+│         for (auto it = m_subContexts.begin(); it != m_subContexts.end(); ++it) {
+│             subComps[it.key()] = it.value().components;
+│             subWires[it.key()] = it.value().wires;
+│         }
+│         m_eventEngine->build(m_root.components, m_root.wires, subComps, subWires);
+│         m_engineDirty = false;
+│     }
+│     
+│     void Circuit::applyEngineOutputsToContexts() {
+│         if (!m_eventEngine) return;
+│     
+│         for (int i = 0; i < m_root.components.size(); ++i) {
+│             QVariantMap c = m_root.components[i].toMap();
+│             QString localId = c.value("id").toString();
+│             QString type = c.value("type").toString();
+│     
+│             if (type == "sub") {
+│                 QString subId = c.value("subId").toString();
+│                 auto sit = m_subContexts.find(subId);
+│                 if (sit == m_subContexts.end()) continue;
+│     
+│                 QVariantList outVals;
+│                 for (const auto& scv : sit.value().components) {
+│                     QVariantMap sc = scv.toMap();
+│                     if (sc.value("type").toString() != "output") continue;
+│                     QString innerQid = localId + "/" + sc.value("id").toString();
+│                     QStringList outs = m_eventEngine->getOutputs(innerQid);
+│                     QString v = outs.isEmpty() ? QString() : outs[0];
+│                     if (v.isEmpty()) {
+│                         int w = sc.value("bitWidth").toInt();
+│                         if (w < 1) w = 1;
+│                         v = QString(w, '0');
+│                     }
+│                     outVals.append(v);
+│                 }
+│                 if (!outVals.isEmpty()) c["outputPorts"] = outVals;
+│     
+│                 QVariantList inVals;
+│                 for (const auto& scv : sit.value().components) {
+│                     QVariantMap sc = scv.toMap();
+│                     if (sc.value("type").toString() != "input") continue;
+│                     QString innerQid = localId + "/" + sc.value("id").toString();
+│                     QStringList outs = m_eventEngine->getOutputs(innerQid);
+│                     QString v = outs.isEmpty() ? QString() : outs[0];
+│                     if (v.isEmpty()) {
+│                         int w = sc.value("bitWidth").toInt();
+│                         if (w < 1) w = 1;
+│                         v = QString(w, '0');
+│                     }
+│                     inVals.append(v);
+│                 }
+│                 if (!inVals.isEmpty()) c["inputPortValues"] = inVals;
+│     
+│                 m_root.components[i] = c;
+│                 continue;
+│             }
+│     
+│             QStringList outs = m_eventEngine->getOutputs(localId);
+│             if (!outs.isEmpty()) {
+│                 QVariantList ops;
+│                 ops.reserve(outs.size());
+│                 for (const auto& s : outs) ops.append(s);
+│                 c["outputPorts"] = ops;
+│             }
+│             if (type == "output" || type == "led") {
+│                 if (!outs.isEmpty()) {
+│                     QVariantList ips;
+│                     ips.reserve(outs.size());
+│                     for (const auto& s : outs) ips.append(s);
+│                     c["inputPortValues"] = ips;
+│                 }
+│             }
+│             m_root.components[i] = c;
+│         }
+│     }
+│     
+│     QStringList Circuit::engineQidsFor(const QString& ctxId, const QString& localCompId) const {
+│         QStringList result;
+│         if (ctxId.isEmpty()) {
+│             result << localCompId;
+│             return result;
+│         }
+│         for (const auto& cv : m_root.components) {
+│             QVariantMap c = cv.toMap();
+│             if (c.value("type").toString() != "sub") continue;
+│             if (c.value("subId").toString() == ctxId) {
+│                 result << (c.value("id").toString() + "/" + localCompId);
+│             }
+│         }
+│         return result;
+│     }
+│     
+│     // ============================================================
+│     // 清空
+│     // ============================================================
+│     
+│     void Circuit::clear() {
+│         if (m_viewOnly) return;
+│         pushUndo();
+│         m_root = Context();
+│         m_subContexts.clear();
+│         m_subNames.clear();
+│         m_currentCtxId = "";
+│         m_viewOnly = false;
+│         m_subCounter = 0;
+│         m_errors.clear();
+│         m_clockStates.clear();
+│         m_clockTickCount = 0;
+│         if (m_clockRunning) stopClock();
+│         if (m_simulationRunning) pauseSimulation();
+│         if (m_eventEngine) m_eventEngine->clear();
+│         m_engineDirty = true;
+│         emit contextChanged();
+│         emit subcircuitsChanged();
+│         emit editContextsChanged();
+│         emit errorsChanged();
+│         emit clockChanged();
+│         emit changed();
+│     }
+│     
+│     // ============================================================
+│     // 错误检查
+│     // ============================================================
+│     
+│     void Circuit::refreshErrors() {
+│         m_errors.clear();
+│         auto checkCtx = [&](const Context& ctx, const QString& label) {
+│             for (auto& wv : ctx.wires) {
+│                 QVariantMap w = wv.toMap();
+│                 QString fromId = w.value("fromComp").toString();
+│                 QString toId = w.value("toComp").toString();
+│                 int fromPort = w.value("fromPort").toInt();
+│                 int toPort = w.value("toPort").toInt();
+│                 int fi = -1, ti = -1;
+│                 for (int i = 0; i < ctx.components.size(); ++i) {
+│                     QString cid = ctx.components[i].toMap().value("id").toString();
+│                     if (cid == fromId) fi = i;
+│                     if (cid == toId) ti = i;
+│                 }
+│                 if (fi < 0 || ti < 0) continue;
+│                 int fbw = ComponentLogic::outputBitWidth(ctx.components[fi].toMap(), fromPort);
+│                 int tbw = ComponentLogic::inputBitWidth(ctx.components[ti].toMap(), toPort);
+│                 if (fbw != tbw) {
+│                     QVariantMap err;
+│                     err["type"] = "width_mismatch";
+│                     err["msg"] = QString("%1：%2 位宽不匹配（源 %3 位，目标 %4 位）")
+│                                      .arg(label, w.value("id").toString()).arg(fbw).arg(tbw);
+│                     m_errors.append(err);
+│                 }
+│             }
+│         };
+│         checkCtx(m_root, "主电路");
+│         for (auto it = m_subContexts.begin(); it != m_subContexts.end(); ++it)
+│             checkCtx(it.value(), m_subNames.value(it.key(), it.key()));
+│         emit errorsChanged();
+│     }
+│     
+│     // ============================================================
+│     // 序列化
+│     // ============================================================
+│     
+│     QVariantMap Circuit::toJson() const {
+│         QHash<QString, quint64> gateDelays;
+│         if (m_eventEngine) gateDelays = m_eventEngine->gateTypeDelays();
+│         return JsonCodec::encode(m_root, m_subContexts, m_subNames,
+│                                  m_subCounter, m_clockFrequency, m_clockTickCount,
+│                                  m_engineType, globalGateDelay(), wireDelay(),
+│                                  m_simulationSpeed, m_simulationSpeedExp, m_autoSpeed,
+│                                  gateDelays);
+│     }
+│     
+│     bool Circuit::fromJson(const QVariantMap& data) {
+│         CircuitUndoData* d = und();
+│         bool wasRestoring = d ? d->restoring : false;
+│         if (d) d->restoring = true;
+│     
+│         JsonCodec::DecodedData dec = JsonCodec::decode(data);
+│     
+│         m_root = dec.root;
+│         m_subContexts = dec.subContexts;
+│         m_subNames = dec.subNames;
+│         m_currentCtxId = "";
+│         m_viewOnly = false;
+│         m_clockStates = dec.clockStates;
+│         m_subCounter = dec.subCounter;
+│         m_clockFrequency = dec.clockFrequency;
+│         m_clockTickCount = dec.clockTickCount;
+│         m_engineType = dec.engineType;
+│     
+│         if (m_eventEngine) {
+│             m_eventEngine->setGlobalGateDelay(dec.globalGateDelay);
+│             m_eventEngine->setWireDelay(dec.wireDelay);
+│             m_eventEngine->clearGateTypeDelays();
+│             for (auto it = dec.gateTypeDelays.begin(); it != dec.gateTypeDelays.end(); ++it)
+│                 m_eventEngine->setGateTypeDelay(it.key(), it.value());
+│         }
+│         m_simulationSpeed = dec.simulationSpeed;
+│         m_simulationSpeedExp = dec.simulationSpeedExp;
+│         m_autoSpeed = dec.autoSpeed;
+│     
+│         if (m_engineType == "event") {
+│             rebuildEventEngine();
+│         } else {
+│             evaluateAll();
+│         }
+│     
+│         if (!wasRestoring) {
+│             if (d) {
+│                 d->undoStack.clear();
+│                 d->redoStack.clear();
+│                 d->lastMergeKey.clear();
+│                 d->lastUndoTime = QDateTime();
+│             }
+│         }
+│         if (d) d->restoring = wasRestoring;
+│     
+│         if (wasRestoring) return true;
+│     
+│         emit contextChanged();
+│         emit subcircuitsChanged();
+│         emit editContextsChanged();
+│         emit errorsChanged();
+│         emit clockChanged();
+│         emit engineChanged();
+│         emit engineSettingsChanged();
+│         emit changed();
+│         return true;
+│     }
+│     
+│     bool Circuit::saveToFile(const QString& path) {
+│         QFile f(path);
+│         if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) return false;
+│         QJsonObject obj = QJsonObject::fromVariantMap(toJson());
+│         f.write(QJsonDocument(obj).toJson(QJsonDocument::Indented));
+│         f.close();
+│         addRecentFile(path);
+│         return true;
+│     }
+│     
+│     bool Circuit::loadFromFile(const QString& path) {
+│         QFile f(path);
+│         if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) return false;
+│         QByteArray data = f.readAll();
+│         f.close();
+│         QJsonParseError err;
+│         QJsonDocument doc = QJsonDocument::fromJson(data, &err);
+│         if (err.error != QJsonParseError::NoError) return false;
+│         if (!doc.isObject()) return false;
+│         bool ok = fromJson(doc.object().toVariantMap());
+│         if (ok) addRecentFile(path);
+│         return ok;
+│     }
+│     
+│     // ============================================================
+│     // 撤销 / 重做
+│     // ============================================================
+│     
+│     void Circuit::pushUndo(const QString& mergeKey) {
+│         CircuitUndoData* d = und();
+│         if (!d) return;
+│         if (m_viewOnly) return;
+│         if (d->restoring) return;
+│         if (d->redoRunning) return;
+│     
+│         if (!mergeKey.isEmpty() && mergeKey == d->lastMergeKey) {
+│             if (d->lastUndoTime.isValid() &&
+│                 d->lastUndoTime.msecsTo(QDateTime::currentDateTime()) < 500) {
+│                 d->lastUndoTime = QDateTime::currentDateTime();
+│                 return;
+│             }
+│         }
+│     
+│         QVariantMap snap = toJson();
+│         d->undoStack.push_back(snap);
+│         while (d->undoStack.size() > static_cast<size_t>(d->maxUndo))
+│             d->undoStack.erase(d->undoStack.begin());
+│         d->redoStack.clear();
+│         d->lastMergeKey = mergeKey;
+│         d->lastUndoTime = QDateTime::currentDateTime();
+│         emit undoRedoChanged();
+│     }
+│     
+│     void Circuit::breakUndoMerge() {
+│         CircuitUndoData* d = und();
+│         if (!d) return;
+│         d->lastMergeKey.clear();
+│         d->lastUndoTime = QDateTime();
+│     }
+│     
+│     void Circuit::undo() {
+│         CircuitUndoData* d = und();
+│         if (!d) return;
+│         if (m_viewOnly) return;
+│         if (d->redoRunning) return;
+│         if (d->undoStack.empty()) return;
+│     
+│         d->redoRunning = true;
+│         QVariantMap cur = toJson();
+│         QVariantMap prev = d->undoStack.back();
+│         d->undoStack.pop_back();
+│         d->redoStack.push_back(cur);
+│         while (d->redoStack.size() > static_cast<size_t>(d->maxUndo))
+│             d->redoStack.erase(d->redoStack.begin());
+│         breakUndoMerge();
+│     
+│         restoreSnapshot(prev, true);
+│         d->redoRunning = false;
+│         emit undoRedoChanged();
+│     }
+│     
+│     void Circuit::redo() {
+│         CircuitUndoData* d = und();
+│         if (!d) return;
+│         if (m_viewOnly) return;
+│         if (d->redoRunning) return;
+│         if (d->redoStack.empty()) return;
+│     
+│         d->redoRunning = true;
+│         QVariantMap cur = toJson();
+│         QVariantMap next = d->redoStack.back();
+│         d->redoStack.pop_back();
+│         d->undoStack.push_back(cur);
+│         while (d->undoStack.size() > static_cast<size_t>(d->maxUndo))
+│             d->undoStack.erase(d->undoStack.begin());
+│         breakUndoMerge();
+│     
+│         restoreSnapshot(next, true);
+│         d->redoRunning = false;
+│         emit undoRedoChanged();
+│     }
+│     
+│     void Circuit::restoreSnapshot(const QVariantMap& snap, bool emitSignals) {
+│         CircuitUndoData* d = und();
+│         if (!d) return;
+│         if (d->restoring) return;
+│     
+│         QString savedCtx = m_currentCtxId;
+│         bool savedView = m_viewOnly;
+│     
+│         d->restoring = true;
+│         fromJson(snap);
+│         d->restoring = false;
+│     
+│         if (!savedCtx.isEmpty() && !m_subContexts.contains(savedCtx)) {
+│             savedCtx = "";
+│             savedView = false;
+│         }
+│         bool ctxChanged = (savedCtx != m_currentCtxId) || (savedView != m_viewOnly);
+│         m_currentCtxId = savedCtx;
+│         m_viewOnly = savedView;
+│     
+│         if (!emitSignals) return;
+│     
+│         if (ctxChanged) emit contextChanged();
+│         emit subcircuitsChanged();
+│         emit editContextsChanged();
+│         emit errorsChanged();
+│         emit clockChanged();
+│         emit changed();
+│     }
+│     
+│     // ============================================================
+│     // 最近文件
+│     // ============================================================
+│     
+│     void Circuit::loadRecentFiles() {
+│         m_recentFiles = RecentStore::load();
+│     }
+│     
+│     void Circuit::saveRecentFiles() {
+│         RecentStore::save(m_recentFiles);
+│     }
+│     
+│     void Circuit::addRecentFile(const QString& path) {
+│         if (path.isEmpty()) return;
+│         for (int i = m_recentFiles.size() - 1; i >= 0; --i) {
+│             if (m_recentFiles[i].toMap().value("path").toString() == path)
+│                 m_recentFiles.removeAt(i);
+│         }
+│         QVariantMap m;
+│         m["path"] = path;
+│         QFileInfo fi(path);
+│         m["name"] = fi.fileName();
+│         m["time"] = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm");
+│         m_recentFiles.prepend(m);
+│         while (m_recentFiles.size() > 10) m_recentFiles.removeLast();
+│         saveRecentFiles();
+│         emit recentFilesChanged();
+│     }
+│     
+│     void Circuit::removeRecentFile(const QString& path) {
+│         for (int i = m_recentFiles.size() - 1; i >= 0; --i) {
+│             if (m_recentFiles[i].toMap().value("path").toString() == path)
+│                 m_recentFiles.removeAt(i);
+│         }
+│         saveRecentFiles();
+│         emit recentFilesChanged();
+│     }
+│     
+│     void Circuit::clearRecentFiles() {
+│         m_recentFiles.clear();
+│         saveRecentFiles();
+│         emit recentFilesChanged();
+│     }
+
+├── Circuit_query.cpp
+│   内容:
+│     #include "../Circuit.h"
+│     #include "../core/ValueCodec.h"
+│     #include "../core/Component.h"
+│     #include "../logic/ComponentLogic.h"
+│     #include "../logic/event/EventEngine.h"
+│     #include <functional>
+│     
+│     // ============================================================
+│     // 元件 / 连线查询
+│     // ============================================================
+│     
+│     QVariantMap Circuit::getComponent(const QString& id) const {
+│         int idx = indexOfComponent(id);
+│         if (idx < 0) return {};
+│         return currentCtx().components[idx].toMap();
+│     }
+│     
+│     QVariantMap Circuit::getWire(const QString& id) const {
+│         int idx = indexOfWire(id);
+│         if (idx < 0) return {};
+│         return currentCtx().wires[idx].toMap();
+│     }
+│     
+│     QVariantList Circuit::outputPortsInfo(const QString& id) const {
+│         int idx = indexOfComponent(id);
+│         if (idx < 0) return {};
+│         return ComponentLogic::outputPorts(currentCtx().components[idx].toMap());
+│     }
+│     
+│     QVariantList Circuit::inputPortsInfo(const QString& id) const {
+│         int idx = indexOfComponent(id);
+│         if (idx < 0) return {};
+│         return ComponentLogic::inputPorts(currentCtx().components[idx].toMap());
+│     }
+│     
+│     QVariantMap Circuit::allPortsInfo() const {
+│         QVariantMap out;
+│         const Context& ctx = currentCtx();
+│         for (const auto& cv : ctx.components) {
+│             QVariantMap c = cv.toMap();
+│             QString id = c.value("id").toString();
+│             QVariantMap info;
+│             info["out"] = ComponentLogic::outputPorts(c);
+│             info["in"] = ComponentLogic::inputPorts(c);
+│             out[id] = info;
+│         }
+│         return out;
+│     }
+│     
+│     // ============================================================
+│     // 值 / 进制
+│     // ============================================================
+│     
+│     QString Circuit::getInputBase(const QString& id) const {
+│         int idx = indexOfComponent(id);
+│         if (idx < 0) return "bin";
+│         QVariantMap c = currentCtx().components[idx].toMap();
+│         QString b = c.value("displayBase").toString();
+│         return b.isEmpty() ? "bin" : b;
+│     }
+│     
+│     void Circuit::setInputBase(const QString& id, const QString& base) {
+│         if (m_viewOnly) return;
+│         int idx = indexOfComponent(id);
+│         if (idx < 0) return;
+│         Context& ctx = currentCtx();
+│         QVariantMap c = ctx.components[idx].toMap();
+│         if (c.value("displayBase").toString() == base) return;
+│         pushUndo("base:" + id);
+│         c["displayBase"] = base;
+│         ctx.components[idx] = c;
+│         emit changed();
+│     }
+│     
+│     QString Circuit::formatValue(const QString& binStr, const QString& base, int bw) const {
+│         return ValueCodec::format(binStr, base, bw);
+│     }
+│     
+│     QString Circuit::getInputAsString(const QString& id) const {
+│         int idx = indexOfComponent(id);
+│         if (idx < 0) return "";
+│         QVariantMap c = currentCtx().components[idx].toMap();
+│         QString base = c.value("displayBase").toString();
+│         if (base.isEmpty()) base = "bin";
+│         int bw = c.value("bitWidth").toInt();
+│         if (bw < 1) bw = 1;
+│         if (bw > 64) bw = 64;
+│         QVariantList bits = c.value("inputBits").toList();
+│         QString binStr = ValueCodec::bitsToString(bits, bw);
+│         return ValueCodec::format(binStr, base, bw);
+│     }
+│     
+│     QString Circuit::setInputFromString(const QString& id, const QString& text) {
+│         if (m_viewOnly) return "浏览模式不可修改";
+│         int idx = indexOfComponent(id);
+│         if (idx < 0) return "元件不存在";
+│         Context& ctx = currentCtx();
+│         QVariantMap c = ctx.components[idx].toMap();
+│         QString t = c.value("type").toString();
+│         if (t != "input" && t != "const") return "不是可编辑的元件";
+│         int bw = c.value("bitWidth").toInt();
+│         if (bw < 1) bw = 1;
+│         if (bw > 64) bw = 64;
+│         QString base = c.value("displayBase").toString();
+│         if (base.isEmpty()) base = "bin";
+│         QString err;
+│         QVariantList bits = ValueCodec::parse(text, base, bw, &err);
+│         if (!err.isEmpty()) return err;
+│         if (c.value("inputBits").toList() == bits) return "";
+│         c["inputBits"] = bits;
+│         ctx.components[idx] = c;
+│     
+│         if (m_engineType == "event" && m_eventEngine) {
+│             QString binStr = ValueCodec::bitsToString(bits, bw);
+│             QStringList qids = engineQidsFor(m_currentCtxId, id);
+│             for (const auto& qid : qids)
+│                 m_eventEngine->triggerInputString(qid, binStr);
+│             applyEngineOutputsToContexts();
+│             emit simulationTick();
+│         } else {
+│             evaluateAll();
+│         }
+│         emit changed();
+│         return "";
+│     }
+│     
+│     // ============================================================
+│     // 统计
+│     // ============================================================
+│     
+│     QVariantMap Circuit::statistics() const {
+│         QVariantMap result;
+│         QHash<QString, int> typeCount;
+│         int totalGates = 0, totalInputs = 0, totalOutputs = 0, totalSplits = 0;
+│         int totalHubs = 0, totalClocks = 0, totalSubInst = 0, totalTexts = 0;
+│         int totalConsts = 0;
+│     
+│         std::function<void(const Context&, QSet<QString>&)> countCtx =
+│             [&](const Context& ctx, QSet<QString>& visited) {
+│                 for (const auto& cv : ctx.components) {
+│                     QVariantMap c = cv.toMap();
+│                     QString t = c.value("type").toString();
+│                     if (t == "text") { totalTexts++; continue; }
+│                     if (t == "input") { totalInputs++; continue; }
+│                     if (t == "const") { totalConsts++; continue; }
+│                     if (t == "output" || t == "led") { totalOutputs++; continue; }
+│                     if (t == "clock") { totalClocks++; continue; }
+│                     if (t == "splitter") { totalSplits++; continue; }
+│                     if (t == "hub") { totalHubs++; continue; }
+│                     if (t == "sub") {
+│                         totalSubInst++;
+│                         QString subId = c.value("subId").toString();
+│                         if (!visited.contains(subId)) {
+│                             visited.insert(subId);
+│                             auto it = m_subContexts.find(subId);
+│                             if (it != m_subContexts.end()) countCtx(it.value(), visited);
+│                         }
+│                         continue;
+│                     }
+│                     totalGates++;
+│                     typeCount[t]++;
+│                 }
+│             };
+│     
+│         QSet<QString> visited;
+│         countCtx(m_root, visited);
+│     
+│         result["totalGates"] = totalGates;
+│         result["totalInputs"] = totalInputs;
+│         result["totalConsts"] = totalConsts;
+│         result["totalOutputs"] = totalOutputs;
+│         result["totalSplits"] = totalSplits;
+│         result["totalHubs"] = totalHubs;
+│         result["totalClocks"] = totalClocks;
+│         result["totalSubInst"] = totalSubInst;
+│         result["totalTexts"] = totalTexts;
+│         result["subCount"] = m_subContexts.size();
+│     
+│         QVariantMap byType;
+│         for (auto it = typeCount.begin(); it != typeCount.end(); ++it)
+│             byType[it.key()] = it.value();
+│         result["byType"] = byType;
+│         return result;
+│     }
+
+├── Circuit_selection.cpp
+│   内容:
+│     #include "../Circuit.h"
+│     #include "../io/ClipboardCodec.h"
+│     
+│     QVariantList Circuit::copySelection(const QStringList& ids) {
+│         return ClipboardCodec::encode(currentCtx(), ids);
+│     }
+│     
+│     QStringList Circuit::pasteSelection(const QVariantList& data, double dx, double dy) {
+│         QStringList newIds;
+│         if (m_viewOnly) return newIds;
+│         if (data.isEmpty()) return newIds;
+│     
+│         pushUndo();
+│     
+│         Context& ctx = currentCtx();
+│         ClipboardCodec::PasteResult r = ClipboardCodec::paste(ctx, data, dx, dy);
+│     
+│         for (auto it = r.newClockStates.begin(); it != r.newClockStates.end(); ++it)
+│             m_clockStates[it.key()] = it.value();
+│     
+│         evaluateAll();
+│         emit changed();
+│         return r.newIds;
+│     }
+
+├── Circuit_simulation.cpp
+│   内容:
+│     #include "../Circuit.h"
+│     #include "../logic/event/EventEngine.h"
+│     
+│     static const quint64 kSimRunBudget = 200000;
+│     
+│     // ============================================================
+│     // 时钟拍
+│     // ============================================================
+│     
+│     void Circuit::tick() {
+│         m_clockTickCount++;
+│     
+│         for (auto it = m_clockStates.begin(); it != m_clockStates.end(); ++it)
+│             it.value() = !it.value();
+│     
+│         auto updateClockOutputs = [&](Context& ctx) {
+│             for (int i = 0; i < ctx.components.size(); ++i) {
+│                 QVariantMap c = ctx.components[i].toMap();
+│                 if (c.value("type").toString() != "clock") continue;
+│                 bool v = m_clockStates.value(c.value("id").toString(), false);
+│                 int bw = c.value("bitWidth").toInt();
+│                 if (bw < 1) bw = 1;
+│                 QVariantList out;
+│                 out.append(v ? QString(bw, '1') : QString(bw, '0'));
+│                 c["outputPorts"] = out;
+│                 ctx.components[i] = c;
+│             }
+│         };
+│     
+│         if (m_engineType == "event" && m_eventEngine) {
+│             if (!m_simulationRunning) {
+│                 updateClockOutputs(m_root);
+│                 for (auto it = m_subContexts.begin(); it != m_subContexts.end(); ++it)
+│                     updateClockOutputs(it.value());
+│                 emit changed();
+│                 emit clockChanged();
+│                 return;
+│             }
+│     
+│             auto applyToCtx = [&](Context& ctx, const QString& ctxId) {
+│                 for (int i = 0; i < ctx.components.size(); ++i) {
+│                     QVariantMap c = ctx.components[i].toMap();
+│                     if (c.value("type").toString() != "clock") continue;
+│                     bool v = m_clockStates.value(c.value("id").toString(), false);
+│                     int bw = c.value("bitWidth").toInt();
+│                     if (bw < 1) bw = 1;
+│                     QString valStr = v ? QString(bw, '1') : QString(bw, '0');
+│                     QVariantList out;
+│                     out.append(valStr);
+│                     c["outputPorts"] = out;
+│                     ctx.components[i] = c;
+│     
+│                     QStringList qids = engineQidsFor(ctxId, c.value("id").toString());
+│                     for (const auto& qid : qids)
+│                         m_eventEngine->triggerForceOutput(qid, 0, valStr);
+│                 }
+│             };
+│             applyToCtx(m_root, QString());
+│             for (auto it = m_subContexts.begin(); it != m_subContexts.end(); ++it)
+│                 applyToCtx(it.value(), it.key());
+│     
+│             quint64 wd = m_eventEngine->wireDelay();
+│             quint64 gd = m_eventEngine->globalGateDelay();
+│             quint64 advance = (wd + gd) * 8 + 20;
+│             m_eventEngine->run(advance, 200000);
+│             applyEngineOutputsToContexts();
+│         } else {
+│             updateClockOutputs(m_root);
+│             for (auto it = m_subContexts.begin(); it != m_subContexts.end(); ++it)
+│                 updateClockOutputs(it.value());
+│             evaluateAll();
+│         }
+│     
+│         emit changed();
+│         emit clockChanged();
+│     }
+│     
+│     void Circuit::startClock() {
+│         if (!m_clockTimer) return;
+│         if (m_engineType == "event" && !m_simulationRunning) return;
+│         m_clockRunning = true;
+│         int interval = qMax(1, 1000 / qMax(1, m_clockFrequency));
+│         m_clockTimer->start(interval);
+│         emit clockChanged();
+│     }
+│     
+│     void Circuit::stopClock() {
+│         if (!m_clockTimer) return;
+│         m_clockRunning = false;
+│         m_clockTimer->stop();
+│         emit clockChanged();
+│     }
+│     
+│     void Circuit::setClockFrequency(int hz) {
+│         m_clockFrequency = qBound(1, hz, 1000);
+│         if (m_clockRunning) {
+│             int interval = qMax(1, 1000 / m_clockFrequency);
+│             m_clockTimer->start(interval);
+│         }
+│         emit clockChanged();
+│     }
+│     
+│     void Circuit::singleStep() {
+│         if (m_engineType == "event") {
+│             if (m_engineDirty) {
+│                 rebuildEventEngine();
+│                 applyEngineOutputsToContexts();
+│             }
+│             if (m_eventEngine) {
+│                 m_eventEngine->step();
+│                 applyEngineOutputsToContexts();
+│                 emit simulationTick();
+│                 emit changed();
+│             }
+│             return;
+│         }
+│         tick();
+│     }
+│     
+│     void Circuit::toggleClock(const QString& id) {
+│         if (m_viewOnly) return;
+│         int idx = indexOfComponent(id);
+│         if (idx < 0) return;
+│         Context& ctx = currentCtx();
+│         QVariantMap c = ctx.components[idx].toMap();
+│         if (c.value("type").toString() != "clock") return;
+│     
+│         bool v = !m_clockStates.value(id, false);
+│         m_clockStates[id] = v;
+│     
+│         int bw = c.value("bitWidth").toInt();
+│         if (bw < 1) bw = 1;
+│         QString valStr = v ? QString(bw, '1') : QString(bw, '0');
+│         QVariantList out;
+│         out.append(valStr);
+│         c["outputPorts"] = out;
+│         ctx.components[idx] = c;
+│     
+│         if (m_engineType == "event" && m_eventEngine) {
+│             if (!m_simulationRunning) {
+│                 emit changed();
+│                 return;
+│             }
+│     
+│             QStringList qids = engineQidsFor(m_currentCtxId, id);
+│             for (const auto& qid : qids)
+│                 m_eventEngine->triggerForceOutput(qid, 0, valStr);
+│     
+│             quint64 wd = m_eventEngine->wireDelay();
+│             quint64 gd = m_eventEngine->globalGateDelay();
+│             quint64 advance = (wd + gd) * 8 + 20;
+│             m_eventEngine->run(advance, 200000);
+│             applyEngineOutputsToContexts();
+│             emit simulationTick();
+│         } else {
+│             evaluateAll();
+│         }
+│         emit changed();
+│     }
+│     
+│     void Circuit::resetAllInputs() {
+│         if (m_viewOnly) return;
+│         pushUndo();
+│     
+│         m_clockTickCount = 0;
+│     
+│         for (auto it = m_clockStates.begin(); it != m_clockStates.end(); ++it)
+│             it.value() = false;
+│     
+│         auto resetCtx = [&](Context& ctx) {
+│             for (int i = 0; i < ctx.components.size(); ++i) {
+│                 QVariantMap c = ctx.components[i].toMap();
+│                 QString t = c.value("type").toString();
+│                 int bw = c.value("bitWidth").toInt();
+│                 if (bw < 1) bw = 1;
+│                 if (t == "clock") {
+│                     QVariantList out;
+│                     out.append(QString(bw, '0'));
+│                     c["outputPorts"] = out;
+│                     ctx.components[i] = c;
+│                 }
+│             }
+│         };
+│         resetCtx(m_root);
+│         for (auto it = m_subContexts.begin(); it != m_subContexts.end(); ++it)
+│             resetCtx(it.value());
+│     
+│         if (m_engineType == "event" && m_eventEngine) {
+│             rebuildEventEngine();
+│             m_eventEngine->reset();
+│             applyEngineOutputsToContexts();
+│         } else {
+│             evaluateAll();
+│         }
+│     
+│         emit clockChanged();
+│         emit changed();
+│     }
+│     
+│     // ============================================================
+│     // 仿真控制
+│     // ============================================================
+│     
+│     void Circuit::setGateTypeDelay(const QString& type, qulonglong d) {
+│         if (!m_eventEngine) return;
+│         m_eventEngine->setGateTypeDelay(type, d);
+│         emit engineSettingsChanged();
+│         emit changed();
+│     }
+│     qulonglong Circuit::getGateTypeDelay(const QString& type) const {
+│         if (!m_eventEngine) return 0;
+│         return m_eventEngine->gateDelayFor(type);
+│     }
+│     void Circuit::clearGateTypeDelays() {
+│         if (!m_eventEngine) return;
+│         m_eventEngine->clearGateTypeDelays();
+│         emit engineSettingsChanged();
+│         emit changed();
+│     }
+│     
+│     void Circuit::startSimulation() {
+│         if (m_engineType != "event") return;
+│         if (m_simulationRunning) return;
+│     
+│         if (m_engineDirty || !m_eventEngine || m_eventEngine->nodeCount() == 0) {
+│             rebuildEventEngine();
+│             applyEngineOutputsToContexts();
+│         }
+│     
+│         m_simulationRunning = true;
+│         if (m_simTimer) m_simTimer->start();
+│         emit simulationChanged();
+│         emit changed();
+│     }
+│     
+│     void Circuit::pauseSimulation() {
+│         if (!m_simulationRunning) return;
+│         m_simulationRunning = false;
+│         if (m_simTimer) m_simTimer->stop();
+│         emit simulationChanged();
+│         emit changed();
+│     }
+│     
+│     void Circuit::resetSimulation() {
+│         if (!m_eventEngine) return;
+│         m_eventEngine->reset();
+│         applyEngineOutputsToContexts();
+│         emit simulationChanged();
+│         emit simulationTick();
+│         emit changed();
+│     }
+│     
+│     void Circuit::simulateStep() {
+│         if (m_engineType != "event" || !m_eventEngine) return;
+│         if (m_engineDirty) {
+│             rebuildEventEngine();
+│             applyEngineOutputsToContexts();
+│         }
+│         m_eventEngine->step();
+│         applyEngineOutputsToContexts();
+│         emit simulationTick();
+│         emit changed();
+│     }
+│     
+│     void Circuit::onSimTimerTick() {
+│         if (!m_eventEngine || !m_simulationRunning) return;
+│         quint64 units = m_autoSpeed ? 1000 : (m_simulationSpeed / 60);
+│         if (units < 1) units = 1;
+│         m_eventEngine->run(units, kSimRunBudget);
+│         applyEngineOutputsToContexts();
+│         emit simulationTick();
+│         emit changed();
+│     }
+
+├── Circuit_subcircuit.cpp
+│   内容:
+│     #include "../Circuit.h"
+│     #include "../logic/iter/IterEngine.h"
+│     #include <QVariantMap>
+│     
+│     QString Circuit::addSubcircuit(const QString& name) {
+│         if (m_viewOnly) return QString();
+│         pushUndo();
+│         QString id = QString("S%1").arg(++m_subCounter);
+│         Context ctx;
+│         m_subContexts[id] = ctx;
+│         m_subNames[id] = name.isEmpty() ? ("子电路" + id) : name;
+│         emit subcircuitsChanged();
+│         emit editContextsChanged();
+│         emit changed();
+│         return id;
+│     }
+│     
+│     void Circuit::deleteSubcircuit(const QString& subId) {
+│         if (m_viewOnly) return;
+│         if (!m_subContexts.contains(subId)) return;
+│         pushUndo();
+│         m_subContexts.remove(subId);
+│         m_subNames.remove(subId);
+│         auto removeFrom = [&](Context& ctx) {
+│             for (int i = ctx.components.size() - 1; i >= 0; --i) {
+│                 auto c = ctx.components[i].toMap();
+│                 if (c.value("type").toString() == "sub" && c.value("subId").toString() == subId)
+│                     ctx.components.removeAt(i);
+│             }
+│         };
+│         removeFrom(m_root);
+│         for (auto it = m_subContexts.begin(); it != m_subContexts.end(); ++it)
+│             removeFrom(it.value());
+│         if (m_currentCtxId == subId) {
+│             m_currentCtxId = ""; m_viewOnly = false;
+│             emit contextChanged();
+│         }
+│         evaluateAll();
+│         emit subcircuitsChanged();
+│         emit editContextsChanged();
+│         emit changed();
+│     }
+│     
+│     void Circuit::setSubcircuitName(const QString& subId, const QString& name) {
+│         if (m_viewOnly) return;
+│         if (!m_subNames.contains(subId)) return;
+│         if (m_subNames.value(subId) == name) return;
+│         pushUndo();
+│         m_subNames[subId] = name;
+│         emit subcircuitsChanged();
+│         emit editContextsChanged();
+│         emit changed();
+│     }
+│     
+│     QString Circuit::getSubcircuitName(const QString& subId) const {
+│         return m_subNames.value(subId, "");
+│     }
+│     
+│     bool Circuit::hasSubCycle(const QString& fromCtx, const QString& targetId,
+│                               QSet<QString>& visited) const {
+│         if (fromCtx == targetId) return true;
+│         if (visited.contains(fromCtx)) return false;
+│         visited.insert(fromCtx);
+│     
+│         const Context* ctx = nullptr;
+│         if (fromCtx.isEmpty()) ctx = &m_root;
+│         else {
+│             auto it = m_subContexts.find(fromCtx);
+│             if (it != m_subContexts.end()) ctx = &it.value();
+│         }
+│         if (!ctx) return false;
+│     
+│         for (const auto& cv : ctx->components) {
+│             auto c = cv.toMap();
+│             if (c.value("type").toString() != "sub") continue;
+│             QString sid = c.value("subId").toString();
+│             if (hasSubCycle(sid, targetId, visited)) return true;
+│         }
+│         return false;
+│     }
+│     
+│     bool Circuit::canAddSubInstance(const QString& targetSubId) const {
+│         if (m_currentCtxId == targetSubId) return false;
+│         QSet<QString> visited;
+│         return !hasSubCycle(targetSubId, m_currentCtxId, visited);
+│     }
+│     
+│     void Circuit::enterSubcircuit(const QString& subId) {
+│         if (!m_subContexts.contains(subId)) return;
+│         m_currentCtxId = subId; m_viewOnly = true;
+│     
+│         syncSubStateFromParent(subId);
+│     
+│         {
+│             auto it = m_subContexts.find(subId);
+│             if (it != m_subContexts.end()) {
+│                 IterEngine::evaluateStandalone(it.value(), m_subContexts);
+│             }
+│         }
+│     
+│         emit contextChanged();
+│         emit changed();
+│     }
+│     
+│     void Circuit::leaveSubcircuit() {
+│         if (m_currentCtxId.isEmpty() && !m_viewOnly) return;
+│         m_currentCtxId = ""; m_viewOnly = false;
+│         emit contextChanged(); emit changed();
+│     }
+│     
+│     void Circuit::switchEditContext(const QString& ctxId) {
+│         if (!ctxId.isEmpty() && !m_subContexts.contains(ctxId)) return;
+│         m_currentCtxId = ctxId; m_viewOnly = false;
+│         emit contextChanged(); emit changed();
+│     }
+│     
+│     void Circuit::setSubcircuitAsRoot(const QString& subId) {
+│         if (m_viewOnly) return;
+│         if (subId.isEmpty()) return;
+│         if (!m_subContexts.contains(subId)) return;
+│     
+│         pushUndo();
+│     
+│         Context oldRoot = m_root;
+│         m_root = m_subContexts[subId];
+│         m_subContexts[subId] = oldRoot;
+│     
+│         m_currentCtxId = "";
+│         m_viewOnly = false;
+│     
+│         evaluateAll();
+│         emit contextChanged();
+│         emit subcircuitsChanged();
+│         emit editContextsChanged();
+│         emit changed();
+│     }
+│     
+│     void Circuit::syncSubStateFromParent(const QString& subId) {
+│         if (subId.isEmpty()) return;
+│         auto sit = m_subContexts.find(subId);
+│         if (sit == m_subContexts.end()) return;
+│     
+│         QVariantMap inst;
+│         bool found = false;
+│         for (const auto& cv : m_root.components) {
+│             QVariantMap c = cv.toMap();
+│             if (c.value("type").toString() == "sub" &&
+│                 c.value("subId").toString() == subId) {
+│                 inst = c;
+│                 found = true;
+│                 break;
+│             }
+│         }
+│         if (!found) return;
+│     
+│         QVariantList instIns = inst.value("inputPortValues").toList();
+│     
+│         Context& sub = sit.value();
+│         int idx = 0;
+│         for (int i = 0; i < sub.components.size(); ++i) {
+│             QVariantMap sc = sub.components[i].toMap();
+│             if (sc.value("type").toString() != "input") continue;
+│             if (idx >= instIns.size()) break;
+│     
+│             QString s = instIns[idx].toString();
+│             int bw = sc.value("bitWidth").toInt();
+│             if (bw < 1) bw = 1;
+│             while (s.length() < bw) s = "0" + s;
+│             if (s.length() > bw) s = s.right(bw);
+│     
+│             QVariantList bits;
+│             for (int k = 0; k < bw; ++k) bits.append(s[k] == '1');
+│             sc["inputBits"] = bits;
+│     
+│             if (s.contains('E') || s.contains('Z')) sc["outputOverride"] = s;
+│             else                                    sc["outputOverride"] = QVariant();
+│     
+│             sub.components[i] = sc;
+│             idx++;
+│         }
+│     }
+
+└── Circuit_wire.cpp
+    内容:
+      #include "../Circuit.h"
+      #include "../core/IdAllocator.h"
+      #include "../logic/ComponentLogic.h"
+      #include <QVariantMap>
+      #include <algorithm>
+      #include <cmath>
+      
+      QString Circuit::addWire(const QString& fromComp, int fromPort,
+                               const QString& toComp, int toPort) {
+          if (m_viewOnly) return QString();
+          if (indexOfComponent(fromComp) < 0) return QString();
+          if (indexOfComponent(toComp) < 0) return QString();
+          Context& ctx = currentCtx();
+      
+          pushUndo();
+      
+          QVariantMap w;
+          w["id"] = IdAllocator::nextWireId(ctx);
+          w["fromComp"] = fromComp;
+          w["fromPort"] = fromPort;
+          w["toComp"] = toComp;
+          w["toPort"] = toPort;
+          ctx.wires.append(w);
+          evaluateAll();
+          emit changed();
+          return w["id"].toString();
+      }
+      
+      void Circuit::removeWire(const QString& id) {
+          if (m_viewOnly) return;
+          int idx = indexOfWire(id);
+          if (idx < 0) return;
+          pushUndo();
+          currentCtx().wires.removeAt(idx);
+          evaluateAll();
+          emit changed();
+      }
+      
+      QString Circuit::wireAtPoint(double x, double y, double tol) const {
+          const Context& ctx = currentCtx();
+          for (auto& wv : ctx.wires) {
+              auto w = wv.toMap();
+              QString id = w.value("id").toString();
+              QString fromId = w.value("fromComp").toString();
+              QString toId = w.value("toComp").toString();
+              int fromIdx = w.value("fromPort").toInt();
+              int toIdx = w.value("toPort").toInt();
+      
+              auto compPos = [&](const QString& cid, int port, bool isOut, double& px, double& py) -> bool {
+                  int ci = indexOfComponent(cid);
+                  if (ci < 0) return false;
+                  QVariantMap c = ctx.components[ci].toMap();
+                  QVariantList ports = isOut ? ComponentLogic::outputPorts(c)
+                                             : ComponentLogic::inputPorts(c);
+                  if (port < 0 || port >= ports.size()) return false;
+                  QVariantMap p = ports[port].toMap();
+                  px = c.value("x").toDouble() + p.value("x").toDouble();
+                  py = c.value("y").toDouble() + p.value("y").toDouble();
+                  return true;
+              };
+      
+              double x1, y1, x2, y2;
+              if (!compPos(fromId, fromIdx, true, x1, y1)) continue;
+              if (!compPos(toId, toIdx, false, x2, y2)) continue;
+      
+              double cx = std::max(std::abs(x2 - x1) / 2.0, 40.0);
+              const int samples = 20;
+              for (int i = 0; i <= samples; ++i) {
+                  double t = (double)i / samples;
+                  double mt = 1.0 - t;
+                  double bx = mt*mt*mt*x1 + 3*mt*mt*t*(x1+cx) + 3*mt*t*t*(x2-cx) + t*t*t*x2;
+                  double by = mt*mt*mt*y1 + 3*mt*mt*t*y1 + 3*mt*t*t*y2 + t*t*t*y2;
+                  double dx = bx - x, dy = by - y;
+                  if (dx*dx + dy*dy < tol*tol) return id;
+              }
+          }
+          return QString();
+      }
+
+core/
+├── CircuitContext.cpp
+│   内容:
+│     #include "CircuitContext.h"
+│     
+│     int CircuitContext::indexOfComponent(const QString& id) const {
+│         for (int i = 0; i < components.size(); ++i)
+│             if (components[i].toMap().value("id").toString() == id) return i;
+│         return -1;
+│     }
+│     
+│     int CircuitContext::indexOfWire(const QString& id) const {
+│         for (int i = 0; i < wires.size(); ++i)
+│             if (wires[i].toMap().value("id").toString() == id) return i;
+│         return -1;
+│     }
+
+├── CircuitContext.h
+│   内容:
+│     #ifndef CIRCUITCONTEXT_H
+│     #define CIRCUITCONTEXT_H
+│     
+│     #include <QVariantList>
+│     #include <QString>
+│     
+│     /**
+│      * @brief 电路上下文：一组元件与连线。
+│      *
+│      * 一个 Circuit 由 1 个根上下文（主电路）+ N 个子电路上下文组成。
+│      */
+│     struct CircuitContext {
+│         QVariantList components;   // 元件列表（每个元素为 QVariantMap）
+│         QVariantList wires;        // 连线列表（每个元素为 QVariantMap）
+│         int compCounter = 0;       // 元件 ID 计数器
+│         int wireCounter = 0;       // 连线 ID 计数器
+│     
+│         int indexOfComponent(const QString& id) const;
+│         int indexOfWire(const QString& id) const;
+│         bool isEmpty() const { return components.isEmpty() && wires.isEmpty(); }
+│     };
+│     
+│     #endif // CIRCUITCONTEXT_H
+
+├── Component.h
+│   内容:
+│     #ifndef COMPONENT_H
+│     #define COMPONENT_H
+│     
+│     #include <QVariantMap>
+│     #include <QString>
+│     
+│     namespace Component {
+│     
+│     // ---- 字段读取 ----
+│     inline QString id(const QVariantMap& c)     { return c.value("id").toString(); }
+│     inline QString type(const QVariantMap& c)   { return c.value("type").toString(); }
+│     inline QString name(const QVariantMap& c)   { return c.value("name").toString(); }
+│     inline QString subId(const QVariantMap& c)  { return c.value("subId").toString(); }
+│     inline QString displayBase(const QVariantMap& c) {
+│         QString b = c.value("displayBase").toString();
+│         return b.isEmpty() ? QStringLiteral("bin") : b;
+│     }
+│     inline int bitWidth(const QVariantMap& c) {
+│         int b = c.value("bitWidth").toInt();
+│         return b < 1 ? 1 : (b > 64 ? 64 : b);
+│     }
+│     inline int inputCount(const QVariantMap& c) { return c.value("inputCount").toInt(); }
+│     inline int rotation(const QVariantMap& c)   { return c.value("rotation").toInt(); }
+│     inline double x(const QVariantMap& c)       { return c.value("x").toDouble(); }
+│     inline double y(const QVariantMap& c)       { return c.value("y").toDouble(); }
+│     
+│     // ---- 类型判定 ----
+│     inline bool isInput(const QVariantMap& c)  { QString t = type(c); return t == "input" || t == "const"; }
+│     inline bool isEditable(const QVariantMap& c) {
+│         QString t = type(c);
+│         return t == "input" || t == "const";
+│     }
+│     inline bool isClock(const QVariantMap& c)  { return type(c) == "clock"; }
+│     inline bool isOutput(const QVariantMap& c) { return type(c) == "output"; }
+│     inline bool isLed(const QVariantMap& c)    { return type(c) == "led"; }
+│     inline bool isSub(const QVariantMap& c)    { return type(c) == "sub"; }
+│     inline bool isText(const QVariantMap& c)   { return type(c) == "text"; }
+│     inline bool isSplitter(const QVariantMap& c) { return type(c) == "splitter"; }
+│     inline bool isHub(const QVariantMap& c)    { return type(c) == "hub"; }
+│     inline bool isGate(const QVariantMap& c) {
+│         QString t = type(c);
+│         return t == "and" || t == "or" || t == "nand" ||
+│                t == "nor" || t == "xor" || t == "xnor" || t == "not";
+│     }
+│     inline bool isTransistor(const QVariantMap& c) {
+│         QString t = type(c);
+│         return t == "tgate" || t == "ntran" || t == "ptran";
+│     }
+│     
+│     // ---- inline：不再需要 Component.cpp ----
+│     inline QString qualifiedId(const QString& prefix, const QString& localId) {
+│         return prefix.isEmpty() ? localId : (prefix + "/" + localId);
+│     }
+│     
+│     } // namespace Component
+│     
+│     #endif // COMPONENT_H
+
+├── IdAllocator.cpp
+│   内容:
+│     #include "IdAllocator.h"
+│     
+│     namespace IdAllocator {
+│     
+│     QString nextComponentId(CircuitContext& ctx) {
+│         return QString("C%1").arg(++ctx.compCounter);
+│     }
+│     
+│     QString nextWireId(CircuitContext& ctx) {
+│         return QString("W%1").arg(++ctx.wireCounter);
+│     }
+│     
+│     } // namespace IdAllocator
+
+├── IdAllocator.h
+│   内容:
+│     #ifndef IDALLOCATOR_H
+│     #define IDALLOCATOR_H
+│     
+│     #include <QString>
+│     #include "CircuitContext.h"
+│     
+│     /**
+│      * @brief 元件 / 连线 ID 生成器。
+│      *
+│      * 只负责自增计数器与格式化，不涉及具体电路逻辑。
+│      */
+│     namespace IdAllocator {
+│     
+│     QString nextComponentId(CircuitContext& ctx);
+│     QString nextWireId(CircuitContext& ctx);
+│     
+│     } // namespace IdAllocator
+│     
+│     #endif // IDALLOCATOR_H
+
+├── UndoData.h
+│   内容:
+│     #ifndef UNDODATA_H
+│     #define UNDODATA_H
+│     
+│     #include <QVariantMap>
+│     #include <QString>
+│     #include <QDateTime>
+│     #include <vector>
+│     
+│     /**
+│      * undo/redo 全部状态。
+│      * 通过 QObject 的 dynamic property 间接持有，不占 Circuit 对象内存。
+│      */
+│     struct CircuitUndoData {
+│         std::vector<QVariantMap> undoStack;
+│         std::vector<QVariantMap> redoStack;
+│         QString   lastMergeKey;
+│         QDateTime lastUndoTime;
+│         bool restoring   = false;
+│         bool redoRunning = false;
+│         int  maxUndo     = 200;
+│     };
+│     
+│     #endif // UNDODATA_H
+
+├── ValueCodec.cpp
+│   内容:
+│     #include "ValueCodec.h"
+│     #include <QStringList>
+│     #include <cstring>
+│     
+│     namespace ValueCodec {
+│     
+│     QString bitsToString(const QVariantList& bits, int bw) {
+│         QString s;
+│         s.reserve(bw);
+│         for (int i = 0; i < bw; ++i)
+│             s += (i < bits.size() && bits[i].toBool()) ? '1' : '0';
+│         return s;
+│     }
+│     
+│     bool bitAt(const QString& s, int idx) {
+│         if (idx < 0 || idx >= s.length()) return false;
+│         return s[idx] == '1';
+│     }
+│     
+│     QString format(const QString& binStr, const QString& base, int bw) {
+│         if (bw < 1) bw = 1;
+│         if (bw > 64) bw = 64;
+│         QString s = binStr;
+│         if (s.length() < bw) s = QString(bw - s.length(), '0') + s;
+│         if (s.length() > bw) s = s.right(bw);
+│         QString b = base;
+│         if (b.isEmpty()) b = "bin";
+│         if (b == "bin") return s;
+│         if (b == "hex") {
+│             int digits = (bw + 3) / 4;
+│             QString out;
+│             for (int d = digits - 1; d >= 0; --d) {
+│                 int v = 0;
+│                 for (int bit = 0; bit < 4; ++bit) {
+│                     int pos = d * 4 + bit;
+│                     int idx = bw - 1 - pos;
+│                     if (idx >= 0 && idx < bw && s[idx] == '1') v |= (1 << bit);
+│                 }
+│                 out += (v < 10) ? QChar('0' + v) : QChar('A' + v - 10);
+│             }
+│             return out;
+│         }
+│         if (b == "udec" || b == "sdec") {
+│             quint64 v = 0;
+│             for (int i = 0; i < bw && i < 64; ++i) {
+│                 int idx = bw - 1 - i;
+│                 if (idx >= 0 && idx < bw && s[idx] == '1') v |= (1ULL << i);
+│             }
+│             if (b == "udec") return QString::number(v);
+│             if (bw < 64) {
+│                 qint64 sv = (qint64)v;
+│                 qint64 sign = 1LL << (bw - 1);
+│                 if (sv & sign) sv -= (1LL << bw);
+│                 return QString::number(sv);
+│             }
+│             return QString::number((qint64)v);
+│         }
+│         if (b == "f32") {
+│             quint32 uv = 0;
+│             for (int i = 0; i < 32; ++i) {
+│                 int idx = bw - 1 - i;
+│                 if (idx >= 0 && idx < bw && s[idx] == '1') uv |= (1u << i);
+│             }
+│             float f; std::memcpy(&f, &uv, 4);
+│             return QString::number((double)f, 'g', 9);
+│         }
+│         if (b == "f64") {
+│             quint64 uv = 0;
+│             for (int i = 0; i < 64; ++i) {
+│                 int idx = bw - 1 - i;
+│                 if (idx >= 0 && idx < bw && s[idx] == '1') uv |= (1ULL << i);
+│             }
+│             double d; std::memcpy(&d, &uv, 8);
+│             return QString::number(d, 'g', 17);
+│         }
+│         return s;
+│     }
+│     
+│     QVariantList parse(const QString& text, const QString& base, int bw, QString* err) {
+│         QVariantList bits;
+│         for (int i = 0; i < bw; ++i) bits.append(false);
+│         QString s = text.trimmed();
+│         if (s.isEmpty()) return bits;
+│         if (base == "bin") {
+│             for (auto ch : s) if (ch != '0' && ch != '1') {
+│                     if (err) *err = "二进制只能是 0/1"; return bits;
+│                 }
+│             if (s.length() > bw) {
+│                 if (err) *err = QString("最多 %1 位").arg(bw); return bits;
+│             }
+│             int offset = bw - s.length();
+│             for (int i = 0; i < s.length(); ++i)
+│                 bits[offset + i] = (s[i] == '1');
+│             return bits;
+│         }
+│         if (base == "hex") {
+│             QString up = s.toUpper();
+│             for (auto ch : up) if (!((ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'F'))) {
+│                     if (err) *err = "非法十六进制"; return bits;
+│                 }
+│             int maxDigits = (bw + 3) / 4;
+│             if (up.length() > maxDigits) {
+│                 if (err) *err = QString("最多 %1 位十六进制").arg(maxDigits); return bits;
+│             }
+│             for (int i = up.length() - 1; i >= 0; --i) {
+│                 int digitFromRight = (up.length() - 1 - i);
+│                 QChar ch = up[i];
+│                 int v = (ch >= '0' && ch <= '9') ? (ch.unicode() - '0') : (ch.unicode() - 'A' + 10);
+│                 for (int bit = 0; bit < 4; ++bit) {
+│                     int pos = digitFromRight * 4 + bit;
+│                     int idx = bw - 1 - pos;
+│                     if (idx >= 0 && idx < bw)
+│                         bits[idx] = (v & (1 << bit)) != 0;
+│                 }
+│             }
+│             return bits;
+│         }
+│         if (base == "udec") {
+│             bool ok = false;
+│             qint64 v = s.toLongLong(&ok);
+│             if (!ok) { if (err) *err = "无效整数"; return bits; }
+│             if (v < 0) { if (err) *err = "无符号不能为负"; return bits; }
+│             if (bw < 63) {
+│                 qint64 maxV = (1LL << bw) - 1;
+│                 if (v > maxV) {
+│                     if (err) *err = QString("超出范围 [0, %1]").arg(maxV); return bits;
+│                 }
+│             }
+│             for (int i = 0; i < bw; ++i) {
+│                 int idx = bw - 1 - i;
+│                 bits[idx] = ((v >> i) & 1) != 0;
+│             }
+│             return bits;
+│         }
+│         if (base == "sdec") {
+│             bool ok = false;
+│             qint64 v = s.toLongLong(&ok);
+│             if (!ok) { if (err) *err = "无效整数"; return bits; }
+│             if (bw < 63) {
+│                 qint64 minV = -(1LL << (bw - 1));
+│                 qint64 maxV = (1LL << (bw - 1)) - 1;
+│                 if (v < minV || v > maxV) {
+│                     if (err) *err = QString("超出范围 [%1, %2]").arg(minV).arg(maxV);
+│                     return bits;
+│                 }
+│             }
+│             quint64 uv = (quint64)v;
+│             for (int i = 0; i < bw; ++i) {
+│                 int idx = bw - 1 - i;
+│                 bits[idx] = ((uv >> i) & 1) != 0;
+│             }
+│             return bits;
+│         }
+│         if (base == "f32") {
+│             if (bw < 32) { if (err) *err = "需要至少 32 位"; return bits; }
+│             bool ok = false; float f = s.toFloat(&ok);
+│             if (!ok) { if (err) *err = "无效浮点"; return bits; }
+│             quint32 uv; std::memcpy(&uv, &f, 4);
+│             for (int i = 0; i < 32; ++i) {
+│                 int idx = bw - 1 - i;
+│                 bits[idx] = ((uv >> i) & 1) != 0;
+│             }
+│             return bits;
+│         }
+│         if (base == "f64") {
+│             if (bw < 64) { if (err) *err = "需要至少 64 位"; return bits; }
+│             bool ok = false; double d = s.toDouble(&ok);
+│             if (!ok) { if (err) *err = "无效浮点"; return bits; }
+│             quint64 uv; std::memcpy(&uv, &d, 8);
+│             for (int i = 0; i < 64; ++i) {
+│                 int idx = bw - 1 - i;
+│                 bits[idx] = ((uv >> i) & 1) != 0;
+│             }
+│             return bits;
+│         }
+│         if (err) *err = "未知进制";
+│         return bits;
+│     }
+│     
+│     } // namespace ValueCodec
+
+├── ValueCodec.h
+│   内容:
+│     #ifndef VALUECODEC_H
+│     #define VALUECODEC_H
+│     
+│     #include <QString>
+│     #include <QVariantList>
+│     
+│     /**
+│      * @brief 二进制串与各种进制之间的编解码。
+│      */
+│     namespace ValueCodec {
+│     
+│     QString bitsToString(const QVariantList& bits, int bw);
+│     bool bitAt(const QString& s, int idx);
+│     QString format(const QString& binStr, const QString& base, int bw);
+│     QVariantList parse(const QString& text, const QString& base, int bw, QString* err);
+│     
+│     } // namespace ValueCodec
+│     
+│     #endif // VALUECODEC_H
+
+└── Wire.h
+    内容:
+      #ifndef WIRE_H
+      #define WIRE_H
+      
+      #include <QVariantMap>
+      #include <QString>
+      
+      /**
+       * @brief 连线（QVariantMap）的通用存取器。
+       */
+      namespace Wire {
+      
+      inline QString id(const QVariantMap& w)       { return w.value("id").toString(); }
+      inline QString fromComp(const QVariantMap& w) { return w.value("fromComp").toString(); }
+      inline QString toComp(const QVariantMap& w)   { return w.value("toComp").toString(); }
+      inline int fromPort(const QVariantMap& w)     { return w.value("fromPort").toInt(); }
+      inline int toPort(const QVariantMap& w)       { return w.value("toPort").toInt(); }
+      
+      inline bool connects(const QVariantMap& w, const QString& compId) {
+          return fromComp(w) == compId || toComp(w) == compId;
+      }
+      
+      } // namespace Wire
+      
+      #endif // WIRE_H
+
+io/
+├── ClipboardCodec.cpp
+│   内容:
+│     #include "ClipboardCodec.h"
+│     #include "../core/IdAllocator.h"
+│     #include <QSet>
+│     
+│     namespace ClipboardCodec {
+│     
+│     QVariantList encode(const CircuitContext& ctx, const QStringList& ids) {
+│         QVariantList out;
+│         QSet<QString> idSet;
+│         for (const auto& id : ids) idSet.insert(id);
+│     
+│         QVariantList compsOut, wiresOut;
+│         for (auto& cv : ctx.components) {
+│             auto c = cv.toMap();
+│             if (idSet.contains(c.value("id").toString())) compsOut.append(c);
+│         }
+│         for (auto& wv : ctx.wires) {
+│             auto w = wv.toMap();
+│             if (idSet.contains(w.value("fromComp").toString()) &&
+│                 idSet.contains(w.value("toComp").toString()))
+│                 wiresOut.append(w);
+│         }
+│     
+│         QVariantMap data;
+│         data["components"] = compsOut;
+│         data["wires"] = wiresOut;
+│         out.append(data);
+│         return out;
+│     }
+│     
+│     PasteResult paste(CircuitContext& ctx,
+│                       const QVariantList& data,
+│                       double dx, double dy)
+│     {
+│         PasteResult result;
+│         if (data.isEmpty()) return result;
+│     
+│         QVariantMap d = data[0].toMap();
+│         QVariantList comps = d.value("components").toList();
+│         QVariantList wires = d.value("wires").toList();
+│         if (comps.isEmpty()) return result;
+│     
+│         QHash<QString, QString> idMap;
+│         for (auto& cv : comps) {
+│             QVariantMap c = cv.toMap();
+│             QString oldId = c.value("id").toString();
+│             QString newId = IdAllocator::nextComponentId(ctx);
+│             idMap[oldId] = newId;
+│             c["id"] = newId;
+│             c["x"] = c.value("x").toDouble() + dx;
+│             c["y"] = c.value("y").toDouble() + dy;
+│             if (c.value("type").toString() == "clock")
+│                 result.newClockStates[newId] = false;
+│             ctx.components.append(c);
+│             result.newIds.append(newId);
+│         }
+│     
+│         for (auto& wv : wires) {
+│             QVariantMap w = wv.toMap();
+│             QString from = idMap.value(w.value("fromComp").toString(), "");
+│             QString to = idMap.value(w.value("toComp").toString(), "");
+│             if (from.isEmpty() || to.isEmpty()) continue;
+│             QVariantMap nw;
+│             nw["id"] = IdAllocator::nextWireId(ctx);
+│             nw["fromComp"] = from;
+│             nw["fromPort"] = w.value("fromPort");
+│             nw["toComp"] = to;
+│             nw["toPort"] = w.value("toPort");
+│             ctx.wires.append(nw);
+│         }
+│     
+│         return result;
+│     }
+│     
+│     } // namespace ClipboardCodec
+
+├── ClipboardCodec.h
+│   内容:
+│     #ifndef CLIPBOARDCODEC_H
+│     #define CLIPBOARDCODEC_H
+│     
+│     #include <QVariantList>
+│     #include <QVariantMap>
+│     #include <QStringList>
+│     #include <QString>
+│     #include <QHash>
+│     #include "../core/CircuitContext.h"
+│     
+│     /**
+│      * @brief 复制 / 粘贴的编解码。
+│      *
+│      * encode：从 ctx 中抽取指定 id 集合的元件及其内部连线。
+│      * paste：把 data 中的元件与连线追加到 ctx，返回新 id 与新增 clock 状态。
+│      */
+│     namespace ClipboardCodec {
+│     
+│     QVariantList encode(const CircuitContext& ctx, const QStringList& ids);
+│     
+│     struct PasteResult {
+│         QStringList newIds;
+│         QHash<QString, bool> newClockStates;   // 新增 clock 元件的初始状态
+│     };
+│     
+│     PasteResult paste(CircuitContext& ctx,
+│                       const QVariantList& data,
+│                       double dx, double dy);
+│     
+│     } // namespace ClipboardCodec
+│     
+│     #endif // CLIPBOARDCODEC_H
+
+├── JsonCodec.cpp
+│   内容:
+│     #include "JsonCodec.h"
+│     #include <QtGlobal>
+│     
+│     namespace JsonCodec {
+│     
+│     QVariantMap encode(const CircuitContext& root,
+│                        const QHash<QString, CircuitContext>& subContexts,
+│                        const QHash<QString, QString>& subNames,
+│                        int subCounter,
+│                        int clockFrequency,
+│                        int clockTickCount,
+│                        const QString& engineType,
+│                        qulonglong globalGateDelay,
+│                        qulonglong wireDelay,
+│                        qulonglong simulationSpeed,
+│                        int simulationSpeedExp,
+│                        bool autoSpeed,
+│                        const QHash<QString, quint64>& gateTypeDelays)
+│     {
+│         QVariantMap result;
+│         result["version"] = 11;
+│         result["root"] = QVariantMap{
+│             {"components", root.components},
+│             {"wires", root.wires},
+│             {"compCounter", root.compCounter},
+│             {"wireCounter", root.wireCounter}
+│         };
+│         QVariantList subs;
+│         for (auto it = subContexts.begin(); it != subContexts.end(); ++it) {
+│             QVariantMap s;
+│             s["id"] = it.key();
+│             s["name"] = subNames.value(it.key(), "");
+│             s["components"] = it.value().components;
+│             s["wires"] = it.value().wires;
+│             s["compCounter"] = it.value().compCounter;
+│             s["wireCounter"] = it.value().wireCounter;
+│             subs.append(s);
+│         }
+│         result["subcircuits"] = subs;
+│         result["subCounter"] = subCounter;
+│         result["clockFrequency"] = clockFrequency;
+│         result["clockTickCount"] = clockTickCount;
+│         result["engineType"] = engineType;
+│         result["globalGateDelay"] = QVariant::fromValue<qulonglong>(globalGateDelay);
+│         result["wireDelay"] = QVariant::fromValue<qulonglong>(wireDelay);
+│         result["simulationSpeed"] = QVariant::fromValue<qulonglong>(simulationSpeed);
+│         result["simulationSpeedExp"] = simulationSpeedExp;
+│         result["autoSpeed"] = autoSpeed;
+│         QVariantMap gateDelays;
+│         for (auto it = gateTypeDelays.begin(); it != gateTypeDelays.end(); ++it) {
+│             gateDelays[it.key()] = QVariant::fromValue<qulonglong>(it.value());
+│         }
+│         result["gateTypeDelays"] = gateDelays;
+│         return result;
+│     }
+│     
+│     static void fixCtx(CircuitContext& ctx, QHash<QString, bool>& clockStates) {
+│         for (int i = 0; i < ctx.components.size(); ++i) {
+│             QVariantMap c = ctx.components[i].toMap();
+│             if (!c.contains("displayBase")) c["displayBase"] = "bin";
+│             if (!c.contains("name")) c["name"] = "";
+│             if (c.value("type").toString() == "text" && !c.contains("content"))
+│                 c["content"] = "文本";
+│             int bw = c.value("bitWidth").toInt();
+│             if (bw < 1) bw = 1;
+│             QVariantList bits = c.value("inputBits").toList();
+│             while (bits.size() < bw) bits.prepend(false);
+│             while (bits.size() > bw) bits.removeFirst();
+│             c["inputBits"] = bits;
+│             QString t = c.value("type").toString();
+│             if ((t == "splitter" || t == "hub") && !c.contains("outputSplits")) {
+│                 QVariantList splits;
+│                 for (int j = 0; j < bw; ++j) splits.append(1);
+│                 c["outputSplits"] = splits;
+│             }
+│             if (t == "clock") clockStates[c.value("id").toString()] = false;
+│             ctx.components[i] = c;
+│         }
+│     }
+│     
+│     DecodedData decode(const QVariantMap& data) {
+│         DecodedData out;
+│     
+│         if (data.contains("root")) {
+│             QVariantMap r = data.value("root").toMap();
+│             out.root.components = r.value("components").toList();
+│             out.root.wires = r.value("wires").toList();
+│             out.root.compCounter = r.value("compCounter").toInt();
+│             out.root.wireCounter = r.value("wireCounter").toInt();
+│         }
+│     
+│         QVariantList subs = data.value("subcircuits").toList();
+│         for (auto& sv : subs) {
+│             QVariantMap s = sv.toMap();
+│             QString id = s.value("id").toString();
+│             CircuitContext c;
+│             c.components = s.value("components").toList();
+│             c.wires = s.value("wires").toList();
+│             c.compCounter = s.value("compCounter").toInt();
+│             c.wireCounter = s.value("wireCounter").toInt();
+│             out.subContexts[id] = c;
+│             out.subNames[id] = s.value("name").toString();
+│         }
+│     
+│         out.subCounter = data.value("subCounter").toInt();
+│     
+│         out.clockFrequency = qBound(1, data.value("clockFrequency").toInt(), 1000);
+│         if (out.clockFrequency < 1) out.clockFrequency = 2;
+│     
+│         out.clockTickCount = data.value("clockTickCount").toInt();
+│         if (out.clockTickCount < 0) out.clockTickCount = 0;
+│     
+│         out.engineType = data.value("engineType", "event").toString();
+│         if (out.engineType != "iter" && out.engineType != "event")
+│             out.engineType = "event";
+│     
+│         qulonglong gd = data.value("globalGateDelay").toULongLong();
+│         if (gd < 1) gd = 1;
+│         out.globalGateDelay = gd;
+│     
+│         qulonglong wd = data.value("wireDelay").toULongLong();
+│         if (wd < 1) wd = 1;
+│         out.wireDelay = wd;
+│     
+│         QVariantMap gmap = data.value("gateTypeDelays").toMap();
+│         for (auto it = gmap.begin(); it != gmap.end(); ++it) {
+│             qulonglong v = it.value().toULongLong();
+│             out.gateTypeDelays[it.key()] = v;
+│         }
+│     
+│         out.simulationSpeed = data.value("simulationSpeed").toULongLong();
+│         if (out.simulationSpeed < 1) out.simulationSpeed = 1000;
+│     
+│         out.simulationSpeedExp = data.value("simulationSpeedExp").toInt();
+│         if (out.simulationSpeedExp < 0) out.simulationSpeedExp = 0;
+│         if (out.simulationSpeedExp > 12) out.simulationSpeedExp = 12;
+│     
+│         out.autoSpeed = data.value("autoSpeed", true).toBool();
+│     
+│         fixCtx(out.root, out.clockStates);
+│         for (auto it = out.subContexts.begin(); it != out.subContexts.end(); ++it)
+│             fixCtx(it.value(), out.clockStates);
+│     
+│         return out;
+│     }
+│     
+│     } // namespace JsonCodec
+
+├── JsonCodec.h
+│   内容:
+│     #ifndef JSONCODEC_H
+│     #define JSONCODEC_H
+│     
+│     #include <QVariantMap>
+│     #include <QVariantList>
+│     #include <QHash>
+│     #include <QString>
+│     #include "../core/CircuitContext.h"
+│     
+│     /**
+│      * @brief 存档 JSON 的编解码。
+│      *
+│      * 只负责数据层转换，不涉及 Circuit 的成员状态。
+│      * 解析结果通过 DecodedData 结构返回，由调用者填入自身成员。
+│      */
+│     namespace JsonCodec {
+│     
+│     QVariantMap encode(const CircuitContext& root,
+│                        const QHash<QString, CircuitContext>& subContexts,
+│                        const QHash<QString, QString>& subNames,
+│                        int subCounter,
+│                        int clockFrequency,
+│                        int clockTickCount,
+│                        const QString& engineType,
+│                        qulonglong globalGateDelay,
+│                        qulonglong wireDelay,
+│                        qulonglong simulationSpeed,
+│                        int simulationSpeedExp,
+│                        bool autoSpeed,
+│                        const QHash<QString, quint64>& gateTypeDelays);
+│     
+│     struct DecodedData {
+│         CircuitContext root;
+│         QHash<QString, CircuitContext> subContexts;
+│         QHash<QString, QString> subNames;
+│         int subCounter = 0;
+│         int clockFrequency = 2;
+│         int clockTickCount = 0;
+│         QString engineType = "event";
+│         qulonglong globalGateDelay = 1;
+│         qulonglong wireDelay = 1;
+│         qulonglong simulationSpeed = 1000;
+│         int simulationSpeedExp = 3;
+│         bool autoSpeed = true;
+│         QHash<QString, quint64> gateTypeDelays;
+│         QHash<QString, bool> clockStates;
+│     };
+│     
+│     DecodedData decode(const QVariantMap& data);
+│     
+│     } // namespace JsonCodec
+│     
+│     #endif // JSONCODEC_H
+
+├── RecentStore.cpp
+│   内容:
+│     #include "RecentStore.h"
+│     #include <QJsonDocument>
+│     #include <QJsonObject>
+│     #include <QJsonArray>
+│     #include <QSettings>
+│     
+│     namespace RecentStore {
+│     
+│     QVariantList load() {
+│         QVariantList result;
+│         QSettings s;
+│         QString json = s.value("recentFiles").toString();
+│         if (json.isEmpty()) return result;
+│     
+│         QJsonParseError perr;
+│         QJsonDocument doc = QJsonDocument::fromJson(json.toUtf8(), &perr);
+│         if (perr.error != QJsonParseError::NoError) return result;
+│         if (!doc.isArray()) return result;
+│     
+│         QJsonArray arr = doc.array();
+│         for (const auto v : arr)
+│             result.append(v.toObject().toVariantMap());
+│         return result;
+│     }
+│     
+│     void save(const QVariantList& list) {
+│         QJsonArray arr;
+│         for (auto& v : list)
+│             arr.append(QJsonObject::fromVariantMap(v.toMap()));
+│         QSettings s;
+│         s.setValue("recentFiles",
+│                    QString::fromUtf8(QJsonDocument(arr).toJson(QJsonDocument::Compact)));
+│         s.sync();
+│     }
+│     
+│     } // namespace RecentStore
+
+└── RecentStore.h
+    内容:
+      #ifndef RECENTSTORE_H
+      #define RECENTSTORE_H
+      
+      #include <QVariantList>
+      #include <QVariantMap>
+      #include <QString>
+      
+      /**
+       * @brief 最近打开文件的持久化存储（QSettings）。
+       */
+      namespace RecentStore {
+      
+      QVariantList load();
+      void save(const QVariantList& list);
+      
+      } // namespace RecentStore
+      
+      #endif // RECENTSTORE_H
+
+logic/
+event/
+├── EventEngine_build.cpp
+│   内容:
+│     #include "EventEngine.h"
+│     #include "../ComponentLogic.h"
+│     #include <algorithm>
+│     
+│     void EventEngine::build(const QVariantList& rootComps,
+│                             const QVariantList& rootWires,
+│                             const QHash<QString, QVariantList>& subComps,
+│                             const QHash<QString, QVariantList>& subWires)
+│     {
+│         clear();
+│         buildRecursive(rootComps, rootWires, subComps, subWires, QString(), 0);
+│         initValues();
+│         initDriverValues();
+│     }
+│     
+│     void EventEngine::buildRecursive(const QVariantList& comps,
+│                                      const QVariantList& wires,
+│                                      const QHash<QString, QVariantList>& subComps,
+│                                      const QHash<QString, QVariantList>& subWires,
+│                                      const QString& prefix,
+│                                      int depth)
+│     {
+│         if (depth > 32) return;
+│     
+│         QHash<QString, int> localIdx;
+│         localIdx.reserve(comps.size() * 2);
+│         for (const auto& cv : comps) {
+│             QVariantMap c = cv.toMap();
+│             QString type = c.value("type").toString();
+│             if (type == "text") continue;
+│     
+│             QString localId = c.value("id").toString();
+│             QString qid = prefix.isEmpty() ? localId : (prefix + "/" + localId);
+│             if (m_idToIdx.contains(qid)) continue;
+│     
+│             Node n;
+│             n.qid = qid;
+│             n.localId = localId;
+│             n.type = type;
+│             n.bitWidth = c.value("bitWidth").toInt();
+│             if (n.bitWidth < 1) n.bitWidth = 1;
+│             n.raw = c;
+│             if (type == "input" || type == "const") n.isInput  = true;
+│             else if (type == "clock")  n.isClock  = true;
+│             else if (type == "output") n.isOutput = true;
+│             else if (type == "led")    n.isLed    = true;
+│     
+│             if (type == "input" || type == "const" || type == "output") {
+│                 n.inVals.append(QString(n.bitWidth, '0'));
+│                 n.outVals.append(QString(n.bitWidth, '0'));
+│             } else if (type == "led") {
+│                 int ic = ComponentLogic::inputCount(c);
+│                 for (int i = 0; i < ic; ++i)
+│                     n.inVals.append(QString(ComponentLogic::inputBitWidth(c, i), '0'));
+│             } else {
+│                 int ic = ComponentLogic::inputCount(c);
+│                 int oc = ComponentLogic::outputCount(c);
+│                 for (int i = 0; i < ic; ++i)
+│                     n.inVals.append(QString(ComponentLogic::inputBitWidth(c, i), '0'));
+│                 for (int i = 0; i < oc; ++i)
+│                     n.outVals.append(QString(ComponentLogic::outputBitWidth(c, i), '0'));
+│             }
+│     
+│             int idx = m_nodes.size();
+│             m_idToIdx[qid] = idx;
+│             localIdx[localId] = idx;
+│             m_nodes.append(n);
+│         }
+│     
+│         for (const auto& cv : comps) {
+│             QVariantMap c = cv.toMap();
+│             if (c.value("type").toString() != "sub") continue;
+│             QString localId = c.value("id").toString();
+│             QString qid = prefix.isEmpty() ? localId : (prefix + "/" + localId);
+│             QString subId = c.value("subId").toString();
+│             auto sit = subComps.constFind(subId);
+│             if (sit == subComps.constEnd()) continue;
+│             buildRecursive(sit.value(), subWires.value(subId),
+│                            subComps, subWires, qid, depth + 1);
+│         }
+│     
+│         for (const auto& wv : wires) {
+│             QVariantMap w = wv.toMap();
+│             QString fromLocal = w.value("fromComp").toString();
+│             QString toLocal   = w.value("toComp").toString();
+│             int fromPort = w.value("fromPort").toInt();
+│             int toPort   = w.value("toPort").toInt();
+│     
+│             int fi = localIdx.value(fromLocal, -1);
+│             int ti = localIdx.value(toLocal, -1);
+│             if (fi < 0 || ti < 0) continue;
+│     
+│             if (m_nodes[fi].type == "sub") {
+│                 QString subId = m_nodes[fi].raw.value("subId").toString();
+│                 QString subQid = m_nodes[fi].qid;
+│                 auto sit = subComps.constFind(subId);
+│                 if (sit == subComps.constEnd()) continue;
+│                 int cnt = 0;
+│                 QString innerQid;
+│                 for (const auto& scv : sit.value()) {
+│                     QVariantMap sc = scv.toMap();
+│                     if (sc.value("type").toString() != "output") continue;
+│                     if (cnt == fromPort) {
+│                         innerQid = subQid + "/" + sc.value("id").toString();
+│                         break;
+│                     }
+│                     cnt++;
+│                 }
+│                 if (innerQid.isEmpty()) continue;
+│                 int innerIdx = idxOf(innerQid);
+│                 if (innerIdx < 0) continue;
+│                 fi = innerIdx;
+│                 fromPort = 0;
+│             }
+│             if (m_nodes[ti].type == "sub") {
+│                 QString subId = m_nodes[ti].raw.value("subId").toString();
+│                 QString subQid = m_nodes[ti].qid;
+│                 auto sit = subComps.constFind(subId);
+│                 if (sit == subComps.constEnd()) continue;
+│                 int cnt = 0;
+│                 QString innerQid;
+│                 for (const auto& scv : sit.value()) {
+│                     QVariantMap sc = scv.toMap();
+│                     if (sc.value("type").toString() != "input") continue;
+│                     if (cnt == toPort) {
+│                         innerQid = subQid + "/" + sc.value("id").toString();
+│                         break;
+│                     }
+│                     cnt++;
+│                 }
+│                 if (innerQid.isEmpty()) continue;
+│                 int innerIdx = idxOf(innerQid);
+│                 if (innerIdx < 0) continue;
+│                 ti = innerIdx;
+│                 toPort = 0;
+│             }
+│     
+│             m_outDests[pkey(fi, fromPort)].append(qMakePair(ti, toPort));
+│             m_inDrivers[pkey(ti, toPort)].append({fi, fromPort});
+│         }
+│     }
+│     
+│     void EventEngine::initValues() {
+│         for (int i = 0; i < m_nodes.size(); ++i) {
+│             Node& n = m_nodes[i];
+│             if (n.isInput) {
+│                 QVariantList bits = n.raw.value("inputBits").toList();
+│                 QString s;
+│                 s.reserve(n.bitWidth);
+│                 for (int b = 0; b < n.bitWidth; ++b)
+│                     s += (b < bits.size() && bits[b].toBool()) ? '1' : '0';
+│                 if (!n.outVals.isEmpty()) n.outVals[0] = s;
+│                 if (!n.inVals.isEmpty())  n.inVals[0]  = s;
+│             } else if (n.isClock) {
+│                 QVariantList ops = n.raw.value("outputPorts").toList();
+│                 QString s = ops.isEmpty() ? QString(n.bitWidth, '0')
+│                                           : ops[0].toString();
+│                 if (s.length() != n.bitWidth) s = QString(n.bitWidth, '0');
+│                 if (!n.outVals.isEmpty()) n.outVals[0] = s;
+│                 if (!n.inVals.isEmpty())  n.inVals[0]  = s;
+│             }
+│         }
+│     }
+│     
+│     void EventEngine::initDriverValues() {
+│         for (auto it = m_inDrivers.constBegin(); it != m_inDrivers.constEnd(); ++it) {
+│             quint64 tkey = it.key();
+│             QHash<qint64, QString> dv;
+│             for (const auto& d : it.value()) {
+│                 if (d.fromIdx < 0 || d.fromIdx >= m_nodes.size()) continue;
+│                 const Node& fn = m_nodes[d.fromIdx];
+│                 QString v;
+│                 if (d.fromPort >= 0 && d.fromPort < fn.outVals.size())
+│                     v = fn.outVals[d.fromPort];
+│                 if (v.isEmpty()) {
+│                     int w = ComponentLogic::outputBitWidth(fn.raw, d.fromPort);
+│                     if (w < 1) w = 1;
+│                     v = QString(w, '0');
+│                 }
+│                 dv[dkey(d.fromIdx, d.fromPort)] = v;
+│             }
+│             m_portDriverValues[tkey] = dv;
+│         }
+│     
+│         for (auto it = m_inDrivers.constBegin(); it != m_inDrivers.constEnd(); ++it) {
+│             quint64 tkey = it.key();
+│             quint32 lo = quint32(tkey & 0xFFFFFFFF);
+│             int ti = int(lo >> 16);
+│             int tp = int(tkey & 0xFFFF);
+│             if (ti < 0 || ti >= m_nodes.size()) continue;
+│             Node& tn = m_nodes[ti];
+│             if (tp < 0 || tp >= tn.inVals.size()) continue;
+│     
+│             QVector<QString> driverVals;
+│             driverVals.reserve(it.value().size());
+│             for (const auto& d : it.value()) {
+│                 QString v = m_portDriverValues[tkey].value(
+│                     dkey(d.fromIdx, d.fromPort), QString());
+│                 if (v.isEmpty()) {
+│                     const Node& fn = m_nodes[d.fromIdx];
+│                     if (d.fromPort >= 0 && d.fromPort < fn.outVals.size())
+│                         v = fn.outVals[d.fromPort];
+│                 }
+│                 driverVals.append(v);
+│             }
+│             int bw = tn.inVals[tp].length();
+│             if (bw < 1) bw = tn.bitWidth;
+│             tn.inVals[tp] = resolveMultiDriver(driverVals, bw);
+│         }
+│     
+│         for (int pass = 0; pass < 32; ++pass) {
+│             bool anyChanged = false;
+│             for (int i = 0; i < m_nodes.size(); ++i) {
+│                 Node& n = m_nodes[i];
+│                 if (n.isInput || n.isClock) continue;
+│     
+│                 QVector<QString> newOuts = computeOutputs(n, n.inVals);
+│                 bool changed = (newOuts != n.outVals);
+│                 if (!changed) continue;
+│     
+│                 n.outVals = newOuts;
+│                 anyChanged = true;
+│     
+│                 for (int p = 0; p < newOuts.size(); ++p) {
+│                     auto it = m_outDests.constFind(pkey(i, p));
+│                     if (it == m_outDests.constEnd()) continue;
+│                     for (const auto& d : it.value()) {
+│                         int ti = d.first;
+│                         int tp = d.second;
+│                         if (ti < 0 || ti >= m_nodes.size()) continue;
+│                         Node& tn = m_nodes[ti];
+│                         if (tp < 0 || tp >= tn.inVals.size()) continue;
+│     
+│                         quint64 tkey = pkey(ti, tp);
+│                         qint64  dk   = dkey(i, p);
+│                         m_portDriverValues[tkey][dk] = newOuts[p];
+│     
+│                         QVector<QString> driverVals;
+│                         driverVals.reserve(it.value().size());
+│                         auto it2 = m_inDrivers.constFind(tkey);
+│                         if (it2 != m_inDrivers.constEnd()) {
+│                             for (const auto& dd : it2.value()) {
+│                                 QString v = m_portDriverValues[tkey].value(
+│                                     dkey(dd.fromIdx, dd.fromPort), QString());
+│                                 if (v.isEmpty()) {
+│                                     const Node& fn = m_nodes[dd.fromIdx];
+│                                     if (dd.fromPort >= 0 && dd.fromPort < fn.outVals.size())
+│                                         v = fn.outVals[dd.fromPort];
+│                                 }
+│                                 driverVals.append(v);
+│                             }
+│                         }
+│                         int bw = tn.inVals[tp].length();
+│                         if (bw < 1) bw = tn.bitWidth;
+│                         tn.inVals[tp] = resolveMultiDriver(driverVals, bw);
+│                     }
+│                 }
+│             }
+│             if (!anyChanged) break;
+│         }
+│     
+│         for (int i = 0; i < m_nodes.size(); ++i) {
+│             const Node& n = m_nodes[i];
+│             if (n.isInput || n.isClock) continue;
+│             scheduleRecalc(i, m_time);
+│         }
+│     }
+
+├── EventEngine.cpp
+│   内容:
+│     #include "EventEngine.h"
+│     #include "../ComponentLogic.h"
+│     #include <QDebug>
+│     #include <algorithm>
+│     
+│     EventEngine::EventEngine() {}
+│     EventEngine::~EventEngine() {}
+│     
+│     void EventEngine::setGlobalGateDelay(quint64 d) {
+│         if (d < 1) d = 1;
+│         m_opts.globalGateDelay = d;
+│     }
+│     void EventEngine::setWireDelay(quint64 d) {
+│         if (d < 1) d = 1;
+│         m_opts.wireDelay = d;
+│     }
+│     void EventEngine::setGateTypeDelay(const QString& type, quint64 d) {
+│         if (d < 1) d = 1;
+│         m_gateDelays[type] = d;
+│     }
+│     void EventEngine::removeGateTypeDelay(const QString& type) {
+│         m_gateDelays.remove(type);
+│     }
+│     void EventEngine::clearGateTypeDelays() {
+│         m_gateDelays.clear();
+│     }
+│     
+│     quint64 EventEngine::gateDelayFor(const QString& type) const {
+│         auto it = m_gateDelays.constFind(type);
+│         if (it != m_gateDelays.constEnd()) return it.value();
+│         return m_opts.globalGateDelay;
+│     }
+│     
+│     void EventEngine::clear() {
+│         m_nodes.clear();
+│         m_idToIdx.clear();
+│         m_inDrivers.clear();
+│         m_outDests.clear();
+│         m_portDriverValues.clear();
+│         while (!m_queue.empty()) m_queue.pop();
+│         m_time = 0;
+│         m_seq = 0;
+│         m_totalEventsProcessed = 0;
+│     }
+│     
+│     void EventEngine::reset() {
+│         QVector<QPair<int, QString>> savedInputs;
+│         savedInputs.reserve(m_nodes.size());
+│         for (int i = 0; i < m_nodes.size(); ++i) {
+│             const Node& n = m_nodes[i];
+│             if (n.isInput && !n.outVals.isEmpty())
+│                 savedInputs.append(qMakePair(i, n.outVals[0]));
+│         }
+│     
+│         while (!m_queue.empty()) m_queue.pop();
+│         m_time = 0;
+│         m_seq = 0;
+│         m_totalEventsProcessed = 0;
+│     
+│         for (auto& n : m_nodes) {
+│             for (auto& s : n.inVals)  s = QString(s.length(), '0');
+│             for (auto& s : n.outVals) s = QString(s.length(), '0');
+│         }
+│         for (auto it = m_portDriverValues.begin(); it != m_portDriverValues.end(); ++it)
+│             it.value().clear();
+│     
+│         initValues();
+│     
+│         for (const auto& p : savedInputs) {
+│             int i = p.first;
+│             const QString& v = p.second;
+│             if (i < 0 || i >= m_nodes.size()) continue;
+│             if (!m_nodes[i].outVals.isEmpty()) m_nodes[i].outVals[0] = v;
+│             if (!m_nodes[i].inVals.isEmpty())  m_nodes[i].inVals[0]  = v;
+│         }
+│     
+│         initDriverValues();
+│     }
+
+├── EventEngine.h
+│   内容:
+│     #ifndef EVENTENGINE_H
+│     #define EVENTENGINE_H
+│     
+│     #include <QString>
+│     #include <QStringList>
+│     #include <QVariantList>
+│     #include <QVariantMap>
+│     #include <QHash>
+│     #include <QVector>
+│     #include <QPair>
+│     #include <queue>
+│     #include <cstdint>
+│     
+│     // 事件驱动电路仿真引擎
+│     // 关键设计：
+│     // - 时间只随事件推进；没有事件时时间可安全跳过空隙
+│     // - run(units, budget)：推进 units 个逻辑时间单位，最多处理 budget 个事件
+│     //     预算耗尽 → 时间停在最后处理的事件时间，返回 false，下次继续
+│     //     处理完 → 时间推进到 m_time+units，返回 true
+│     // - 没有 runIdle：不存在"跑到稳定"这回事，振荡电路永远跑不完
+│     // - initDriverValues 末尾给所有非 input/clock 节点排一个 recalc 事件，
+│     //   作为振荡电路的引爆点；否则自环电路启动不了
+│     class EventEngine
+│     {
+│     public:
+│         struct Options {
+│             quint64 globalGateDelay = 1;
+│             quint64 wireDelay       = 1;
+│             quint64 runBudget       = 200000;   // 默认每帧事件预算
+│         };
+│     
+│         EventEngine();
+│         ~EventEngine();
+│     
+│         void setGlobalGateDelay(quint64 d);
+│         void setWireDelay(quint64 d);
+│         void setGateTypeDelay(const QString& type, quint64 d);
+│         void removeGateTypeDelay(const QString& type);
+│         void clearGateTypeDelays();
+│         void setDefaultRunBudget(quint64 n) { if (n < 1) n = 1; m_opts.runBudget = n; }
+│     
+│         quint64 globalGateDelay() const { return m_opts.globalGateDelay; }
+│         quint64 wireDelay() const       { return m_opts.wireDelay; }
+│         quint64 defaultRunBudget() const { return m_opts.runBudget; }
+│         quint64 gateDelayFor(const QString& type) const;
+│         QHash<QString, quint64> gateTypeDelays() const { return m_gateDelays; }
+│     
+│         void build(const QVariantList& rootComps,
+│                    const QVariantList& rootWires,
+│                    const QHash<QString, QVariantList>& subComps,
+│                    const QHash<QString, QVariantList>& subWires);
+│         void clear();
+│         void reset();
+│     
+│         // ---- 外部触发 ----
+│         void triggerInputBit(const QString& compId, int bit, bool value);
+│         void triggerInputString(const QString& compId, const QString& binStr);
+│         void triggerClockToggle(const QString& compId);
+│         void triggerForceOutput(const QString& compId, int port, const QString& value);
+│     
+│         // ---- 推进 ----
+│         // 处理一个事件；队列为空返回 false
+│         bool step();
+│     
+│         // 推进 units 个逻辑时间单位；最多处理 budget 个事件
+│         // 返回 true  = 时间已推进到 m_time+units（窗口内无更多事件 / 队列空）
+│         // 返回 false = 预算耗尽，时间停在最后处理的事件时间
+│         bool run(quint64 units, quint64 budget = 0);
+│     
+│         // 只处理 m_time 时刻的已排队事件，不推进时间
+│         int drainNow(quint64 budget = 0);
+│     
+│         // ---- 查询 ----
+│         quint64 time() const { return m_time; }
+│         bool isIdle() const { return m_queue.empty(); }
+│         quint64 totalEventsProcessed() const { return m_totalEventsProcessed; }
+│         int nodeCount() const { return m_nodes.size(); }
+│         QString getOutput(const QString& compId, int port = 0) const;
+│         QStringList getOutputs(const QString& compId) const;
+│     
+│     private:
+│         struct Node {
+│             QString qid;
+│             QString localId;
+│             QString type;
+│             int bitWidth = 1;
+│             QVariantMap raw;
+│             QVector<QString> inVals;
+│             QVector<QString> outVals;
+│             bool isInput = false;
+│             bool isClock = false;
+│             bool isOutput = false;
+│             bool isLed = false;
+│         };
+│     
+│         struct Event {
+│             enum Kind { Recalc, Wire } kind;
+│             quint64 time;
+│             quint64 seq;
+│             int     nodeIdx;   // Recalc: 目标节点；Wire: 源节点
+│             int     port;      // Wire: 源端口
+│             int     toIdx;     // Wire: 目标节点
+│             int     toPort;    // Wire: 目标端口
+│             QString value;     // Wire: 携带的值
+│             bool operator<(const Event& o) const {
+│                 if (time != o.time) return time > o.time;
+│                 return seq > o.seq;
+│             }
+│         };
+│     
+│         struct Driver { int fromIdx; int fromPort; };
+│     
+│         QVector<Node> m_nodes;
+│         QHash<QString, int> m_idToIdx;
+│         QHash<quint64, QVector<Driver>> m_inDrivers;
+│         QHash<quint64, QVector<QPair<int,int>>> m_outDests;
+│         QHash<quint64, QHash<qint64, QString>> m_portDriverValues;
+│     
+│         std::priority_queue<Event> m_queue;
+│         quint64 m_time = 0;
+│         quint64 m_seq = 0;
+│         quint64 m_totalEventsProcessed = 0;
+│     
+│         QHash<QString, quint64> m_gateDelays;
+│         Options m_opts;
+│     
+│         static quint64 pkey(int idx, int port) {
+│             return (quint64(quint32(idx)) << 16) | quint64(port & 0xFFFF);
+│         }
+│         static qint64 dkey(int idx, int port) {
+│             return (qint64(qint32(idx)) << 16) | qint64(port & 0xFFFF);
+│         }
+│         int idxOf(const QString& id) const { return m_idToIdx.value(id, -1); }
+│     
+│         void buildRecursive(const QVariantList& comps,
+│                             const QVariantList& wires,
+│                             const QHash<QString, QVariantList>& subComps,
+│                             const QHash<QString, QVariantList>& subWires,
+│                             const QString& prefix,
+│                             int depth);
+│     
+│         void initValues();
+│         void initDriverValues();
+│     
+│         void scheduleRecalc(int idx, quint64 at);
+│         void scheduleWirePropagation(int fromIdx, int fromPort,
+│                                      int toIdx, int toPort,
+│                                      const QString& value, quint64 at);
+│     
+│         void processEvent(const Event& ev);
+│         void recalcNode(int idx);
+│     
+│         QVector<QString> computeOutputs(const Node& n,
+│                                         const QVector<QString>& inputs) const;
+│         static QString resolveMultiDriver(const QVector<QString>& vals, int bw);
+│         static QString mapUnary(const QString& src, int bw);
+│     };
+│     
+│     #endif // EVENTENGINE_H
+
+├── EventEngine_run.cpp
+│   内容:
+│     #include "EventEngine.h"
+│     #include "../ComponentLogic.h"
+│     #include <algorithm>
+│     
+│     QString EventEngine::resolveMultiDriver(const QVector<QString>& vals, int bw) {
+│         if (bw < 1) bw = 1;
+│         if (vals.isEmpty()) return QString(bw, '0');
+│     
+│         if (vals.size() == 1) {
+│             QString s = vals[0];
+│             if (s.length() < bw) s = QString(bw - s.length(), '0') + s;
+│             else if (s.length() > bw) s = s.right(bw);
+│             return s;
+│         }
+│     
+│         QString result(bw, '0');
+│         for (int pos = 0; pos < bw; ++pos) {
+│             bool has0 = false, has1 = false, hasE = false;
+│             for (const auto& v : vals) {
+│                 QString s = v;
+│                 if (s.length() < bw) s = QString(bw - s.length(), '0') + s;
+│                 else if (s.length() > bw) s = s.right(bw);
+│                 QChar c = (pos < s.length()) ? s[pos] : QChar('0');
+│                 if (c == '0') has0 = true;
+│                 else if (c == '1') has1 = true;
+│                 else if (c == 'E') hasE = true;
+│             }
+│             if (hasE)              result[pos] = 'E';
+│             else if (has0 && has1) result[pos] = 'E';
+│             else if (has1)         result[pos] = '1';
+│             else if (has0)         result[pos] = '0';
+│             else                   result[pos] = 'Z';
+│         }
+│         return result;
+│     }
+│     
+│     QString EventEngine::mapUnary(const QString& src, int bw) {
+│         QString out; out.reserve(bw);
+│         int n = src.length();
+│         for (int b = 0; b < bw; ++b) {
+│             QChar c = (b < n) ? src[b] : QChar('0');
+│             if (c == 'Z' || c == 'E') out += 'E';
+│             else                       out += (c == '1') ? '0' : '1';
+│         }
+│         return out;
+│     }
+│     
+│     void EventEngine::scheduleRecalc(int idx, quint64 at) {
+│         Event ev;
+│         ev.kind = Event::Recalc;
+│         ev.time = at;
+│         ev.seq = ++m_seq;
+│         ev.nodeIdx = idx;
+│         ev.port = 0;
+│         ev.toIdx = -1;
+│         ev.toPort = -1;
+│         m_queue.push(ev);
+│     }
+│     
+│     void EventEngine::scheduleWirePropagation(int fromIdx, int fromPort,
+│                                               int toIdx, int toPort,
+│                                               const QString& value, quint64 at) {
+│         Event ev;
+│         ev.kind = Event::Wire;
+│         ev.time = at;
+│         ev.seq = ++m_seq;
+│         ev.nodeIdx = fromIdx;
+│         ev.port = fromPort;
+│         ev.toIdx = toIdx;
+│         ev.toPort = toPort;
+│         ev.value = value;
+│         m_queue.push(ev);
+│     }
+│     
+│     bool EventEngine::step() {
+│         if (m_queue.empty()) return false;
+│         Event ev = m_queue.top();
+│         m_queue.pop();
+│         if (ev.time > m_time) m_time = ev.time;
+│         processEvent(ev);
+│         ++m_totalEventsProcessed;
+│         return true;
+│     }
+│     
+│     int EventEngine::drainNow(quint64 budget) {
+│         if (budget == 0) budget = m_opts.runBudget;
+│         int processed = 0;
+│         quint64 startTime = m_time;
+│         while (!m_queue.empty()) {
+│             if (m_queue.top().time > startTime) break;
+│             if (quint64(processed) >= budget) break;
+│             Event ev = m_queue.top();
+│             m_queue.pop();
+│             processEvent(ev);
+│             ++processed;
+│             ++m_totalEventsProcessed;
+│         }
+│         return processed;
+│     }
+│     
+│     bool EventEngine::run(quint64 units, quint64 budget) {
+│         if (budget == 0) budget = m_opts.runBudget;
+│         quint64 endTime = m_time + units;
+│         quint64 processed = 0;
+│     
+│         while (!m_queue.empty()) {
+│             if (m_queue.top().time > endTime) {
+│                 if (m_time < endTime) m_time = endTime;
+│                 return true;
+│             }
+│             if (processed >= budget) {
+│                 return false;
+│             }
+│             Event ev = m_queue.top();
+│             m_queue.pop();
+│             if (ev.time > m_time) m_time = ev.time;
+│             processEvent(ev);
+│             ++processed;
+│             ++m_totalEventsProcessed;
+│         }
+│     
+│         if (m_time < endTime) m_time = endTime;
+│         return true;
+│     }
+│     
+│     void EventEngine::processEvent(const Event& ev) {
+│         if (ev.kind == Event::Recalc) {
+│             recalcNode(ev.nodeIdx);
+│             return;
+│         }
+│     
+│         int ti = ev.toIdx;
+│         int tp = ev.toPort;
+│         if (ti < 0 || ti >= m_nodes.size()) return;
+│         Node& tn = m_nodes[ti];
+│         if (tp < 0 || tp >= tn.inVals.size()) return;
+│     
+│         quint64 tkey = pkey(ti, tp);
+│         qint64  dk   = dkey(ev.nodeIdx, ev.port);
+│         QHash<qint64, QString>& dv = m_portDriverValues[tkey];
+│         dv[dk] = ev.value;
+│     
+│         QVector<QString> driverVals;
+│         auto it = m_inDrivers.constFind(tkey);
+│         if (it != m_inDrivers.constEnd()) {
+│             driverVals.reserve(it.value().size());
+│             for (const auto& d : it.value()) {
+│                 qint64 k = dkey(d.fromIdx, d.fromPort);
+│                 QString v = dv.value(k, QString());
+│                 if (v.isEmpty()) {
+│                     const Node& fn = m_nodes[d.fromIdx];
+│                     if (d.fromPort >= 0 && d.fromPort < fn.outVals.size())
+│                         v = fn.outVals[d.fromPort];
+│                 }
+│                 driverVals.append(v);
+│             }
+│         } else {
+│             driverVals.append(ev.value);
+│         }
+│     
+│         int bw = tn.inVals[tp].length();
+│         if (bw < 1) bw = tn.bitWidth;
+│         QString merged = resolveMultiDriver(driverVals, bw);
+│     
+│         if (tn.inVals[tp] == merged) return;
+│         tn.inVals[tp] = merged;
+│         recalcNode(ti);
+│     }
+│     
+│     void EventEngine::recalcNode(int idx) {
+│         Node& n = m_nodes[idx];
+│         QVector<QString> newOuts = computeOutputs(n, n.inVals);
+│         bool changed = false;
+│         if (newOuts.size() != n.outVals.size()) {
+│             n.outVals = newOuts;
+│             changed = true;
+│         } else {
+│             for (int i = 0; i < newOuts.size(); ++i) {
+│                 if (n.outVals[i] != newOuts[i]) { n.outVals[i] = newOuts[i]; changed = true; }
+│             }
+│         }
+│         if (!changed) return;
+│     
+│         quint64 at = m_time + gateDelayFor(n.type);
+│         for (int p = 0; p < n.outVals.size(); ++p) {
+│             auto it = m_outDests.constFind(pkey(idx, p));
+│             if (it == m_outDests.constEnd()) continue;
+│             const QString v = n.outVals[p];
+│             for (const auto& d : it.value()) {
+│                 scheduleWirePropagation(idx, p, d.first, d.second, v, at);
+│             }
+│         }
+│     }
+│     
+│     QVector<QString> EventEngine::computeOutputs(const Node& n,
+│                                                  const QVector<QString>& inputs) const
+│     {
+│         QVector<QString> outs;
+│         int bw = n.bitWidth;
+│         const QString& t = n.type;
+│     
+│         auto inAt = [&](int i, int w) -> QString {
+│             if (i < inputs.size()) {
+│                 QString s = inputs[i];
+│                 if (s.length() != w) {
+│                     if (s.length() < w) s = QString(w - s.length(), '0') + s;
+│                     else s = s.right(w);
+│                 }
+│                 return s;
+│             }
+│             return QString(w, '0');
+│         };
+│     
+│         if (t == "input" || t == "const") {
+│             outs.append(inAt(0, bw));
+│         } else if (t == "clock") {
+│             if (!n.outVals.isEmpty()) outs.append(n.outVals[0]);
+│             else                      outs.append(QString(bw, '0'));
+│         } else if (t == "output" || t == "led") {
+│             outs.append(inAt(0, bw));
+│         } else if (t == "not") {
+│             outs.append(mapUnary(inAt(0, bw), bw));
+│         } else if (t == "and" || t == "or" || t == "nand" ||
+│                    t == "nor" || t == "xor" || t == "xnor") {
+│             int ic = inputs.size();
+│             const bool isAnd   = (t == "and" || t == "nand");
+│             const bool isOr    = (t == "or"  || t == "nor");
+│             const bool needNot = (t == "nand" || t == "nor" || t == "xnor");
+│             QString out; out.reserve(bw);
+│             for (int b = 0; b < bw; ++b) {
+│                 bool hasErr = false;
+│                 for (int p = 0; p < ic; ++p) {
+│                     QChar c = (b < inputs[p].length()) ? inputs[p][b] : QChar('0');
+│                     if (c == 'Z' || c == 'E') { hasErr = true; break; }
+│                 }
+│                 if (hasErr) { out += 'E'; continue; }
+│                 bool r = isAnd ? true : false;
+│                 for (int p = 0; p < ic; ++p) {
+│                     bool v = (b < inputs[p].length() && inputs[p][b] == '1');
+│                     if (isAnd)      r = r && v;
+│                     else if (isOr)  r = r || v;
+│                     else            r = r != v;
+│                 }
+│                 if (needNot) r = !r;
+│                 out += r ? '1' : '0';
+│             }
+│             outs.append(out);
+│         } else if (t == "tgate") {
+│             QString d = inAt(0, bw);
+│             QString e = inAt(1, bw);
+│             QString out; out.reserve(bw);
+│             for (int b = 0; b < bw; ++b) {
+│                 QChar dv = (b < d.length()) ? d[b] : QChar('0');
+│                 QChar ev = (b < e.length()) ? e[b] : QChar('0');
+│                 if (ev == 'Z' || ev == 'E') out += 'E';
+│                 else if (ev == '1')         out += dv;
+│                 else                        out += 'Z';
+│             }
+│             outs.append(out);
+│         } else if (t == "ntran") {
+│             QString g = inAt(0, bw);
+│             QString d = inAt(1, bw);
+│             QString out; out.reserve(bw);
+│             for (int b = 0; b < bw; ++b) {
+│                 QChar gv = (b < g.length()) ? g[b] : QChar('0');
+│                 QChar dv = (b < d.length()) ? d[b] : QChar('0');
+│                 if (gv == 'Z' || gv == 'E') out += 'E';
+│                 else if (gv == '1')         out += dv;
+│                 else                        out += 'Z';
+│             }
+│             outs.append(out);
+│         } else if (t == "ptran") {
+│             QString g = inAt(0, bw);
+│             QString d = inAt(1, bw);
+│             QString out; out.reserve(bw);
+│             for (int b = 0; b < bw; ++b) {
+│                 QChar gv = (b < g.length()) ? g[b] : QChar('0');
+│                 QChar dv = (b < d.length()) ? d[b] : QChar('0');
+│                 if (gv == 'Z' || gv == 'E') out += 'E';
+│                 else if (gv == '0')         out += dv;
+│                 else                        out += 'Z';
+│             }
+│             outs.append(out);
+│         } else if (t == "splitter") {
+│             QString mainIn;
+│             if (!inputs.isEmpty()) mainIn = inputs[0];
+│             while (mainIn.length() < bw) mainIn += '0';
+│             if (mainIn.length() > bw) mainIn = mainIn.left(bw);
+│     
+│             QVariantList splits = n.raw.value("outputSplits").toList();
+│             int offset = bw;
+│             for (auto& sv : splits) {
+│                 int len = sv.toInt();
+│                 if (len < 1) len = 1;
+│                 offset -= len;
+│                 if (offset < 0) offset = 0;
+│                 QString out; out.reserve(len);
+│                 for (int b = 0; b < len; ++b)
+│                     out += (offset + b < mainIn.length()) ? mainIn[offset + b] : QChar('0');
+│                 outs.append(out);
+│             }
+│         } else if (t == "hub") {
+│             QString merged; merged.reserve(bw + 8);
+│             for (int s = inputs.size() - 1; s >= 0; --s) {
+│                 int len = ComponentLogic::inputBitWidth(n.raw, s);
+│                 if (len < 1) len = 1;
+│                 QString sv = (s < inputs.size()) ? inputs[s] : QString(len, '0');
+│                 while (sv.length() < len) sv += '0';
+│                 if (sv.length() > len) sv = sv.left(len);
+│                 merged += sv;
+│             }
+│             while (merged.length() < bw) merged += '0';
+│             if (merged.length() > bw) merged = merged.left(bw);
+│             outs.append(merged);
+│         }
+│     
+│         return outs;
+│     }
+
+└── EventEngine_trigger.cpp
+    内容:
+      #include "EventEngine.h"
+      
+      void EventEngine::triggerInputBit(const QString& compId, int bit, bool value) {
+          int idx = idxOf(compId);
+          if (idx < 0) return;
+          Node& n = m_nodes[idx];
+          if (!n.isInput) return;
+          QString s = n.outVals.isEmpty() ? QString(n.bitWidth, '0') : n.outVals[0];
+          if (s.length() != n.bitWidth) s = QString(n.bitWidth, '0');
+          int pos = bit;
+          if (pos < 0 || pos >= s.length()) return;
+          s[pos] = value ? '1' : '0';
+          if (n.outVals.isEmpty()) n.outVals.append(s); else n.outVals[0] = s;
+          if (n.inVals.isEmpty())  n.inVals.append(s);  else n.inVals[0]  = s;
+      
+          {
+              QVariantList bits;
+              bits.reserve(s.length());
+              for (int i = 0; i < s.length(); ++i) bits.append(s[i] == '1');
+              n.raw["inputBits"] = bits;
+          }
+      
+          quint64 at = m_time + m_opts.wireDelay;
+          auto it = m_outDests.constFind(pkey(idx, 0));
+          if (it != m_outDests.constEnd()) {
+              for (const auto& d : it.value())
+                  scheduleWirePropagation(idx, 0, d.first, d.second, s, at);
+          }
+      }
+      
+      void EventEngine::triggerInputString(const QString& compId, const QString& binStr) {
+          int idx = idxOf(compId);
+          if (idx < 0) return;
+          Node& n = m_nodes[idx];
+          if (!n.isInput) return;
+          QString s = binStr;
+          while (s.length() < n.bitWidth) s = "0" + s;
+          if (s.length() > n.bitWidth) s = s.right(n.bitWidth);
+          if (n.outVals.isEmpty()) n.outVals.append(s); else n.outVals[0] = s;
+          if (n.inVals.isEmpty())  n.inVals.append(s);  else n.inVals[0]  = s;
+      
+          {
+              QVariantList bits;
+              bits.reserve(s.length());
+              for (int i = 0; i < s.length(); ++i) bits.append(s[i] == '1');
+              n.raw["inputBits"] = bits;
+          }
+      
+          quint64 at = m_time + m_opts.wireDelay;
+          auto it = m_outDests.constFind(pkey(idx, 0));
+          if (it != m_outDests.constEnd()) {
+              for (const auto& d : it.value())
+                  scheduleWirePropagation(idx, 0, d.first, d.second, s, at);
+          }
+      }
+      
+      void EventEngine::triggerClockToggle(const QString& compId) {
+          int idx = idxOf(compId);
+          if (idx < 0) return;
+          Node& n = m_nodes[idx];
+          if (!n.isClock) return;
+      
+          QString s;
+          if (!n.outVals.isEmpty() && n.outVals[0].length() == n.bitWidth)
+              s = n.outVals[0];
+          else
+              s = QString(n.bitWidth, '0');
+      
+          for (int i = 0; i < s.length(); ++i)
+              s[i] = (s[i] == '1') ? '0' : '1';
+      
+          if (n.outVals.isEmpty()) n.outVals.append(s); else n.outVals[0] = s;
+          if (n.inVals.isEmpty())  n.inVals.append(s);  else n.inVals[0]  = s;
+      
+          {
+              QVariantList ops;
+              ops.append(s);
+              n.raw["outputPorts"] = ops;
+          }
+      
+          quint64 at = m_time + m_opts.wireDelay;
+          auto it = m_outDests.constFind(pkey(idx, 0));
+          if (it != m_outDests.constEnd()) {
+              for (const auto& d : it.value())
+                  scheduleWirePropagation(idx, 0, d.first, d.second, s, at);
+          }
+      }
+      
+      void EventEngine::triggerForceOutput(const QString& compId, int port, const QString& value) {
+          int idx = idxOf(compId);
+          if (idx < 0) return;
+          Node& n = m_nodes[idx];
+          if (port < 0 || port >= n.outVals.size()) return;
+      
+          if (n.isClock && port == 0) {
+              QVariantList ops;
+              ops.append(value);
+              n.raw["outputPorts"] = ops;
+          }
+      
+          if (n.outVals[port] == value) return;
+          n.outVals[port] = value;
+      
+          quint64 at = m_time + m_opts.wireDelay;
+          auto it = m_outDests.constFind(pkey(idx, port));
+          if (it != m_outDests.constEnd()) {
+              for (const auto& d : it.value())
+                  scheduleWirePropagation(idx, port, d.first, d.second, value, at);
+          }
+      }
+      
+      QString EventEngine::getOutput(const QString& compId, int port) const {
+          int idx = idxOf(compId);
+          if (idx < 0) return QString();
+          const Node& n = m_nodes[idx];
+          if (port < 0 || port >= n.outVals.size()) return QString();
+          return n.outVals[port];
+      }
+      
+      QStringList EventEngine::getOutputs(const QString& compId) const {
+          int idx = idxOf(compId);
+          if (idx < 0) return QStringList();
+          const Node& n = m_nodes[idx];
+          QStringList out;
+          out.reserve(n.outVals.size());
+          for (const auto& s : n.outVals) out << s;
+          return out;
+      }
+
+iter/
+├── IterEngine.cpp
+│   内容:
+│     #include "IterEngine.h"
+│     #include "../ComponentLogic.h"
+│     #include "../../core/ValueCodec.h"
+│     #include <QVector>
+│     #include <QDebug>
+│     
+│     static bool evalRecursive(CircuitContext& ctx,
+│                               const QHash<QString, CircuitContext>& subContexts,
+│                               int depth);
+│     
+│     static QString resolveMultiDriverE(const QVector<QString>& vals, int bw) {
+│         if (bw < 1) bw = 1;
+│         if (vals.isEmpty()) return QString(bw, '0');
+│     
+│         if (vals.size() == 1) {
+│             QString s = vals[0];
+│             if (s.length() < bw) s = QString(bw - s.length(), '0') + s;
+│             else if (s.length() > bw) s = s.right(bw);
+│             return s;
+│         }
+│     
+│         QString result(bw, '0');
+│         for (int pos = 0; pos < bw; ++pos) {
+│             bool has0 = false, has1 = false, hasE = false;
+│             for (const auto& v : vals) {
+│                 QString s = v;
+│                 if (s.length() < bw) s = QString(bw - s.length(), '0') + s;
+│                 else if (s.length() > bw) s = s.right(bw);
+│                 QChar c = (pos < s.length()) ? s[pos] : QChar('0');
+│                 if (c == '0') has0 = true;
+│                 else if (c == '1') has1 = true;
+│                 else if (c == 'E') hasE = true;
+│             }
+│             if (hasE)              result[pos] = 'E';
+│             else if (has0 && has1) result[pos] = 'E';
+│             else if (has1)         result[pos] = '1';
+│             else if (has0)         result[pos] = '0';
+│             else                   result[pos] = 'Z';
+│         }
+│         return result;
+│     }
+│     
+│     bool IterEngine::evalOne(QVariantMap& c,
+│                              const QHash<QString, QVector<QPair<int,int>>>& inputMap,
+│                              const QVector<QVariantMap>& comps) {
+│         const QString id = c.value("id").toString();
+│         const QString t  = c.value("type").toString();
+│     
+│         if (t == "text") return false;
+│     
+│         int bw = c.value("bitWidth").toInt();
+│         if (bw < 1)  bw = 1;
+│         if (bw > 64) bw = 64;
+│     
+│         const int ic = ComponentLogic::inputCount(c);
+│         const QVariantList oldInList = c.value("inputPortValues").toList();
+│         const QString idPrefix = id + ':';
+│     
+│         QVariantList newInList;
+│         newInList.reserve(ic);
+│         bool inputChanged = false;
+│     
+│         for (int p = 0; p < ic; ++p) {
+│             int bwp = ComponentLogic::inputBitWidth(c, p);
+│             if (bwp < 1)  bwp = 1;
+│             if (bwp > 64) bwp = 64;
+│     
+│             QString bits;
+│     
+│             auto it = inputMap.constFind(idPrefix + QString::number(p));
+│             if (it != inputMap.constEnd()) {
+│                 QVector<QString> driverVals;
+│                 for (const auto& pair : it.value()) {
+│                     int fi = pair.first;
+│                     int fp = pair.second;
+│                     if (fi >= 0 && fi < comps.size()) {
+│                         const QVariantList fo = comps[fi].value("outputPorts").toList();
+│                         if (fp >= 0 && fp < fo.size()) {
+│                             QString src = fo[fp].toString();
+│                             if (src.length() != bwp) src = QString(bwp, 'E');
+│                             driverVals.append(src);
+│                         }
+│                     }
+│                 }
+│                 if (!driverVals.isEmpty()) {
+│                     bits = resolveMultiDriverE(driverVals, bwp);
+│                 }
+│             }
+│             if (bits.isEmpty()) bits = QString(bwp, '0');
+│     
+│             if (p >= oldInList.size() || oldInList[p].toString() != bits)
+│                 inputChanged = true;
+│     
+│             newInList.append(bits);
+│         }
+│     
+│         bool changed = false;
+│         if (inputChanged) {
+│             c["inputPortValues"] = newInList;
+│             changed = true;
+│         }
+│     
+│         QVariantList newOutList;
+│     
+│         if (t == "input" || t == "const") {
+│             QVariant ov = c.value("outputOverride");
+│             QString ovStr = ov.isValid() ? ov.toString() : QString();
+│             if (!ovStr.isEmpty())
+│                 newOutList.append(ovStr);
+│             else
+│                 newOutList.append(ValueCodec::bitsToString(c.value("inputBits").toList(), bw));
+│         }
+│         else if (t == "clock") {
+│             newOutList = c.value("outputPorts").toList();
+│             if (newOutList.isEmpty()) newOutList.append(QString(bw, '0'));
+│         }
+│         else if (t == "not") {
+│             QString a = newInList.isEmpty() ? QString(bw, '0') : newInList[0].toString();
+│             QString out; out.reserve(bw);
+│             const int alen = a.length();
+│             for (int b = 0; b < bw; ++b) {
+│                 QChar ch = (b < alen) ? a[b] : QChar('0');
+│                 if (ch == 'Z' || ch == 'E') out += 'E';
+│                 else                        out += (ch == '1') ? '0' : '1';
+│             }
+│             newOutList.append(out);
+│         }
+│         else if (t == "and" || t == "or" || t == "nand" ||
+│                  t == "nor" || t == "xor" || t == "xnor") {
+│             QString out; out.reserve(bw);
+│             const bool isAnd   = (t == "and"   || t == "nand");
+│             const bool isOr    = (t == "or"    || t == "nor");
+│             const bool needNot = (t == "nand"  || t == "nor" || t == "xnor");
+│     
+│             QVector<QString> inStrs(ic);
+│             for (int p = 0; p < ic; ++p)
+│                 inStrs[p] = (p < newInList.size())
+│                                 ? newInList[p].toString()
+│                                 : QString(bw, '0');
+│     
+│             for (int b = 0; b < bw; ++b) {
+│                 bool hasErr = false;
+│                 for (int p = 0; p < ic; ++p) {
+│                     const QString& pv = inStrs[p];
+│                     QChar ch = (b < pv.length()) ? pv[b] : QChar('0');
+│                     if (ch == 'Z' || ch == 'E') { hasErr = true; break; }
+│                 }
+│                 if (hasErr) { out += 'E'; continue; }
+│     
+│                 bool r = isAnd ? true : false;
+│                 for (int p = 0; p < ic; ++p) {
+│                     const QString& pv = inStrs[p];
+│                     bool v = (b < pv.length() && pv[b] == '1');
+│                     if (isAnd)      r = r && v;
+│                     else if (isOr)  r = r || v;
+│                     else            r = r != v;
+│                 }
+│                 if (needNot) r = !r;
+│                 out += r ? '1' : '0';
+│             }
+│             newOutList.append(out);
+│         }
+│         else if (t == "tgate") {
+│             QString d = newInList.isEmpty()    ? QString(bw, '0') : newInList[0].toString();
+│             QString e = newInList.size() > 1   ? newInList[1].toString() : QString(bw, '0');
+│             QString out; out.reserve(bw);
+│             for (int b = 0; b < bw; ++b) {
+│                 QChar dv = (b < d.length()) ? d[b] : QChar('0');
+│                 QChar ev = (b < e.length()) ? e[b] : QChar('0');
+│                 if (ev == 'Z' || ev == 'E') out += 'E';
+│                 else if (ev == '1')         out += dv;
+│                 else                        out += 'Z';
+│             }
+│             newOutList.append(out);
+│         }
+│         else if (t == "ntran") {
+│             QString g = newInList.isEmpty()    ? QString(bw, '0') : newInList[0].toString();
+│             QString d = newInList.size() > 1   ? newInList[1].toString() : QString(bw, '0');
+│             QString out; out.reserve(bw);
+│             for (int b = 0; b < bw; ++b) {
+│                 QChar gv = (b < g.length()) ? g[b] : QChar('0');
+│                 QChar dv = (b < d.length()) ? d[b] : QChar('0');
+│                 if (gv == 'Z' || gv == 'E') out += 'E';
+│                 else if (gv == '1')         out += dv;
+│                 else                        out += 'Z';
+│             }
+│             newOutList.append(out);
+│         }
+│         else if (t == "ptran") {
+│             QString g = newInList.isEmpty()    ? QString(bw, '0') : newInList[0].toString();
+│             QString d = newInList.size() > 1   ? newInList[1].toString() : QString(bw, '0');
+│             QString out; out.reserve(bw);
+│             for (int b = 0; b < bw; ++b) {
+│                 QChar gv = (b < g.length()) ? g[b] : QChar('0');
+│                 QChar dv = (b < d.length()) ? d[b] : QChar('0');
+│                 if (gv == 'Z' || gv == 'E') out += 'E';
+│                 else if (gv == '0')         out += dv;
+│                 else                        out += 'Z';
+│             }
+│             newOutList.append(out);
+│         }
+│         else if (t == "splitter") {
+│             QString mainIn = newInList.isEmpty() ? QString(bw, '0') : newInList[0].toString();
+│             while (mainIn.length() < bw) mainIn += '0';
+│             if (mainIn.length() > bw) mainIn = mainIn.left(bw);
+│             QVariantList splits = c.value("outputSplits").toList();
+│             int offset = bw;
+│             for (auto& sv : splits) {
+│                 int len = sv.toInt();
+│                 if (len < 1) len = 1;
+│                 offset -= len;
+│                 if (offset < 0) offset = 0;
+│                 QString out;
+│                 out.reserve(len);
+│                 for (int b = 0; b < len; ++b)
+│                     out += mainIn[offset + b];
+│                 newOutList.append(out);
+│             }
+│         }
+│         else if (t == "hub") {
+│             QString merged;
+│             merged.reserve(bw + 8);
+│             for (int s = newInList.size() - 1; s >= 0; --s) {
+│                 int len = ComponentLogic::inputBitWidth(c, s);
+│                 QString sv = newInList[s].toString();
+│                 while (sv.length() < len) sv += '0';
+│                 merged += sv.left(len);
+│             }
+│             while (merged.length() < bw) merged += '0';
+│             newOutList.append(merged.left(bw));
+│         }
+│         else if (t == "led" || t == "output") {
+│             if (!newInList.isEmpty()) newOutList.append(newInList[0]);
+│             else                      newOutList.append(QString(bw, '0'));
+│         }
+│         else if (t == "sub") {
+│             newOutList = c.value("outputPorts").toList();
+│         }
+│     
+│         const QVariantList oldOutList = c.value("outputPorts").toList();
+│         if (oldOutList != newOutList) {
+│             c["outputPorts"] = newOutList;
+│             changed = true;
+│         }
+│         return changed;
+│     }
+│     
+│     bool IterEngine::evaluateContext(CircuitContext& ctx) {
+│         const int n = ctx.components.size();
+│         if (n == 0) return false;
+│     
+│         QHash<QString, int> idToIdx;
+│         idToIdx.reserve(n * 2);
+│         for (int i = 0; i < n; ++i)
+│             idToIdx.insert(ctx.components[i].toMap().value("id").toString(), i);
+│     
+│         QVector<QVector<int>> succ(n);
+│         QVector<int> inDeg(n, 0);
+│     
+│         QHash<QString, QVector<QPair<int,int>>> inputMap;
+│         inputMap.reserve(ctx.wires.size() * 2);
+│     
+│         for (const auto& wv : ctx.wires) {
+│             QVariantMap w = wv.toMap();
+│             int si = idToIdx.value(w.value("fromComp").toString(), -1);
+│             int di = idToIdx.value(w.value("toComp").toString(), -1);
+│             if (si < 0 || di < 0) continue;
+│             succ[si].append(di);
+│             inDeg[di]++;
+│             QString key = w.value("toComp").toString() + ':' +
+│                           QString::number(w.value("toPort").toInt());
+│             inputMap[key].append({si, w.value("fromPort").toInt()});
+│         }
+│     
+│         QVector<QVariantMap> comps(n);
+│         for (int i = 0; i < n; ++i) comps[i] = ctx.components[i].toMap();
+│     
+│         QVector<int> order;
+│         order.reserve(n);
+│         QVector<int> queue;
+│         queue.reserve(n);
+│         for (int i = 0; i < n; ++i) if (inDeg[i] == 0) queue.append(i);
+│         int qi = 0;
+│         while (qi < queue.size()) {
+│             int u = queue[qi++];
+│             order.append(u);
+│             for (int v : succ[u])
+│                 if (--inDeg[v] == 0) queue.append(v);
+│         }
+│     
+│         const bool hasCycle = (order.size() < n);
+│         bool anyChanged = false;
+│         QVector<bool> changed(n, false);
+│     
+│         for (int idx : order) {
+│             if (evalOne(comps[idx], inputMap, comps)) {
+│                 anyChanged = true;
+│                 changed[idx] = true;
+│             }
+│         }
+│     
+│         if (hasCycle) {
+│             QVector<int> cycNodes;
+│             cycNodes.reserve(n - order.size());
+│             for (int i = 0; i < n; ++i) if (inDeg[i] > 0) cycNodes.append(i);
+│             for (int iter = 0; iter < 200; ++iter) {
+│                 bool iterChanged = false;
+│                 for (int idx : cycNodes) {
+│                     if (evalOne(comps[idx], inputMap, comps)) {
+│                         iterChanged = true;
+│                         changed[idx] = true;
+│                     }
+│                 }
+│                 if (iterChanged) anyChanged = true;
+│                 else break;
+│             }
+│         }
+│     
+│         if (anyChanged) {
+│             for (int i = 0; i < n; ++i)
+│                 if (changed[i]) ctx.components[i] = comps[i];
+│         }
+│         return anyChanged;
+│     }
+│     
+│     void IterEngine::syncSubPins(CircuitContext& ctx,
+│                                  const QHash<QString, CircuitContext>& subContexts) {
+│         for (int i = 0; i < ctx.components.size(); ++i) {
+│             QVariantMap c = ctx.components[i].toMap();
+│             if (c.value("type").toString() != "sub") continue;
+│             QString subId = c.value("subId").toString();
+│             auto sit = subContexts.find(subId);
+│             if (sit == subContexts.end()) continue;
+│     
+│             QVariantList subInputNames, subOutputNames, subInputWidths, subOutputWidths;
+│             for (const auto& scv : sit.value().components) {
+│                 auto sc = scv.toMap();
+│                 QString st = sc.value("type").toString();
+│                 QString sn = sc.value("name").toString();
+│                 int sw = sc.value("bitWidth").toInt();
+│                 if (sw < 1) sw = 1;
+│                 if (st == "input") {
+│                     subInputNames.append(sn.isEmpty() ? sc.value("id").toString() : sn);
+│                     subInputWidths.append(sw);
+│                 } else if (st == "output") {
+│                     subOutputNames.append(sn.isEmpty() ? sc.value("id").toString() : sn);
+│                     subOutputWidths.append(sw);
+│                 }
+│             }
+│     
+│             bool changed = false;
+│             if (c.value("subInputNames").toList()   != subInputNames)   { c["subInputNames"]   = subInputNames;   changed = true; }
+│             if (c.value("subOutputNames").toList()  != subOutputNames)  { c["subOutputNames"]  = subOutputNames;  changed = true; }
+│             if (c.value("subInputWidths").toList()  != subInputWidths)  { c["subInputWidths"]  = subInputWidths;  changed = true; }
+│             if (c.value("subOutputWidths").toList() != subOutputWidths) { c["subOutputWidths"] = subOutputWidths; changed = true; }
+│     
+│             QVariantList inVals = c.value("inputPortValues").toList();
+│             if (inVals.size() != subInputNames.size()) {
+│                 QVariantList newIn;
+│                 newIn.reserve(subInputNames.size());
+│                 for (int k = 0; k < subInputNames.size(); ++k) {
+│                     if (k < inVals.size()) {
+│                         newIn.append(inVals[k]);
+│                     } else {
+│                         int w = subInputWidths.value(k).toInt();
+│                         if (w < 1) w = 1;
+│                         newIn.append(QString(w, '0'));
+│                     }
+│                 }
+│                 c["inputPortValues"] = newIn;
+│                 changed = true;
+│             }
+│     
+│             QVariantList outVals = c.value("outputPorts").toList();
+│             if (outVals.size() != subOutputNames.size()) {
+│                 QVariantList newOut;
+│                 newOut.reserve(subOutputNames.size());
+│                 for (int k = 0; k < subOutputNames.size(); ++k) {
+│                     if (k < outVals.size()) {
+│                         newOut.append(outVals[k]);
+│                     } else {
+│                         int w = subOutputWidths.value(k).toInt();
+│                         if (w < 1) w = 1;
+│                         newOut.append(QString(w, '0'));
+│                     }
+│                 }
+│                 c["outputPorts"] = newOut;
+│                 changed = true;
+│             }
+│     
+│             if (changed) ctx.components[i] = c;
+│         }
+│     }
+│     
+│     static bool evalInstance(QVariantMap& subInst,
+│                              const QHash<QString, CircuitContext>& subContexts,
+│                              int depth)
+│     {
+│         if (depth > 32) return false;
+│         const QString subId = subInst.value("subId").toString();
+│         auto sit = subContexts.constFind(subId);
+│         if (sit == subContexts.constEnd()) return false;
+│     
+│         CircuitContext instCtx = sit.value();
+│     
+│         const QVariantList inVals = subInst.value("inputPortValues").toList();
+│         int idx = 0;
+│         for (int j = 0; j < instCtx.components.size(); ++j) {
+│             QVariantMap sc = instCtx.components[j].toMap();
+│             if (sc.value("type").toString() != "input") continue;
+│             if (idx >= inVals.size()) break;
+│     
+│             QString s = inVals[idx].toString();
+│             int sw = sc.value("bitWidth").toInt();
+│             if (sw < 1) sw = 1;
+│             if (s.length() != sw) s = QString(sw, '0');
+│     
+│             QVariantList bits;
+│             bits.reserve(s.length());
+│             for (int k = 0; k < s.length(); ++k) bits.append(s[k] == '1');
+│             sc["inputBits"] = bits;
+│     
+│             if (s.contains('Z') || s.contains('E')) sc["outputOverride"] = s;
+│             else                                    sc["outputOverride"] = QVariant();
+│     
+│             instCtx.components[j] = sc;
+│             ++idx;
+│         }
+│     
+│         evalRecursive(instCtx, subContexts, depth + 1);
+│     
+│         QVariantList newOut;
+│         for (int j = 0; j < instCtx.components.size(); ++j) {
+│             QVariantMap sc = instCtx.components[j].toMap();
+│             if (sc.value("type").toString() != "output") continue;
+│             QVariantList inv = sc.value("inputPortValues").toList();
+│             QString v = inv.isEmpty() ? QString() : inv[0].toString();
+│             int sw = sc.value("bitWidth").toInt();
+│             if (sw < 1) sw = 1;
+│             if (v.length() != sw) v = QString(sw, '0');
+│             newOut.append(v);
+│         }
+│     
+│         if (subInst.value("outputPorts").toList() != newOut) {
+│             subInst["outputPorts"] = newOut;
+│             return true;
+│         }
+│         return false;
+│     }
+│     
+│     static bool evalRecursive(CircuitContext& ctx,
+│                               const QHash<QString, CircuitContext>& subContexts,
+│                               int depth)
+│     {
+│         if (depth > 32) return false;
+│         bool anyChanged = false;
+│     
+│         for (int iter = 0; iter < 8; ++iter) {
+│             bool iterChanged = false;
+│     
+│             if (IterEngine::evaluateContext(ctx)) iterChanged = true;
+│     
+│             for (int i = 0; i < ctx.components.size(); ++i) {
+│                 QVariantMap c = ctx.components[i].toMap();
+│                 if (c.value("type").toString() != "sub") continue;
+│                 if (evalInstance(c, subContexts, depth)) {
+│                     ctx.components[i] = c;
+│                     iterChanged = true;
+│                 }
+│             }
+│     
+│             if (iterChanged) {
+│                 if (IterEngine::evaluateContext(ctx)) iterChanged = true;
+│             }
+│     
+│             if (iterChanged) anyChanged = true;
+│             else break;
+│         }
+│         return anyChanged;
+│     }
+│     
+│     void IterEngine::evaluateAll(CircuitContext& root,
+│                                  QHash<QString, CircuitContext>& subContexts) {
+│         syncSubPins(root, subContexts);
+│         for (auto it = subContexts.begin(); it != subContexts.end(); ++it)
+│             syncSubPins(it.value(), subContexts);
+│     
+│         if (root.components.isEmpty()) return;
+│     
+│         evalRecursive(root, subContexts, 0);
+│     }
+│     
+│     bool IterEngine::evaluateStandalone(
+│         CircuitContext& ctx,
+│         const QHash<QString, CircuitContext>& subContexts)
+│     {
+│         return evalRecursive(ctx, subContexts, 0);
+│     }
+
+└── IterEngine.h
+    内容:
+      #ifndef ITERENGINE_H
+      #define ITERENGINE_H
+      
+      #include <QVariantMap>
+      #include <QVariantList>
+      #include <QHash>
+      #include <QString>
+      #include <QVector>
+      #include <QPair>
+      #include "../../core/CircuitContext.h"
+      
+      /**
+       * @brief 电路求值引擎（旧引擎，迭代到收敛）。
+       *
+       * 支持多驱：一个输入端口可以接多个输出，
+       * 合并时如果存在 0/1 冲突则输出 E。
+       */
+      class IterEngine {
+      public:
+          static bool evalOne(QVariantMap& c,
+                              const QHash<QString, QVector<QPair<int,int>>>& inputMap,
+                              const QVector<QVariantMap>& comps);
+      
+          static bool evaluateContext(CircuitContext& ctx);
+      
+          static void syncSubPins(CircuitContext& ctx,
+                                  const QHash<QString, CircuitContext>& subContexts);
+      
+          static void evaluateAll(CircuitContext& root,
+                                  QHash<QString, CircuitContext>& subContexts);
+      
+          static bool evaluateStandalone(CircuitContext& ctx,
+                                         const QHash<QString, CircuitContext>& subContexts);
+      };
+      
+      #endif // ITERENGINE_H
+
+├── ComponentLogic.cpp
+│   内容:
+│     #include "ComponentLogic.h"
+│     #include <QtGlobal>
+│     
+│     namespace ComponentLogic {
+│     
+│     // ============================================================
+│     // 基础属性
+│     // ============================================================
+│     
+│     int inputCount(const QVariantMap& comp) {
+│         const QString t = comp.value("type").toString();
+│         if (t == "input" || t == "clock" || t == "const" || t == "text") return 0;
+│         if (t == "not") return 1;
+│         if (t == "and" || t == "or" || t == "nand" || t == "nor" || t == "xor" || t == "xnor") {
+│             int n = comp.value("inputCount").toInt();
+│             return n < 2 ? 2 : qMin(n, 64);
+│         }
+│         if (t == "led" || t == "output") return 1;
+│         if (t == "splitter") return 1;
+│         if (t == "hub") return qMax(1, comp.value("outputSplits").toList().size());
+│         if (t == "sub") return comp.value("subInputNames").toList().size();
+│         if (t == "tgate" || t == "ntran" || t == "ptran") return 2;
+│         return 0;
+│     }
+│     
+│     int outputCount(const QVariantMap& comp) {
+│         const QString t = comp.value("type").toString();
+│         if (t == "input" || t == "clock" || t == "const") return 1;
+│         if (t == "text") return 0;
+│         if (t == "not" || t == "and" || t == "or" || t == "nand" ||
+│             t == "nor" || t == "xor" || t == "xnor") return 1;
+│         if (t == "splitter") return qMax(1, comp.value("outputSplits").toList().size());
+│         if (t == "hub") return 1;
+│         if (t == "led" || t == "output") return 0;
+│         if (t == "sub") return comp.value("subOutputNames").toList().size();
+│         if (t == "tgate" || t == "ntran" || t == "ptran") return 1;
+│         return 0;
+│     }
+│     
+│     int outputBitWidth(const QVariantMap& comp, int portIdx) {
+│         const QString t = comp.value("type").toString();
+│         int bw = comp.value("bitWidth").toInt();
+│         if (bw < 1) bw = 1;
+│         if (t == "input" || t == "const" || t == "clock" || t == "not" ||
+│             t == "and" || t == "or" || t == "nand" || t == "nor" ||
+│             t == "xor" || t == "xnor") return bw;
+│         if (t == "tgate" || t == "ntran" || t == "ptran") return bw;
+│         if (t == "splitter") {
+│             QVariantList splits = comp.value("outputSplits").toList();
+│             if (portIdx >= 0 && portIdx < splits.size()) {
+│                 int v = splits[portIdx].toInt();
+│                 return v < 1 ? 1 : v;
+│             }
+│             return 1;
+│         }
+│         if (t == "hub") return bw;
+│         if (t == "sub") {
+│             QVariantList ws = comp.value("subOutputWidths").toList();
+│             if (portIdx >= 0 && portIdx < ws.size()) {
+│                 int v = ws[portIdx].toInt();
+│                 return v < 1 ? 1 : v;
+│             }
+│         }
+│         return bw;
+│     }
+│     
+│     int inputBitWidth(const QVariantMap& comp, int portIdx) {
+│         const QString t = comp.value("type").toString();
+│         int bw = comp.value("bitWidth").toInt();
+│         if (bw < 1) bw = 1;
+│         if (t == "splitter") return bw;
+│         if (t == "hub") {
+│             QVariantList splits = comp.value("outputSplits").toList();
+│             if (portIdx >= 0 && portIdx < splits.size()) {
+│                 int v = splits[portIdx].toInt();
+│                 return v < 1 ? 1 : v;
+│             }
+│             return 1;
+│         }
+│         if (t == "sub") {
+│             QVariantList ws = comp.value("subInputWidths").toList();
+│             if (portIdx >= 0 && portIdx < ws.size()) {
+│                 int v = ws[portIdx].toInt();
+│                 return v < 1 ? 1 : v;
+│             }
+│         }
+│         return bw;
+│     }
+│     
+│     // ============================================================
+│     // 端口几何
+│     // ============================================================
+│     
+│     static void rotatePoint(double& x, double& y, int rot) {
+│         rot = ((rot % 4) + 4) % 4;
+│         double nx = x, ny = y;
+│         switch (rot) {
+│         case 1: nx = -y; ny =  x; break;
+│         case 2: nx = -x; ny = -y; break;
+│         case 3: nx =  y; ny = -x; break;
+│         default: break;
+│         }
+│         x = nx; y = ny;
+│     }
+│     
+│     QVariantList outputPorts(const QVariantMap& comp) {
+│         QVariantList result;
+│         const QString t = comp.value("type").toString();
+│         int n = outputCount(comp);
+│         int rot = comp.value("rotation").toInt();
+│     
+│         double W = 80.0, H = 60.0;
+│     
+│         if (t == "input" || t == "clock" || t == "const") {
+│             W = qMax(60.0, comp.value("bitWidth").toInt() * 22.0 + 8.0);
+│             H = 40.0;
+│             QVariantMap p;
+│             p["index"] = 0; p["x"] = W/2; p["y"] = 0;
+│             p["bitWidth"] = outputBitWidth(comp, 0);
+│             result.append(p);
+│         } else if (t == "splitter") {
+│             W = 80.0;
+│             QVariantList splits = comp.value("outputSplits").toList();
+│             int segN = qMax(1, splits.size());
+│             H = qMax(60.0, (double)segN * 24.0);
+│             for (int i = 0; i < segN; ++i) {
+│                 QVariantMap p;
+│                 p["index"] = i;
+│                 p["x"] = W/2;
+│                 p["y"] = -H/2 + (i + 0.5) * (H / segN);
+│                 p["bitWidth"] = outputBitWidth(comp, i);
+│                 result.append(p);
+│             }
+│         } else if (t == "hub") {
+│             W = 80.0; H = 60.0;
+│             QVariantMap p;
+│             p["index"] = 0; p["x"] = W/2; p["y"] = 0;
+│             p["bitWidth"] = outputBitWidth(comp, 0);
+│             result.append(p);
+│         } else if (t == "ntran") {
+│             W = 80.0; H = 60.0;
+│             QVariantMap p;
+│             p["index"] = 0;
+│             p["x"] = W/2;
+│             p["y"] = -H/4;
+│             p["bitWidth"] = outputBitWidth(comp, 0);
+│             result.append(p);
+│         } else if (t == "ptran") {
+│             W = 80.0; H = 60.0;
+│             QVariantMap p;
+│             p["index"] = 0;
+│             p["x"] = W/2;
+│             p["y"] = H/4;
+│             p["bitWidth"] = outputBitWidth(comp, 0);
+│             result.append(p);
+│         } else if (t == "not" || t == "and" || t == "or" || t == "nand" ||
+│                    t == "nor" || t == "xor" || t == "xnor" || t == "sub" ||
+│                    t == "tgate") {
+│             W = (t == "sub") ? 110.0 : 80.0;
+│             int ic = inputCount(comp);
+│             int oc = n; if (oc < 1) oc = 1;
+│             H = qMax(60.0, (double)qMax(ic, oc) * 24.0);
+│             for (int i = 0; i < n; ++i) {
+│                 QVariantMap p;
+│                 p["index"] = i;
+│                 p["x"] = W/2;
+│                 p["y"] = n == 1 ? 0.0 : (-H/2 + (i + 0.5) * (H / n));
+│                 p["bitWidth"] = outputBitWidth(comp, i);
+│                 result.append(p);
+│             }
+│         }
+│     
+│         for (int i = 0; i < result.size(); ++i) {
+│             QVariantMap p = result[i].toMap();
+│             double px = p.value("x").toDouble();
+│             double py = p.value("y").toDouble();
+│             rotatePoint(px, py, rot);
+│             p["x"] = px; p["y"] = py;
+│             result[i] = p;
+│         }
+│         return result;
+│     }
+│     
+│     QVariantList inputPorts(const QVariantMap& comp) {
+│         QVariantList result;
+│         const QString t = comp.value("type").toString();
+│         int n = inputCount(comp);
+│         int rot = comp.value("rotation").toInt();
+│     
+│         double W = 80.0, H = 60.0;
+│     
+│         if (t == "led" || t == "output") {
+│             W = qMax(t == "output" ? 60.0 : 50.0, comp.value("bitWidth").toInt() * 22.0 + 8.0);
+│             H = 40.0;
+│             QVariantMap p;
+│             p["index"] = 0; p["x"] = -W/2; p["y"] = 0;
+│             p["bitWidth"] = inputBitWidth(comp, 0);
+│             result.append(p);
+│         } else if (t == "splitter") {
+│             W = 80.0; H = 60.0;
+│             QVariantMap p;
+│             p["index"] = 0; p["x"] = -W/2; p["y"] = 0;
+│             p["bitWidth"] = inputBitWidth(comp, 0);
+│             result.append(p);
+│         } else if (t == "hub") {
+│             W = 80.0;
+│             QVariantList splits = comp.value("outputSplits").toList();
+│             int segN = qMax(1, splits.size());
+│             H = qMax(60.0, (double)segN * 24.0);
+│             for (int i = 0; i < segN; ++i) {
+│                 QVariantMap p;
+│                 p["index"] = i;
+│                 p["x"] = -W/2;
+│                 p["y"] = -H/2 + (i + 0.5) * (H / segN);
+│                 p["bitWidth"] = inputBitWidth(comp, i);
+│                 result.append(p);
+│             }
+│         } else if (t == "not") {
+│             W = 80.0; H = 60.0;
+│             QVariantMap p;
+│             p["index"] = 0; p["x"] = -W/2; p["y"] = 0;
+│             p["bitWidth"] = inputBitWidth(comp, 0);
+│             result.append(p);
+│         } else if (t == "ntran") {
+│             W = 80.0; H = 60.0;
+│             QVariantMap pg;
+│             pg["index"] = 0;
+│             pg["x"] = -W/2; pg["y"] = 0;
+│             pg["bitWidth"] = inputBitWidth(comp, 0);
+│             result.append(pg);
+│     
+│             QVariantMap pd;
+│             pd["index"] = 1;
+│             pd["x"] = W/2;
+│             pd["y"] = H/4;
+│             pd["bitWidth"] = inputBitWidth(comp, 1);
+│             result.append(pd);
+│         } else if (t == "ptran") {
+│             W = 80.0; H = 60.0;
+│             QVariantMap pg;
+│             pg["index"] = 0;
+│             pg["x"] = -W/2; pg["y"] = 0;
+│             pg["bitWidth"] = inputBitWidth(comp, 0);
+│             result.append(pg);
+│     
+│             QVariantMap pd;
+│             pd["index"] = 1;
+│             pd["x"] = W/2;
+│             pd["y"] = -H/4;
+│             pd["bitWidth"] = inputBitWidth(comp, 1);
+│             result.append(pd);
+│         } else if (t == "and" || t == "or" || t == "nand" ||
+│                    t == "nor" || t == "xor" || t == "xnor" || t == "sub" ||
+│                    t == "tgate") {
+│             W = (t == "sub") ? 110.0 : 80.0;
+│             H = qMax(60.0, (double)n * 24.0);
+│             for (int i = 0; i < n; ++i) {
+│                 QVariantMap p;
+│                 p["index"] = i;
+│                 p["x"] = -W/2;
+│                 p["y"] = n == 1 ? 0.0 : (-H/2 + (i + 0.5) * (H / n));
+│                 p["bitWidth"] = inputBitWidth(comp, i);
+│                 result.append(p);
+│             }
+│         }
+│     
+│         for (int i = 0; i < result.size(); ++i) {
+│             QVariantMap p = result[i].toMap();
+│             double px = p.value("x").toDouble();
+│             double py = p.value("y").toDouble();
+│             rotatePoint(px, py, rot);
+│             p["x"] = px; p["y"] = py;
+│             result[i] = p;
+│         }
+│         return result;
+│     }
+│     
+│     } // namespace ComponentLogic
+
+├── ComponentLogic.h
+│   内容:
+│     #ifndef COMPONENTLOGIC_H
+│     #define COMPONENTLOGIC_H
+│     
+│     #include <QVariantMap>
+│     #include <QVariantList>
+│     #include <QString>
+│     
+│     /**
+│      * @brief 元件类型的基础属性查询 + 端口几何计算。
+│      *
+│      * 这是 logic 层唯一的"元件知识入口"。
+│      * 引擎、QML 端口面板、错误检查都通过这里获取元件信息。
+│      */
+│     namespace ComponentLogic {
+│     
+│     int inputCount(const QVariantMap& comp);
+│     int outputCount(const QVariantMap& comp);
+│     int outputBitWidth(const QVariantMap& comp, int portIdx);
+│     int inputBitWidth(const QVariantMap& comp, int portIdx);
+│     
+│     QVariantList outputPorts(const QVariantMap& comp);
+│     QVariantList inputPorts(const QVariantMap& comp);
+│     
+│     } // namespace ComponentLogic
+│     
+│     #endif // COMPONENTLOGIC_H
+
+└── SimEngine.h
+    内容:
+      #ifndef SIMENGINE_H
+      #define SIMENGINE_H
+      
+      #include <QString>
+      
+      /**
+       * @brief 引擎种类枚举 + 字符串互转。
+       *
+       * 只有两套引擎，用 enum 分支即可，不引入虚接口。
+       */
+      enum class EngineKind { Event, Iter };
+      
+      inline EngineKind engineKindFromString(const QString& s) {
+          return s == "iter" ? EngineKind::Iter : EngineKind::Event;
+      }
+      
+      inline QString engineKindToString(EngineKind k) {
+          return k == EngineKind::Iter ? QStringLiteral("iter") : QStringLiteral("event");
+      }
+      
+      #endif // SIMENGINE_H
+
+├── Circuit.cpp
+│   内容:
+│     #include "Circuit.h"
+│     #include "core/Component.h"
+│     #include "logic/ComponentLogic.h"
+│     #include "logic/event/EventEngine.h"
+│     #include <QVariantMap>
+│     #include <QString>
+│     #include <QDebug>
+│     
+│     static const char* kUndoPropName = "__logicsim_undo_v1";
+│     
+│     Circuit::Circuit(QObject* parent) : QObject(parent) {
+│         CircuitUndoData* d = new CircuitUndoData();
+│         setProperty(kUndoPropName, QVariant::fromValue(static_cast<void*>(d)));
+│     
+│         loadRecentFiles();
+│     
+│         m_clockTimer = new QTimer(this);
+│         connect(m_clockTimer, &QTimer::timeout, this, &Circuit::tick);
+│     
+│         m_eventEngine = new EventEngine();
+│     
+│         m_simTimer = new QTimer(this);
+│         m_simTimer->setInterval(16);
+│         connect(m_simTimer, &QTimer::timeout, this, &Circuit::onSimTimerTick);
+│     }
+│     
+│     Circuit::~Circuit() {
+│         CircuitUndoData* d = und();
+│         if (d) {
+│             delete d;
+│             setProperty(kUndoPropName, QVariant());
+│         }
+│         if (m_eventEngine) { delete m_eventEngine; m_eventEngine = nullptr; }
+│     }
+│     
+│     CircuitUndoData* Circuit::und() const {
+│         return static_cast<CircuitUndoData*>(property(kUndoPropName).value<void*>());
+│     }
+│     
+│     bool Circuit::canUndo() const {
+│         CircuitUndoData* d = und();
+│         return d && !d->undoStack.empty();
+│     }
+│     
+│     bool Circuit::canRedo() const {
+│         CircuitUndoData* d = und();
+│         return d && !d->redoStack.empty();
+│     }
+│     
+│     void Circuit::dumpInternalState(const QString& where) const { Q_UNUSED(where); }
+│     
+│     Circuit::Context& Circuit::currentCtx() {
+│         if (m_currentCtxId.isEmpty()) return m_root;
+│         auto it = m_subContexts.find(m_currentCtxId);
+│         if (it == m_subContexts.end()) return m_root;
+│         return it.value();
+│     }
+│     const Circuit::Context& Circuit::currentCtx() const {
+│         if (m_currentCtxId.isEmpty()) return m_root;
+│         auto it = m_subContexts.find(m_currentCtxId);
+│         if (it == m_subContexts.end()) return m_root;
+│         return it.value();
+│     }
+│     Circuit::Context* Circuit::ctxById(const QString& id) {
+│         if (id.isEmpty()) return &m_root;
+│         auto it = m_subContexts.find(id);
+│         if (it == m_subContexts.end()) return nullptr;
+│         return &it.value();
+│     }
+│     const Circuit::Context* Circuit::ctxById(const QString& id) const {
+│         if (id.isEmpty()) return &m_root;
+│         auto it = m_subContexts.find(id);
+│         if (it == m_subContexts.end()) return nullptr;
+│         return &it.value();
+│     }
+│     
+│     QVariantList Circuit::components() const { return currentCtx().components; }
+│     QVariantList Circuit::wires() const { return currentCtx().wires; }
+│     
+│     QString Circuit::contextName() const {
+│         if (m_currentCtxId.isEmpty()) return "主电路";
+│         QString n = m_subNames.value(m_currentCtxId, "子电路");
+│         if (m_viewOnly) n += "（浏览）";
+│         return n;
+│     }
+│     
+│     int Circuit::indexOfComponent(const QString& id) const {
+│         return currentCtx().indexOfComponent(id);
+│     }
+│     int Circuit::indexOfWire(const QString& id) const {
+│         return currentCtx().indexOfWire(id);
+│     }
+│     
+│     qulonglong Circuit::simTime() const {
+│         return m_eventEngine ? m_eventEngine->time() : 0;
+│     }
+│     qulonglong Circuit::globalGateDelay() const {
+│         return m_eventEngine ? m_eventEngine->globalGateDelay() : 1;
+│     }
+│     void Circuit::setGlobalGateDelay(qulonglong d) {
+│         if (!m_eventEngine) return;
+│         if (d < 1) d = 1;
+│         if (m_eventEngine->globalGateDelay() == d) return;
+│         m_eventEngine->setGlobalGateDelay(d);
+│         emit engineSettingsChanged();
+│     }
+│     qulonglong Circuit::wireDelay() const {
+│         return m_eventEngine ? m_eventEngine->wireDelay() : 1;
+│     }
+│     void Circuit::setWireDelay(qulonglong d) {
+│         if (!m_eventEngine) return;
+│         if (d < 1) d = 1;
+│         if (m_eventEngine->wireDelay() == d) return;
+│         m_eventEngine->setWireDelay(d);
+│         emit engineSettingsChanged();
+│     }
+│     void Circuit::setSimulationSpeed(qulonglong s) {
+│         if (m_simulationSpeed == s) return;
+│         m_simulationSpeed = s;
+│         emit engineSettingsChanged();
+│     }
+│     void Circuit::setSimulationSpeedExp(int e) {
+│         if (e < 0) e = 0;
+│         if (e > 12) e = 12;
+│         if (m_simulationSpeedExp == e) return;
+│         m_simulationSpeedExp = e;
+│         qulonglong v = 1;
+│         for (int i = 0; i < e; ++i) v *= 10;
+│         m_simulationSpeed = v;
+│         emit engineSettingsChanged();
+│     }
+│     void Circuit::setAutoSpeed(bool a) {
+│         if (m_autoSpeed == a) return;
+│         m_autoSpeed = a;
+│         emit engineSettingsChanged();
+│     }
+
+└── Circuit.h
+    内容:
+      #ifndef CIRCUIT_H
+      #define CIRCUIT_H
+      
+      #include <QObject>
+      #include <QVariantList>
+      #include <QVariantMap>
+      #include <QString>
+      #include <QStringList>
+      #include <QHash>
+      #include <QSet>
+      #include <QTimer>
+      #include <QDateTime>
+      
+      #include "core/CircuitContext.h"
+      #include "core/UndoData.h"
+      
+      class EventEngine;
+      
+      class Circuit : public QObject
+      {
+          Q_OBJECT
+          Q_DISABLE_COPY_MOVE(Circuit)
+      
+          Q_PROPERTY(QVariantList components READ components NOTIFY changed)
+          Q_PROPERTY(QVariantList wires READ wires NOTIFY changed)
+          Q_PROPERTY(QString contextId READ contextId NOTIFY contextChanged)
+          Q_PROPERTY(QString contextName READ contextName NOTIFY contextChanged)
+          Q_PROPERTY(bool isRootContext READ isRootContext NOTIFY contextChanged)
+          Q_PROPERTY(bool isViewOnly READ isViewOnly NOTIFY contextChanged)
+          Q_PROPERTY(QVariantList subcircuits READ subcircuits NOTIFY subcircuitsChanged)
+          Q_PROPERTY(QVariantList editContexts READ editContexts NOTIFY editContextsChanged)
+          Q_PROPERTY(QVariantList errors READ errors NOTIFY errorsChanged)
+          Q_PROPERTY(QVariantList recentFiles READ recentFiles NOTIFY recentFilesChanged)
+          Q_PROPERTY(bool clockRunning READ clockRunning NOTIFY clockChanged)
+          Q_PROPERTY(int clockFrequency READ clockFrequency NOTIFY clockChanged)
+          Q_PROPERTY(int clockTickCount READ clockTickCount NOTIFY clockChanged)
+          Q_PROPERTY(bool canUndo READ canUndo NOTIFY undoRedoChanged)
+          Q_PROPERTY(bool canRedo READ canRedo NOTIFY undoRedoChanged)
+      
+          Q_PROPERTY(QString engineType READ engineType WRITE setEngineType NOTIFY engineChanged)
+          Q_PROPERTY(bool simulationRunning READ simulationRunning NOTIFY simulationChanged)
+          Q_PROPERTY(qulonglong simTime READ simTime NOTIFY simulationTick)
+          Q_PROPERTY(qulonglong globalGateDelay READ globalGateDelay WRITE setGlobalGateDelay NOTIFY engineSettingsChanged)
+          Q_PROPERTY(qulonglong wireDelay READ wireDelay WRITE setWireDelay NOTIFY engineSettingsChanged)
+          Q_PROPERTY(qulonglong simulationSpeed READ simulationSpeed WRITE setSimulationSpeed NOTIFY engineSettingsChanged)
+          Q_PROPERTY(int simulationSpeedExp READ simulationSpeedExp WRITE setSimulationSpeedExp NOTIFY engineSettingsChanged)
+          Q_PROPERTY(bool autoSpeed READ autoSpeed WRITE setAutoSpeed NOTIFY engineSettingsChanged)
+      
+      public:
+          explicit Circuit(QObject* parent = nullptr);
+          ~Circuit() override;
+      
+          QVariantList components() const;
+          QVariantList wires() const;
+          QString contextId() const { return m_currentCtxId; }
+          QString contextName() const;
+          bool isRootContext() const { return m_currentCtxId.isEmpty(); }
+          bool isViewOnly() const { return m_viewOnly; }
+          QVariantList subcircuits() const;
+          QVariantList editContexts() const;
+          QVariantList errors() const { return m_errors; }
+          QVariantList recentFiles() const { return m_recentFiles; }
+          bool clockRunning() const { return m_clockRunning; }
+          int clockFrequency() const { return m_clockFrequency; }
+          int clockTickCount() const { return m_clockTickCount; }
+      
+          bool canUndo() const;
+          bool canRedo() const;
+      
+          QString engineType() const { return m_engineType; }
+          void setEngineType(const QString& t);
+          bool simulationRunning() const { return m_simulationRunning; }
+          qulonglong simTime() const;
+          qulonglong globalGateDelay() const;
+          void setGlobalGateDelay(qulonglong d);
+          qulonglong wireDelay() const;
+          void setWireDelay(qulonglong d);
+          qulonglong simulationSpeed() const { return m_simulationSpeed; }
+          void setSimulationSpeed(qulonglong s);
+          int simulationSpeedExp() const { return m_simulationSpeedExp; }
+          void setSimulationSpeedExp(int e);
+          bool autoSpeed() const { return m_autoSpeed; }
+          void setAutoSpeed(bool a);
+      
+          Q_INVOKABLE void setGateTypeDelay(const QString& type, qulonglong d);
+          Q_INVOKABLE qulonglong getGateTypeDelay(const QString& type) const;
+          Q_INVOKABLE void clearGateTypeDelays();
+      
+          Q_INVOKABLE void startSimulation();
+          Q_INVOKABLE void pauseSimulation();
+          Q_INVOKABLE void resetSimulation();
+          Q_INVOKABLE void simulateStep();
+      
+          static int componentInputCount(const QVariantMap& comp);
+          static int componentOutputCount(const QVariantMap& comp);
+          static int outputPortBitWidth(const QVariantMap& comp, int portIdx);
+          static int inputPortBitWidth(const QVariantMap& comp, int portIdx);
+      
+          Q_INVOKABLE QString addComponent(const QString& type, double x, double y,
+                                           int bitWidth = 1, int inputCount = 2,
+                                           const QString& subId = QString());
+          Q_INVOKABLE void removeComponent(const QString& id);
+          Q_INVOKABLE void removeComponents(const QStringList& ids);
+          Q_INVOKABLE void moveComponent(const QString& id, double x, double y);
+          Q_INVOKABLE void moveSelection(const QStringList& ids, double dx, double dy);
+          Q_INVOKABLE void toggleInput(const QString& id);
+          Q_INVOKABLE void setBitValue(const QString& id, int bit, bool value);
+          Q_INVOKABLE void setComponentProp(const QString& id, const QString& key, const QVariant& value);
+          Q_INVOKABLE void renameComponent(const QString& id, const QString& name);
+          Q_INVOKABLE void setSplitterSplits(const QString& id, const QString& splitsStr);
+          Q_INVOKABLE QString getSplitterSplitsStr(const QString& id) const;
+          Q_INVOKABLE void rotateComponent(const QString& id, int delta);
+          Q_INVOKABLE void toggleClock(const QString& id);
+      
+          Q_INVOKABLE QString getInputBase(const QString& id) const;
+          Q_INVOKABLE void setInputBase(const QString& id, const QString& base);
+          Q_INVOKABLE QString getInputAsString(const QString& id) const;
+          Q_INVOKABLE QString setInputFromString(const QString& id, const QString& text);
+          Q_INVOKABLE QString formatValue(const QString& binStr, const QString& base, int bitWidth) const;
+      
+          Q_INVOKABLE QString addWire(const QString& fromComp, int fromPort,
+                                      const QString& toComp, int toPort);
+          Q_INVOKABLE void removeWire(const QString& id);
+      
+          Q_INVOKABLE QVariantMap getComponent(const QString& id) const;
+          Q_INVOKABLE QVariantMap getWire(const QString& id) const;
+          Q_INVOKABLE QVariantList outputPortsInfo(const QString& id) const;
+          Q_INVOKABLE QVariantList inputPortsInfo(const QString& id) const;
+          Q_INVOKABLE QVariantMap allPortsInfo() const;
+      
+          Q_INVOKABLE QString addSubcircuit(const QString& name);
+          Q_INVOKABLE void deleteSubcircuit(const QString& subId);
+          Q_INVOKABLE void setSubcircuitName(const QString& subId, const QString& name);
+          Q_INVOKABLE QString getSubcircuitName(const QString& subId) const;
+          Q_INVOKABLE bool canAddSubInstance(const QString& targetSubId) const;
+          Q_INVOKABLE void setSubcircuitAsRoot(const QString& subId);
+      
+          Q_INVOKABLE void enterSubcircuit(const QString& subId);
+          Q_INVOKABLE void leaveSubcircuit();
+          Q_INVOKABLE void switchEditContext(const QString& ctxId);
+      
+          Q_INVOKABLE void refreshErrors();
+      
+          Q_INVOKABLE QVariantList copySelection(const QStringList& ids);
+          Q_INVOKABLE QStringList pasteSelection(const QVariantList& data, double dx, double dy);
+      
+          Q_INVOKABLE void addRecentFile(const QString& path);
+          Q_INVOKABLE void removeRecentFile(const QString& path);
+          Q_INVOKABLE void clearRecentFiles();
+      
+          Q_INVOKABLE void clear();
+          Q_INVOKABLE void evaluate();
+      
+          Q_INVOKABLE QVariantMap toJson() const;
+          Q_INVOKABLE bool fromJson(const QVariantMap& data);
+          Q_INVOKABLE bool saveToFile(const QString& path);
+          Q_INVOKABLE bool loadFromFile(const QString& path);
+      
+          Q_INVOKABLE QString wireAtPoint(double x, double y, double tol) const;
+      
+          Q_INVOKABLE void startClock();
+          Q_INVOKABLE void stopClock();
+          Q_INVOKABLE void setClockFrequency(int hz);
+          Q_INVOKABLE void singleStep();
+          Q_INVOKABLE void resetAllInputs();
+      
+          Q_INVOKABLE QVariantMap statistics() const;
+      
+          Q_INVOKABLE QString addText(double x, double y, const QString& text = QString("文本"));
+          Q_INVOKABLE void setTextContent(const QString& id, const QString& content);
+      
+          Q_INVOKABLE void undo();
+          Q_INVOKABLE void redo();
+          Q_INVOKABLE void breakUndoMerge();
+      
+          void dumpInternalState(const QString& where) const;
+      
+      signals:
+          void changed();
+          void geometryChanged();
+          void contextChanged();
+          void subcircuitsChanged();
+          void editContextsChanged();
+          void errorsChanged();
+          void recentFilesChanged();
+          void clockChanged();
+          void undoRedoChanged();
+      
+          void engineChanged();
+          void simulationChanged();
+          void simulationTick();
+          void engineSettingsChanged();
+      
+          void structureChanged();
+      
+      private slots:
+          void tick();
+      
+      private:
+          using Context = CircuitContext;
+      
+          Context m_root;
+          QHash<QString, Context> m_subContexts;
+          QHash<QString, QString> m_subNames;
+          QString m_currentCtxId;
+          bool m_viewOnly = false;
+          int m_subCounter = 0;
+          QVariantList m_errors;
+          QVariantList m_recentFiles;
+      
+          bool m_clockRunning = false;
+          int m_clockFrequency = 2;
+          int m_clockTickCount = 0;
+          QTimer* m_clockTimer = nullptr;
+          QHash<QString, bool> m_clockStates;
+      
+          QString m_engineType = "event";
+          bool m_simulationRunning = false;
+          bool m_engineDirty = true;
+          EventEngine* m_eventEngine = nullptr;
+          QTimer* m_simTimer = nullptr;
+          qulonglong m_simulationSpeed = 1000;
+          int m_simulationSpeedExp = 3;
+          bool m_autoSpeed = true;
+      
+          CircuitUndoData* und() const;
+      
+          Context& currentCtx();
+          const Context& currentCtx() const;
+          Context* ctxById(const QString& id);
+          const Context* ctxById(const QString& id) const;
+      
+          int indexOfComponent(const QString& id) const;
+          int indexOfWire(const QString& id) const;
+      
+          void evaluateAll();
+      
+          void loadRecentFiles();
+          void saveRecentFiles();
+      
+          bool hasSubCycle(const QString& fromCtx, const QString& targetId, QSet<QString>& visited) const;
+      
+          void pushUndo(const QString& mergeKey = QString());
+          void restoreSnapshot(const QVariantMap& snap, bool emitSignals = true);
+      
+          void rebuildEventEngine();
+          void applyEngineOutputsToContexts();
+          void onSimTimerTick();
+      
+          QStringList engineQidsFor(const QString& ctxId, const QString& localCompId) const;
+      
+          void syncSubStateFromParent(const QString& subId);
+      };
+      
+      #endif // CIRCUIT_H
+

@@ -4,6 +4,11 @@ import QtQuick.Layouts
 import QtQuick.Dialogs
 import LogicSim
 
+import "views/bars"
+import "views/canvas"
+import "views/panels"
+import "views/dialogs"
+
 ApplicationWindow {
     id: root
     visible: true
@@ -102,7 +107,6 @@ ApplicationWindow {
     Circuit {
         id: circuit
         onChanged: {
-            // 值变化 / 图形变化：只更新 QVariantMap，不查询 C++ 端口信息
             root.updateCachesValues()
             canvasView.requestPaint()
             root.refreshSel()
@@ -114,7 +118,6 @@ ApplicationWindow {
             canvasView.requestPaint()
         }
         onStructureChanged: {
-            // 元件集合或属性变化：全量重建
             root.rebuildCachesFull()
             canvasView.requestPaint()
             root.refreshSel()
@@ -152,7 +155,6 @@ ApplicationWindow {
         onTriggered: circuit.refreshErrors()
     }
 
-    // ---- 快速路径：只从 C++ 一次性读取 components，更新 compById 里各元件的值 ----
     function updateCachesValues() {
         var comps = circuit.components
         var wrs = circuit.wires
@@ -165,7 +167,6 @@ ApplicationWindow {
         compById = m
     }
 
-    // ---- 慢速路径：结构变化时重建端口信息 ----
     function rebuildCachesFull() {
         var comps = circuit.components
         var wrs = circuit.wires
@@ -266,7 +267,16 @@ ApplicationWindow {
         } else if (s.startsWith("file://")) {
             s = s.substring(7)
         }
-        return decodeURIComponent(s)
+        // decodeURIComponent 遇到裸 % 会抛异常，中断整个 onAccepted 回调
+        try {
+            return decodeURIComponent(s)
+        } catch (e) {
+            return s
+        }
+    }
+
+    function openRenameSubDialog(subId, name) {
+        leftPanel.openRenameSubDialog(subId, name)
     }
 
     function confirmDelete(id) {
