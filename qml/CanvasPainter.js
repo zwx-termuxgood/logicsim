@@ -31,7 +31,6 @@ function drawWire(ctx, w, compById, outPortsById, inPortsById,
 
     var cx = Math.max(Math.abs(s2.x - s1.x) / 2, 40 * viewScale)
 
-    // 读取源端口字符串：优先看有没有 E，再看 Z，再看 1/0
     var srcStr = "0"
     if (fromC.outputPorts && fromC.outputPorts.length > w.fromPort) {
         var sv = fromC.outputPorts[w.fromPort]
@@ -76,7 +75,6 @@ function drawPendingWire(ctx, sp, wiringStartIsOutput, wireEndX, wireEndY) {
     ctx.setLineDash([])
 }
 
-// 端口字符串的分类：返回 0（灰）1（绿）2（橙 Z）3（红 E）
 function classifyPortStr(s) {
     if (!s || s.length === 0) return 0
     if (s.indexOf('E') !== -1) return 3
@@ -104,6 +102,11 @@ function drawComponent(ctx, comp, compSize, viewScale, viewX, viewY,
     var isSel = (comp.id === selectedCompId)
     var isMultiSel = (selectedIds.indexOf(comp.id) >= 0)
 
+    var rotDeg = (comp.rotation || 0) * 90
+    var rotRad = rotDeg * Math.PI / 180
+    var cxs = sp.x + w/2
+    var cys = sp.y + h/2
+
     ctx.save()
 
     if (isMultiSel) {
@@ -111,6 +114,12 @@ function drawComponent(ctx, comp, compSize, viewScale, viewX, viewY,
         ctx.setLineDash([5, 3])
         ctx.strokeRect(sp.x - 3, sp.y - 3, w + 6, h + 6)
         ctx.setLineDash([])
+    }
+
+    if (rotRad !== 0) {
+        ctx.translate(cxs, cys)
+        ctx.rotate(rotRad)
+        ctx.translate(-cxs, -cys)
     }
 
     if (t === "text") {
@@ -125,6 +134,9 @@ function drawComponent(ctx, comp, compSize, viewScale, viewX, viewY,
             ctx.setLineDash([4, 3])
             ctx.strokeRect(sp.x, sp.y, w, h)
             ctx.setLineDash([])
+        }
+        if (rotRad !== 0) {
+            ctx.translate(cxs, cys); ctx.rotate(-rotRad); ctx.translate(-cxs, -cys)
         }
         ctx.restore()
         return
@@ -141,24 +153,20 @@ function drawComponent(ctx, comp, compSize, viewScale, viewX, viewY,
             ctx.font = Math.max(10, Math.round(14 * viewScale)) + "px monospace"
             ctx.textAlign = "center"; ctx.textBaseline = "middle"
             ctx.fillText(cval ? "1" : "0", sp.x + w/2, sp.y + h/2 - 4*viewScale)
-            ctx.strokeStyle = cval ? "#4caf50" : "#666666"
-            ctx.lineWidth = 1.5 * viewScale
-            ctx.beginPath()
-            var waveY = sp.y + h - 8*viewScale
-            var waveAmp = 4*viewScale
-            ctx.moveTo(sp.x + 6*viewScale, waveY + waveAmp)
-            ctx.lineTo(sp.x + w*0.3, waveY + waveAmp)
-            ctx.lineTo(sp.x + w*0.3, waveY - waveAmp)
-            ctx.lineTo(sp.x + w*0.7, waveY - waveAmp)
-            ctx.lineTo(sp.x + w*0.7, waveY + waveAmp)
-            ctx.lineTo(sp.x + w - 6*viewScale, waveY + waveAmp)
-            ctx.stroke()
+        }
+        if (rotRad !== 0) {
+            ctx.translate(cxs, cys); ctx.rotate(-rotRad); ctx.translate(-cxs, -cys)
         }
         ctx.restore()
         return
     }
 
-    if (t === "led") {
+    if (t === "const") {
+        ctx.fillStyle = "#2a2a3a"
+        ctx.strokeStyle = isSel ? "#ffffff" : "#7c8cff"
+        ctx.lineWidth = isSel ? 3 : 2
+        Geometry.roundRect(ctx, sp.x, sp.y, w, h, 4 * viewScale); ctx.fill(); ctx.stroke()
+    } else if (t === "led") {
         ctx.fillStyle = "#2a2a2a"
         ctx.beginPath()
         ctx.arc(sp.x + w/2, sp.y + h/2, Math.min(w, h)/2, 0, Math.PI*2)
@@ -263,12 +271,17 @@ function drawComponent(ctx, comp, compSize, viewScale, viewX, viewY,
         Geometry.roundRect(ctx, sp.x, sp.y, w, h, 4 * viewScale); ctx.fill(); ctx.stroke()
     }
 
-    if (simplify) { ctx.restore(); return }
+    if (simplify) {
+        if (rotRad !== 0) {
+            ctx.translate(cxs, cys); ctx.rotate(-rotRad); ctx.translate(-cxs, -cys)
+        }
+        ctx.restore(); return
+    }
 
     var bw = comp.bitWidth || 1
     var base = comp.displayBase || "bin"
 
-    if (t === "input") {
+    if (t === "input" || t === "const") {
         var bits = comp.inputBits || []
         if (base === "bin") {
             for (var i = 0; i < bw; ++i) {
@@ -370,6 +383,7 @@ function drawComponent(ctx, comp, compSize, viewScale, viewX, viewY,
         else if (t === "xnor") label = "XNOR"
         else if (t === "splitter") label = "分线器"
         else if (t === "hub") label = "集线器"
+        else if (t === "const") label = "常量"
         else if (t === "sub") {
             var subName = ""
             if (circuit && circuit.getSubcircuitName)
@@ -390,7 +404,10 @@ function drawComponent(ctx, comp, compSize, viewScale, viewX, viewY,
         }
     }
 
-    // ---------- 输入端口圆点 ----------
+    if (rotRad !== 0) {
+        ctx.translate(cxs, cys); ctx.rotate(-rotRad); ctx.translate(-cxs, -cys)
+    }
+
     var ins = inPortsById[comp.id] || []
     for (var k = 0; k < ins.length; k++) {
         var pIn = ins[k]
@@ -417,7 +434,6 @@ function drawComponent(ctx, comp, compSize, viewScale, viewX, viewY,
         }
     }
 
-    // ---------- 输出端口圆点 ----------
     var outs = outPortsById[comp.id] || []
     for (var k2 = 0; k2 < outs.length; k2++) {
         var pOut = outs[k2]
@@ -463,7 +479,6 @@ function drawComponent(ctx, comp, compSize, viewScale, viewX, viewY,
         }
     }
 
-    // ---- 元件名字 ----
     if (comp.name && comp.name.length > 0 && t !== "sub" && t !== "text") {
         ctx.fillStyle = "#cccccc"
         ctx.font = Math.max(8, Math.round(10 * viewScale)) + "px sans-serif"

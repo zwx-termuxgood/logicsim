@@ -1,30 +1,28 @@
 #include "circuit.h"
 #include "ComponentTraits.h"
-#include "PortGeometry.h"
+#include "CircuitEvaluator.h"
+#include "EventEngine.h"
 #include <QVariantMap>
 #include <QString>
 #include <QDebug>
 
 static const char* kUndoPropName = "__logicsim_undo_v1";
+static const quint64 kSimRunBudget = 200000;
 
 Circuit::Circuit(QObject* parent) : QObject(parent) {
-    // ⚠️ undo 数据挂到 dynamic property，不占 Circuit 对象内存
     CircuitUndoData* d = new CircuitUndoData();
     setProperty(kUndoPropName, QVariant::fromValue(static_cast<void*>(d)));
 
-    qDebug() << "========================================================";
-    qDebug() << "[CTOR] Circuit ctor ENTER, this=" << (void*)this;
-    dumpInternalState("ctor-entry");
-
     loadRecentFiles();
-    dumpInternalState("after-loadRecentFiles");
 
     m_clockTimer = new QTimer(this);
     connect(m_clockTimer, &QTimer::timeout, this, &Circuit::tick);
 
-    dumpInternalState("ctor-end");
-    qDebug() << "[CTOR] Circuit ctor DONE";
-    qDebug() << "========================================================";
+    m_eventEngine = new EventEngine();
+
+    m_simTimer = new QTimer(this);
+    m_simTimer->setInterval(16);
+    connect(m_simTimer, &QTimer::timeout, this, &Circuit::onSimTimerTick);
 }
 
 Circuit::~Circuit() {
@@ -33,6 +31,7 @@ Circuit::~Circuit() {
         delete d;
         setProperty(kUndoPropName, QVariant());
     }
+    if (m_eventEngine) { delete m_eventEngine; m_eventEngine = nullptr; }
 }
 
 CircuitUndoData* Circuit::und() const {
@@ -51,41 +50,7 @@ bool Circuit::canRedo() const {
 }
 
 void Circuit::dumpInternalState(const QString& where) const {
-    auto off = [this](const void* p) -> long {
-        return (long)((const char*)p - (const char*)this);
-    };
-
-    qDebug().nospace()
-        << "[DUMP] (" << where << ")"
-        << " this=" << (void*)this
-        << " sizeof(Circuit)=" << sizeof(Circuit)
-        << " off(root)="        << off(&m_root)
-        << " off(errors)="      << off(&m_errors)
-        << " off(recent)="      << off(&m_recentFiles)
-        << " off(clockStates)=" << off(&m_clockStates);
-
-    CircuitUndoData* d = und();
-    if (!d) {
-        qDebug().nospace() << "[DUMP] (" << where << ") und=NULL";
-        return;
-    }
-
-    const size_t uSize = d->undoStack.size();
-    const size_t rSize = d->redoStack.size();
-
-    qDebug().nospace()
-        << "[DUMP] (" << where << ")"
-        << " undPtr=" << (void*)d
-        << " undoSize=" << (int)uSize
-        << " redoSize=" << (int)rSize
-        << " undoData=" << (void*)d->undoStack.data()
-        << " redoData=" << (void*)d->redoStack.data()
-        << " errorsSize=" << m_errors.size()
-        << " recentSize=" << m_recentFiles.size()
-        << " clockStatesSize=" << m_clockStates.size()
-        << " subCtxsSize=" << m_subContexts.size()
-        << " rootCompsSize=" << m_root.components.size()
-        << " rootWiresSize=" << m_root.wires.size();
+    Q_UNUSED(where);
 }
 
 Circuit::Context& Circuit::currentCtx() {
@@ -183,30 +148,259 @@ int Circuit::inputPortBitWidth(const QVariantMap& comp, int portIdx) {
     return ComponentTraits::inputBitWidth(comp, portIdx);
 }
 
+void Circuit::setEngineType(const QString& t) {
+    if (m_engineType == t) return;
+    if (t != "iter" && t != "event") return;
+
+    if (m_simulationRunning) pauseSimulation();
+    if (m_clockRunning) stopClock();
+
+    m_engineType = t;
+
+    if (m_engineType == "event") {
+        rebuildEventEngine();
+        applyEngineOutputsToContexts();
+    } else {
+        applyEngineOutputsToContexts();
+        evaluateAll();
+    }
+
+    emit engineChanged();
+    emit engineSettingsChanged();
+    emit changed();
+    emit structureChanged();
+}
+
+qulonglong Circuit::simTime() const {
+    return m_eventEngine ? m_eventEngine->time() : 0;
+}
+
+qulonglong Circuit::globalGateDelay() const {
+    return m_eventEngine ? m_eventEngine->globalGateDelay() : 1;
+}
+void Circuit::setGlobalGateDelay(qulonglong d) {
+    if (!m_eventEngine) return;
+    if (d < 1) d = 1;
+    if (m_eventEngine->globalGateDelay() == d) return;
+    m_eventEngine->setGlobalGateDelay(d);
+    emit engineSettingsChanged();
+}
+qulonglong Circuit::wireDelay() const {
+    return m_eventEngine ? m_eventEngine->wireDelay() : 1;
+}
+void Circuit::setWireDelay(qulonglong d) {
+    if (!m_eventEngine) return;
+    if (d < 1) d = 1;
+    if (m_eventEngine->wireDelay() == d) return;
+    m_eventEngine->setWireDelay(d);
+    emit engineSettingsChanged();
+}
+void Circuit::setSimulationSpeed(qulonglong s) {
+    if (m_simulationSpeed == s) return;
+    m_simulationSpeed = s;
+    emit engineSettingsChanged();
+}
+void Circuit::setSimulationSpeedExp(int e) {
+    if (e < 0) e = 0;
+    if (e > 12) e = 12;
+    if (m_simulationSpeedExp == e) return;
+    m_simulationSpeedExp = e;
+    qulonglong v = 1;
+    for (int i = 0; i < e; ++i) v *= 10;
+    m_simulationSpeed = v;
+    emit engineSettingsChanged();
+}
+void Circuit::setAutoSpeed(bool a) {
+    if (m_autoSpeed == a) return;
+    m_autoSpeed = a;
+    emit engineSettingsChanged();
+}
+
+void Circuit::setGateTypeDelay(const QString& type, qulonglong d) {
+    if (!m_eventEngine) return;
+    m_eventEngine->setGateTypeDelay(type, d);
+    emit engineSettingsChanged();
+    emit changed();
+}
+qulonglong Circuit::getGateTypeDelay(const QString& type) const {
+    if (!m_eventEngine) return 0;
+    return m_eventEngine->gateDelayFor(type);
+}
+void Circuit::clearGateTypeDelays() {
+    if (!m_eventEngine) return;
+    m_eventEngine->clearGateTypeDelays();
+    emit engineSettingsChanged();
+    emit changed();
+}
+
+void Circuit::startSimulation() {
+    if (m_engineType != "event") return;
+    if (m_simulationRunning) return;
+
+    if (m_engineDirty || !m_eventEngine || m_eventEngine->nodeCount() == 0) {
+        rebuildEventEngine();
+        applyEngineOutputsToContexts();
+    }
+
+    m_simulationRunning = true;
+    if (m_simTimer) m_simTimer->start();
+    emit simulationChanged();
+    emit changed();
+}
+
+void Circuit::pauseSimulation() {
+    if (!m_simulationRunning) return;
+    m_simulationRunning = false;
+    if (m_simTimer) m_simTimer->stop();
+    emit simulationChanged();
+    emit changed();
+}
+
+void Circuit::resetSimulation() {
+    if (!m_eventEngine) return;
+    m_eventEngine->reset();
+    applyEngineOutputsToContexts();
+    emit simulationChanged();
+    emit simulationTick();
+    emit changed();
+}
+
+void Circuit::simulateStep() {
+    if (m_engineType != "event" || !m_eventEngine) return;
+    if (m_engineDirty) {
+        rebuildEventEngine();
+        applyEngineOutputsToContexts();
+    }
+    m_eventEngine->step();
+    applyEngineOutputsToContexts();
+    emit simulationTick();
+    emit changed();
+}
+
+void Circuit::onSimTimerTick() {
+    if (!m_eventEngine || !m_simulationRunning) return;
+    quint64 units = m_autoSpeed ? 1000 : (m_simulationSpeed / 60);
+    if (units < 1) units = 1;
+    m_eventEngine->run(units, kSimRunBudget);
+    applyEngineOutputsToContexts();
+    emit simulationTick();
+    emit changed();
+}
+
+void Circuit::rebuildEventEngine() {
+    if (!m_eventEngine) return;
+
+    CircuitEvaluator::syncSubPins(m_root, m_subContexts);
+    for (auto it = m_subContexts.begin(); it != m_subContexts.end(); ++it)
+        CircuitEvaluator::syncSubPins(it.value(), m_subContexts);
+
+    QHash<QString, QVariantList> subComps;
+    QHash<QString, QVariantList> subWires;
+    for (auto it = m_subContexts.begin(); it != m_subContexts.end(); ++it) {
+        subComps[it.key()] = it.value().components;
+        subWires[it.key()] = it.value().wires;
+    }
+    m_eventEngine->build(m_root.components, m_root.wires, subComps, subWires);
+    m_engineDirty = false;
+}
+
+void Circuit::applyEngineOutputsToContexts() {
+    if (!m_eventEngine) return;
+
+    for (int i = 0; i < m_root.components.size(); ++i) {
+        QVariantMap c = m_root.components[i].toMap();
+        QString localId = c.value("id").toString();
+        QString type = c.value("type").toString();
+
+        if (type == "sub") {
+            QString subId = c.value("subId").toString();
+            auto sit = m_subContexts.find(subId);
+            if (sit == m_subContexts.end()) continue;
+
+            QVariantList outVals;
+            for (const auto& scv : sit.value().components) {
+                QVariantMap sc = scv.toMap();
+                if (sc.value("type").toString() != "output") continue;
+                QString innerQid = localId + "/" + sc.value("id").toString();
+                QStringList outs = m_eventEngine->getOutputs(innerQid);
+                QString v = outs.isEmpty() ? QString() : outs[0];
+                if (v.isEmpty()) {
+                    int w = sc.value("bitWidth").toInt();
+                    if (w < 1) w = 1;
+                    v = QString(w, '0');
+                }
+                outVals.append(v);
+            }
+            if (!outVals.isEmpty()) c["outputPorts"] = outVals;
+
+            QVariantList inVals;
+            for (const auto& scv : sit.value().components) {
+                QVariantMap sc = scv.toMap();
+                if (sc.value("type").toString() != "input") continue;
+                QString innerQid = localId + "/" + sc.value("id").toString();
+                QStringList outs = m_eventEngine->getOutputs(innerQid);
+                QString v = outs.isEmpty() ? QString() : outs[0];
+                if (v.isEmpty()) {
+                    int w = sc.value("bitWidth").toInt();
+                    if (w < 1) w = 1;
+                    v = QString(w, '0');
+                }
+                inVals.append(v);
+            }
+            if (!inVals.isEmpty()) c["inputPortValues"] = inVals;
+
+            m_root.components[i] = c;
+            continue;
+        }
+
+        QStringList outs = m_eventEngine->getOutputs(localId);
+        if (!outs.isEmpty()) {
+            QVariantList ops;
+            ops.reserve(outs.size());
+            for (const auto& s : outs) ops.append(s);
+            c["outputPorts"] = ops;
+        }
+        if (type == "output" || type == "led") {
+            if (!outs.isEmpty()) {
+                QVariantList ips;
+                ips.reserve(outs.size());
+                for (const auto& s : outs) ips.append(s);
+                c["inputPortValues"] = ips;
+            }
+        }
+        m_root.components[i] = c;
+    }
+}
+
+QStringList Circuit::engineQidsFor(const QString& ctxId, const QString& localCompId) const {
+    QStringList result;
+    if (ctxId.isEmpty()) {
+        result << localCompId;
+        return result;
+    }
+    for (const auto& cv : m_root.components) {
+        QVariantMap c = cv.toMap();
+        if (c.value("type").toString() != "sub") continue;
+        if (c.value("subId").toString() == ctxId) {
+            result << (c.value("id").toString() + "/" + localCompId);
+        }
+    }
+    return result;
+}
+
 QString Circuit::addComponent(const QString& type, double x, double y,
                               int bitWidth, int inputCount, const QString& subId) {
-    qDebug() << "[ADD] enter type=" << type
-             << "x=" << x << "y=" << y
-             << "bw=" << bitWidth << "ic=" << inputCount
-             << "subId=" << subId
-             << "viewOnly=" << m_viewOnly
-             << "ctxId=" << m_currentCtxId;
-
-    if (m_viewOnly) { qDebug() << "[ADD] viewOnly, abort"; return QString(); }
+    if (m_viewOnly) return QString();
     if (bitWidth < 1) bitWidth = 1;
     if (bitWidth > 64) bitWidth = 64;
     if (inputCount < 2) inputCount = 2;
     if (inputCount > 64) inputCount = 64;
 
     if (type == "sub") {
-        bool ok = canAddSubInstance(subId);
-        qDebug() << "[ADD] sub check canAddSubInstance=" << ok;
-        if (!ok) { qDebug() << "[ADD] sub cycle, abort"; return QString(); }
+        if (!canAddSubInstance(subId)) return QString();
     }
 
-    qDebug() << "[ADD] calling pushUndo";
     pushUndo();
-    qDebug() << "[ADD] pushUndo returned";
 
     QVariantMap c;
     Context& ctx = currentCtx();
@@ -219,6 +413,7 @@ QString Circuit::addComponent(const QString& type, double x, double y,
     c["name"] = "";
 
     QVariantList bits;
+    bits.reserve(bitWidth);
     for (int i = 0; i < bitWidth; ++i) bits.append(false);
     c["inputBits"] = bits;
 
@@ -228,6 +423,8 @@ QString Circuit::addComponent(const QString& type, double x, double y,
         c["content"] = "文本";
     } else if (type == "clock") {
         c["name"] = "CLK";
+    } else if (type == "const") {
+        c["name"] = "CONST";
     } else if (type == "sub") {
         c["subId"] = subId;
         c["subInputNames"] = QVariantList();
@@ -236,23 +433,23 @@ QString Circuit::addComponent(const QString& type, double x, double y,
         c["subOutputWidths"] = QVariantList();
     } else if (type == "splitter") {
         QVariantList splits;
+        splits.reserve(bitWidth);
         for (int i = 0; i < bitWidth; ++i) splits.append(1);
         c["outputSplits"] = splits;
         int segN = splits.size();
         inPorts.append(QString(bitWidth, '0'));
         for (int i = 0; i < segN; ++i) {
-            int w = splits[i].toInt();
-            if (w < 1) w = 1;
+            int w = splits[i].toInt(); if (w < 1) w = 1;
             outPorts.append(QString(w, '0'));
         }
     } else if (type == "hub") {
         QVariantList splits;
+        splits.reserve(bitWidth);
         for (int i = 0; i < bitWidth; ++i) splits.append(1);
         c["outputSplits"] = splits;
         int segN = splits.size();
         for (int i = 0; i < segN; ++i) {
-            int w = splits[i].toInt();
-            if (w < 1) w = 1;
+            int w = splits[i].toInt(); if (w < 1) w = 1;
             inPorts.append(QString(w, '0'));
         }
         outPorts.append(QString(bitWidth, '0'));
@@ -263,7 +460,7 @@ QString Circuit::addComponent(const QString& type, double x, double y,
         inPorts.append(QString(bitWidth, '0'));
     } else {
         int n = 0;
-        if (type == "input" || type == "clock" || type == "not" ||
+        if (type == "input" || type == "const" || type == "clock" || type == "not" ||
             type == "and" || type == "or" || type == "nand" ||
             type == "nor" || type == "xor" || type == "xnor") n = 1;
         for (int i = 0; i < n; ++i) outPorts.append(QString(bitWidth, '0'));
@@ -277,28 +474,22 @@ QString Circuit::addComponent(const QString& type, double x, double y,
     c["outputPorts"] = outPorts;
     c["inputPortValues"] = inPorts;
 
-    qDebug() << "[ADD] appending component, id=" << c["id"].toString();
     ctx.components.append(c);
-
     if (type == "clock") m_clockStates[c["id"].toString()] = false;
 
-    qDebug() << "[ADD] calling evaluateAll";
     evaluateAll();
-    qDebug() << "[ADD] evaluateAll returned, emitting changed";
     emit changed();
-    qDebug() << "[ADD] done, id=" << c["id"].toString();
+    emit structureChanged();
     return c["id"].toString();
 }
 
 QString Circuit::addText(double x, double y, const QString& text) {
-    qDebug() << "[ADD] addText";
     QString id = addComponent("text", x, y, 1, 2, "");
     if (!id.isEmpty()) setTextContent(id, text);
     return id;
 }
 
 void Circuit::setTextContent(const QString& id, const QString& content) {
-    qDebug() << "[PROP] setTextContent id=" << id;
     if (m_viewOnly) return;
     int idx = indexOfComponent(id);
     if (idx < 0) return;

@@ -23,6 +23,17 @@ Rectangle {
                t === "nor" || t === "xor" || t === "xnor"
     }
 
+    function isGateLike(t) {
+        return t === "and" || t === "or" || t === "nand" ||
+               t === "nor" || t === "xor" || t === "xnor" ||
+               t === "not" || t === "tgate" || t === "ntran" ||
+               t === "ptran" || t === "splitter" || t === "hub"
+    }
+
+    function isInputLike(t) {
+        return t === "input" || t === "const"
+    }
+
     function findSubInfo(subId) {
         for (var i = 0; i < main.subList.length; ++i) {
             if (main.subList[i].id === subId) return main.subList[i]
@@ -43,6 +54,7 @@ Rectangle {
     readonly property var elementGroups: [
         { name: "输入输出", items: [
             { type: "input", name: "输入开关" },
+            { type: "const", name: "常量" },
             { type: "output", name: "输出端口" },
             { type: "led", name: "LED" }
         ]},
@@ -76,7 +88,30 @@ Rectangle {
         anchors.fill: parent
         spacing: 0
 
-        // ============ 元件库 ============
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.preferredHeight: 24
+            color: Theme.bgBar
+            Rectangle {
+                anchors.right: parent.right
+                anchors.rightMargin: 4
+                anchors.verticalCenter: parent.verticalCenter
+                width: 60; height: 20
+                radius: Theme.smallRadius
+                color: leftCollapseMa.pressed ? Theme.bgButtonHover : Theme.bgButton
+                border.color: Theme.borderStrong; border.width: 1
+                Text {
+                    anchors.centerIn: parent; text: "◀ 收起"
+                    color: Theme.text; font.pixelSize: Theme.fsTiny
+                }
+                MouseArea {
+                    id: leftCollapseMa
+                    anchors.fill: parent
+                    onClicked: main.leftCollapsed = true
+                }
+            }
+        }
+
         Flickable {
             id: paletteFlick
             Layout.fillWidth: true
@@ -247,7 +282,6 @@ Rectangle {
             color: Theme.border
         }
 
-        // ============ 属性面板 ============
         Flickable {
             id: propsFlick
             Layout.fillWidth: true
@@ -272,7 +306,6 @@ Rectangle {
                     font.pixelSize: Theme.fsSmall; font.bold: true
                 }
 
-                // ============ 多选操作区 ============
                 Column {
                     visible: main.mode === "select"
                     x: 6; width: parent.width - 12; spacing: 4
@@ -336,7 +369,6 @@ Rectangle {
                     }
                 }
 
-                // ============ 子电路属性面板 ============
                 Column {
                     id: subPropsColumn
                     visible: main.selectedSubId !== "" && main.mode !== "select"
@@ -482,12 +514,9 @@ Rectangle {
                         }
                     }
 
-                    Rectangle {
-                        width: parent.width; height: 1; color: Theme.border
-                    }
+                    Rectangle { width: parent.width; height: 1; color: Theme.border }
                 }
 
-                // ============ 空选中提示 ============
                 Text {
                     visible: main.selectedComp === null
                              && main.selectedIds.length === 0
@@ -501,7 +530,6 @@ Rectangle {
                     wrapMode: Text.Wrap
                 }
 
-                // ============ 普通元件属性面板 ============
                 Column {
                     visible: main.selectedComp !== null
                              && main.selectedSubId === ""
@@ -540,6 +568,53 @@ Rectangle {
                                 onEditingFinished: {
                                     if (main.selectedCompId === "" || main.circuitViewOnly) return
                                     main.circuitRef.renameComponent(main.selectedCompId, text)
+                                }
+                            }
+                        }
+                    }
+
+                    Column {
+                        spacing: 4; width: parent.width
+                        visible: main.selectedComp !== null && main.selectedComp.type !== "text"
+
+                        Text {
+                            text: "方向"
+                            color: Theme.textGray; font.pixelSize: Theme.fsSmall
+                        }
+                        Row {
+                            spacing: 6
+                            Repeater {
+                                model: [
+                                    { deg: 0,   label: "→", rot: 0 },
+                                    { deg: 90,  label: "↓", rot: 1 },
+                                    { deg: 180, label: "←", rot: 2 },
+                                    { deg: 270, label: "↑", rot: 3 }
+                                ]
+                                delegate: Rectangle {
+                                    width: 30; height: 30; radius: Theme.smallRadius
+                                    property bool active: main.selectedComp
+                                        ? ((main.selectedComp.rotation || 0) === modelData.rot)
+                                        : (modelData.rot === 0)
+                                    color: active ? Theme.bgButtonActive
+                                                  : (rotMa.pressed ? Theme.bgButtonHover : Theme.bgButton)
+                                    border.color: active ? Theme.borderBtnActive : Theme.borderStrong
+                                    border.width: 1
+                                    Text {
+                                        anchors.centerIn: parent
+                                        text: modelData.label
+                                        color: active ? Theme.textWhite : Theme.text
+                                        font.pixelSize: 16
+                                    }
+                                    MouseArea {
+                                        id: rotMa
+                                        anchors.fill: parent
+                                        enabled: !main.circuitViewOnly
+                                        onClicked: {
+                                            if (main.selectedCompId === "") return
+                                            main.circuitRef.setComponentProp(
+                                                main.selectedCompId, "rotation", modelData.rot)
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -586,12 +661,84 @@ Rectangle {
                         }
                     }
 
+                    Column {
+                        visible: main.selectedComp
+                                 && leftPanel.isGateLike(main.selectedComp.type)
+                                 && main.engineType === "event"
+                        spacing: 4
+                        width: parent.width
+
+                        Text {
+                            text: "传播延迟（该类型门）"
+                            color: Theme.textGray
+                            font.pixelSize: Theme.fsSmall
+                        }
+
+                        Row {
+                            spacing: 6
+                            Rectangle {
+                                width: 90; height: 26
+                                color: Theme.bgInput
+                                border.color: Theme.borderStrong
+                                border.width: 1; radius: Theme.smallRadius
+                                TextField {
+                                    anchors.fill: parent
+                                    anchors.leftMargin: 5; anchors.rightMargin: 5
+                                    color: Theme.text
+                                    font.pixelSize: Theme.fsSmall
+                                    background: null
+                                    selectByMouse: true
+                                    text: {
+                                        if (!main.selectedComp) return ""
+                                        var v = main.circuitRef.getGateTypeDelay(main.selectedComp.type)
+                                        return String(v)
+                                    }
+                                    validator: RegularExpressionValidator { regularExpression: /[0-9]{0,18}/ }
+                                    onEditingFinished: {
+                                        if (main.circuitViewOnly) return
+                                        if (!main.selectedComp) return
+                                        var v = parseInt(text)
+                                        if (isNaN(v) || v < 1) return
+                                        main.circuitRef.setGateTypeDelay(main.selectedComp.type, v)
+                                        main.statusText = "已设置 " + main.selectedComp.type + " 延迟 = " + v
+                                    }
+                                }
+                            }
+                            Rectangle {
+                                width: 80; height: 26; radius: Theme.smallRadius
+                                color: gateResetMa.pressed ? Theme.bgButtonHover : Theme.bgButton
+                                border.color: Theme.borderStrong; border.width: 1
+                                Text {
+                                    anchors.centerIn: parent; text: "使用全局"
+                                    color: Theme.text; font.pixelSize: Theme.fsTiny
+                                }
+                                MouseArea {
+                                    id: gateResetMa
+                                    anchors.fill: parent
+                                    onClicked: {
+                                        if (!main.selectedComp) return
+                                        main.circuitRef.clearGateTypeDelays()
+                                        main.statusText = "已清除独立延迟"
+                                    }
+                                }
+                            }
+                        }
+
+                        Text {
+                            text: "0 或空 = 使用全局（" + main.circuitRef.globalGateDelay + "）"
+                            color: Theme.textFaint
+                            font.pixelSize: Theme.fsTiny
+                            width: parent.width
+                            wrapMode: Text.Wrap
+                        }
+                    }
+
                     ComboBox {
                         id: baseCombo
                         width: parent.width
-                        visible: main.selectedComp && (main.selectedComp.type === "input" ||
-                                                       main.selectedComp.type === "output" ||
-                                                       main.selectedComp.type === "led")
+                        visible: main.selectedComp && leftPanel.isInputLike(main.selectedComp.type)
+                                 || (main.selectedComp && main.selectedComp.type === "output")
+                                 || (main.selectedComp && main.selectedComp.type === "led")
                         enabled: !main.circuitViewOnly
                         model: {
                             var bw = main.selectedComp ? (main.selectedComp.bitWidth || 1) : 1
@@ -619,7 +766,6 @@ Rectangle {
                         }
                     }
 
-                    // ============ 【新增】LED 颜色选择 ============
                     Column {
                         visible: main.selectedComp && main.selectedComp.type === "led"
                         spacing: 4; width: parent.width
@@ -663,11 +809,11 @@ Rectangle {
                     }
 
                     Column {
-                        visible: main.selectedComp && main.selectedComp.type === "input" &&
+                        visible: main.selectedComp && leftPanel.isInputLike(main.selectedComp.type) &&
                                  (main.selectedComp.displayBase || "bin") !== "bin"
                         spacing: 4; width: parent.width
                         Text {
-                            text: "输入值"; color: Theme.textGray
+                            text: "值"; color: Theme.textGray
                             font.pixelSize: Theme.fsSmall
                         }
                         Rectangle {
@@ -700,7 +846,7 @@ Rectangle {
 
                     Flow {
                         width: parent.width; spacing: 3
-                        visible: main.selectedComp && main.selectedComp.type === "input" &&
+                        visible: main.selectedComp && leftPanel.isInputLike(main.selectedComp.type) &&
                                  (main.selectedComp.displayBase || "bin") === "bin"
                         Repeater {
                             model: {
@@ -818,8 +964,8 @@ Rectangle {
                             text: main.selectedComp && main.selectedComp.type === "tgate"
                                   ? "端口：D / EN → Y\nEN=1 时 Y=D；EN=0 时输出高阻 Z"
                                   : (main.selectedComp && main.selectedComp.type === "ntran"
-                                     ? "端口：G(左) / D(右上) / S(右下)\nG=1 时导通 S=D；G=0 时输出高阻 Z"
-                                     : "端口：G(左) / S(右上) / D(右下)\nG=0 时导通 S=D；G=1 时输出高阻 Z")
+                                     ? "端口：G(左) / D(右下) / S(右上)\nG=1 时导通 S=D；G=0 时输出高阻 Z"
+                                     : "端口：G(左) / D(右上) / S(右下)\nG=0 时导通 S=D；G=1 时输出高阻 Z")
                             color: Theme.textFaint
                             font.pixelSize: Theme.fsTiny
                             width: parent.width; wrapMode: Text.Wrap
@@ -870,7 +1016,6 @@ Rectangle {
         }
     }
 
-    // ============ 子电路右键菜单 ============
     Menu {
         id: subCtxMenu
         property string subId: ""

@@ -4,20 +4,21 @@
 #include <algorithm>
 #include <cmath>
 
+// 任意两个端口都可以连接 —— 不做任何限制：
+//   - 允许自环（同一元件输出接自己输入）
+//   - 允许一个输出接多个输入（一驱多）
+//   - 允许多个输出接同一个输入（多驱一）
+//   - 允许输出接输出、输入接输入
+//   - 允许跨类型连接
+// 冲突由引擎解析为 E 态。
 QString Circuit::addWire(const QString& fromComp, int fromPort,
                          const QString& toComp, int toPort) {
     if (m_viewOnly) return QString();
-    if (indexOfComponent(fromComp) < 0 || indexOfComponent(toComp) < 0) return QString();
-    if (fromComp == toComp) return QString();
+    if (indexOfComponent(fromComp) < 0) return QString();
+    if (indexOfComponent(toComp) < 0) return QString();
     Context& ctx = currentCtx();
 
     pushUndo();
-
-    for (int i = ctx.wires.size() - 1; i >= 0; --i) {
-        auto w = ctx.wires[i].toMap();
-        if (w.value("toComp").toString() == toComp && w.value("toPort").toInt() == toPort)
-            ctx.wires.removeAt(i);
-    }
 
     QVariantMap w;
     w["id"] = QString("W%1").arg(++ctx.wireCounter);

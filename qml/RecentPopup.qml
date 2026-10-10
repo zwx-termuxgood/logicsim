@@ -6,11 +6,9 @@ import LogicSim
 Popup {
     id: recentPopup
     property QtObject main: null
-    property Item anchorItem: null
 
-    x: anchorItem ? Math.max(10, anchorItem.mapToItem(null, 0, 0).x - 100) : 10
-    y: anchorItem ? anchorItem.mapToItem(null, 0, anchorItem.height).y : 50
-    width: 340
+    anchors.centerIn: parent
+    width: 380
     height: Math.min(400, 44 * Math.max(1, main.recentList.length) + 70)
     modal: true
     focus: true

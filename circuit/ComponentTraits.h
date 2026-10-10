@@ -6,8 +6,6 @@
 
 /**
  * @brief 元件类型的基础属性查询（纯函数，无状态）。
- *
- * 从 Circuit 抽出，便于独立测试与扩展。
  */
 namespace ComponentTraits {
 

@@ -67,6 +67,8 @@ QtObject {
     readonly property int buttonRadius:       5
     readonly property int dialogRadius:       10
     readonly property int smallRadius:        4
+    readonly property int collapsedBarH:      32
+    readonly property int collapsedBarW:      34
 
     // 字体
     readonly property int fsTiny:             10

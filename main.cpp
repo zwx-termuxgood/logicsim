@@ -6,7 +6,6 @@
 
 int main(int argc, char *argv[])
 {
-    // Android 上强制使用 OpenGL ES 后端，避免部分驱动下 Vulkan 全屏切换渲染异常
 #ifdef Q_OS_ANDROID
     qputenv("QSG_RHI_BACKEND", "opengl");
 #endif

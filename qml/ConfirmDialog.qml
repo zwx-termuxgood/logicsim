@@ -70,7 +70,7 @@ Dialog {
                 MouseArea { id: cd2; anchors.fill: parent
                     onClicked: {
                         if (confirmDialog.action) confirmDialog.action()
-                            confirmDialog.close()
+                        confirmDialog.close()
                     } }
             }
         }

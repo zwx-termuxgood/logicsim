@@ -8,25 +8,19 @@
 #include <QDebug>
 
 void Circuit::loadRecentFiles() {
-    qDebug() << "[RECENT] loadRecentFiles ENTER";
     QSettings s;
     QString json = s.value("recentFiles").toString();
-    qDebug() << "[RECENT] json length =" << json.length();
     if (json.isEmpty()) {
         m_recentFiles.clear();
-        qDebug() << "[RECENT] empty, done";
         return;
     }
-    qDebug() << "[RECENT] parsing json...";
     QJsonParseError perr;
     QJsonDocument doc = QJsonDocument::fromJson(json.toUtf8(), &perr);
     if (perr.error != QJsonParseError::NoError) {
-        qDebug() << "[RECENT] WARN: json parse error:" << perr.errorString();
         m_recentFiles.clear();
         return;
     }
     if (!doc.isArray()) {
-        qDebug() << "[RECENT] WARN: json is not an array, clearing";
         m_recentFiles.clear();
         return;
     }
@@ -34,7 +28,6 @@ void Circuit::loadRecentFiles() {
     m_recentFiles.clear();
     for (const auto v : arr)
         m_recentFiles.append(v.toObject().toVariantMap());
-    qDebug() << "[RECENT] loaded" << m_recentFiles.size() << "entries";
 }
 
 void Circuit::saveRecentFiles() {

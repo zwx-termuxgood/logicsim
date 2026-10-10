@@ -1,11 +1,11 @@
 #include "circuit.h"
+#include "EventEngine.h"
 #include <QVariantMap>
 #include <QSet>
 #include <QtGlobal>
 #include <QDebug>
 
 void Circuit::removeComponent(const QString& id) {
-    qDebug() << "[DEL] removeComponent id=" << id;
     if (m_viewOnly) return;
     int idx = indexOfComponent(id);
     if (idx < 0) return;
@@ -21,22 +21,24 @@ void Circuit::removeComponent(const QString& id) {
     }
     evaluateAll();
     emit changed();
+    emit structureChanged();
 }
 
 void Circuit::removeComponents(const QStringList& ids) {
-    qDebug() << "[DEL] removeComponents count=" << ids.size();
     if (m_viewOnly) return;
     if (ids.isEmpty()) return;
+    QSet<QString> idSet;
+    for (const auto& id : ids) idSet.insert(id);
     bool any = false;
     for (const auto& cv : currentCtx().components) {
-        if (ids.contains(cv.toMap().value("id").toString())) { any = true; break; }
+        if (idSet.contains(cv.toMap().value("id").toString())) { any = true; break; }
     }
     if (!any) return;
     pushUndo();
     Context& ctx = currentCtx();
     for (int i = ctx.components.size() - 1; i >= 0; --i) {
         auto c = ctx.components[i].toMap();
-        if (ids.contains(c.value("id").toString())) {
+        if (idSet.contains(c.value("id").toString())) {
             if (c.value("type").toString() == "clock")
                 m_clockStates.remove(c.value("id").toString());
             ctx.components.removeAt(i);
@@ -44,12 +46,13 @@ void Circuit::removeComponents(const QStringList& ids) {
     }
     for (int i = ctx.wires.size() - 1; i >= 0; --i) {
         auto w = ctx.wires[i].toMap();
-        if (ids.contains(w.value("fromComp").toString()) ||
-            ids.contains(w.value("toComp").toString()))
+        if (idSet.contains(w.value("fromComp").toString()) ||
+            idSet.contains(w.value("toComp").toString()))
             ctx.wires.removeAt(i);
     }
     evaluateAll();
     emit changed();
+    emit structureChanged();
 }
 
 void Circuit::moveComponent(const QString& id, double x, double y) {
@@ -98,7 +101,6 @@ void Circuit::toggleInput(const QString& id) {
     Context& ctx = currentCtx();
     QVariantMap c = ctx.components[idx].toMap();
     if (c.value("type").toString() != "input") return;
-    pushUndo();
     QVariantList bits = c.value("inputBits").toList();
     int bw = c.value("bitWidth").toInt();
     if (bw < 1) bw = 1;
@@ -108,7 +110,19 @@ void Circuit::toggleInput(const QString& id) {
     for (int i = 0; i < bits.size(); ++i) bits[i] = v;
     c["inputBits"] = bits;
     ctx.components[idx] = c;
-    evaluateAll();
+
+    if (m_engineType == "event" && m_eventEngine) {
+        QString binStr;
+        binStr.reserve(bw);
+        for (int i = 0; i < bw; ++i) binStr += v ? '1' : '0';
+        QStringList qids = engineQidsFor(m_currentCtxId, id);
+        for (const auto& qid : qids)
+            m_eventEngine->triggerInputString(qid, binStr);
+        applyEngineOutputsToContexts();
+        emit simulationTick();
+    } else {
+        evaluateAll();
+    }
     emit changed();
 }
 
@@ -118,6 +132,8 @@ void Circuit::setBitValue(const QString& id, int bit, bool value) {
     if (idx < 0) return;
     Context& ctx = currentCtx();
     QVariantMap c = ctx.components[idx].toMap();
+    QString t = c.value("type").toString();
+    if (t != "input" && t != "const") return;
     QVariantList bits = c.value("inputBits").toList();
     int bw = c.value("bitWidth").toInt();
     if (bw < 1) bw = 1;
@@ -125,27 +141,35 @@ void Circuit::setBitValue(const QString& id, int bit, bool value) {
     while (bits.size() > bw) bits.removeLast();
     if (bit < 0 || bit >= bits.size()) return;
     if (bits[bit].toBool() == value) return;
-    pushUndo("bit:" + id);
     bits[bit] = value;
     c["inputBits"] = bits;
     ctx.components[idx] = c;
-    evaluateAll();
+
+    if (m_engineType == "event" && m_eventEngine) {
+        QStringList qids = engineQidsFor(m_currentCtxId, id);
+        for (const auto& qid : qids)
+            m_eventEngine->triggerInputBit(qid, bit, value);
+        applyEngineOutputsToContexts();
+        emit simulationTick();
+    } else {
+        evaluateAll();
+    }
     emit changed();
 }
 
 void Circuit::setComponentProp(const QString& id, const QString& key, const QVariant& value) {
-    qDebug() << "[PROP] setComponentProp id=" << id << "key=" << key << "val=" << value;
     if (m_viewOnly) return;
     int idx = indexOfComponent(id);
     if (idx < 0) return;
     Context& ctx = currentCtx();
     QVariantMap c = ctx.components[idx].toMap();
-    if (key == "bitWidth" || key == "inputCount") {
+    if (key == "bitWidth" || key == "inputCount" || key == "rotation") {
         if (c.value(key).toInt() == value.toInt()) return;
     } else {
         if (c.value(key) == value) return;
     }
     pushUndo("prop:" + id + ":" + key);
+    bool structural = false;
     if (key == "bitWidth") {
         int bw = value.toInt();
         if (bw < 1) bw = 1;
@@ -162,21 +186,46 @@ void Circuit::setComponentProp(const QString& id, const QString& key, const QVar
             for (auto& sv : splits) sum += sv.toInt();
             if (sum != bw) {
                 QVariantList ns;
+                ns.reserve(bw);
                 for (int i = 0; i < bw; ++i) ns.append(1);
                 c["outputSplits"] = ns;
             }
         }
+        structural = true;
     } else if (key == "inputCount") {
         int v = value.toInt();
         if (v < 2) v = 2;
         if (v > 64) v = 64;
         c[key] = v;
+        structural = true;
+    } else if (key == "rotation") {
+        int v = value.toInt();
+        v = ((v % 4) + 4) % 4;
+        c["rotation"] = v;
+        structural = true;
     } else {
         c[key] = value;
     }
     ctx.components[idx] = c;
     evaluateAll();
     emit changed();
+    if (structural) emit structureChanged();
+}
+
+void Circuit::rotateComponent(const QString& id, int delta) {
+    if (m_viewOnly) return;
+    int idx = indexOfComponent(id);
+    if (idx < 0) return;
+    Context& ctx = currentCtx();
+    QVariantMap c = ctx.components[idx].toMap();
+    int cur = c.value("rotation").toInt();
+    int nw = ((cur + delta) % 4 + 4) % 4;
+    if (nw == cur) return;
+    pushUndo("rot:" + id);
+    c["rotation"] = nw;
+    ctx.components[idx] = c;
+    emit changed();
+    emit structureChanged();
 }
 
 void Circuit::renameComponent(const QString& id, const QString& name) {
@@ -220,6 +269,7 @@ void Circuit::setSplitterSplits(const QString& id, const QString& splitsStr) {
     ctx.components[idx] = c;
     evaluateAll();
     emit changed();
+    emit structureChanged();
 }
 
 QString Circuit::getSplitterSplitsStr(const QString& id) const {

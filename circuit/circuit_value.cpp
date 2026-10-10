@@ -1,5 +1,6 @@
 #include "circuit.h"
 #include "ValueCodec.h"
+#include "EventEngine.h"
 
 QString Circuit::getInputBase(const QString& id) const {
     int idx = indexOfComponent(id);
@@ -46,7 +47,8 @@ QString Circuit::setInputFromString(const QString& id, const QString& text) {
     if (idx < 0) return "元件不存在";
     Context& ctx = currentCtx();
     QVariantMap c = ctx.components[idx].toMap();
-    if (c.value("type").toString() != "input") return "不是输入元件";
+    QString t = c.value("type").toString();
+    if (t != "input" && t != "const") return "不是可编辑的元件";
     int bw = c.value("bitWidth").toInt();
     if (bw < 1) bw = 1;
     if (bw > 64) bw = 64;
@@ -56,10 +58,19 @@ QString Circuit::setInputFromString(const QString& id, const QString& text) {
     QVariantList bits = ValueCodec::parse(text, base, bw, &err);
     if (!err.isEmpty()) return err;
     if (c.value("inputBits").toList() == bits) return "";
-    pushUndo("inputval:" + id);
     c["inputBits"] = bits;
     ctx.components[idx] = c;
-    evaluateAll();
+
+    if (m_engineType == "event" && m_eventEngine) {
+        QString binStr = ValueCodec::bitsToString(bits, bw);
+        QStringList qids = engineQidsFor(m_currentCtxId, id);
+        for (const auto& qid : qids)
+            m_eventEngine->triggerInputString(qid, binStr);
+        applyEngineOutputsToContexts();
+        emit simulationTick();
+    } else {
+        evaluateAll();
+    }
     emit changed();
     return "";
 }

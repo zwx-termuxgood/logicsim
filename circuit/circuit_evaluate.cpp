@@ -1,22 +1,39 @@
 #include "circuit.h"
 #include "CircuitEvaluator.h"
+#include "EventEngine.h"
 
 void Circuit::evaluateAll() {
-    // 1. 从 root 出发递归求值整棵电路树（保持 root 及其内部实例输出一致）
+    // 1) 同步子电路端口元信息（修复"端口数一直为 0"）
+    CircuitEvaluator::syncSubPins(m_root, m_subContexts);
+    for (auto it = m_subContexts.begin(); it != m_subContexts.end(); ++it)
+        CircuitEvaluator::syncSubPins(it.value(), m_subContexts);
+
+    // 2) 浏览子电路时：把父实例输入灌入子电路内部 input 元件
+    if (m_viewOnly && !m_currentCtxId.isEmpty()) {
+        syncSubStateFromParent(m_currentCtxId);
+    }
+
+    if (m_engineType == "event") {
+        m_engineDirty = true;
+        // 通知左面板刷新 [in/out] 计数
+        emit subcircuitsChanged();
+        return;
+    }
+
+    // 旧引擎
     CircuitEvaluator::evaluateAll(m_root, m_subContexts);
 
-    // 2. 如果当前正在“编辑”某个子电路（switchEditContext 进入，非浏览模式），
-    //    对该子电路独立求值一次：以它的 input 元件当前值为输入，
-    //    使其内部逻辑与 output 自动传播。
-    //    这一步与 root 完全无关 —— root 不会因为用户改了子电路内 input 而变化。
-    if (!m_currentCtxId.isEmpty() && !m_viewOnly) {
+    // 只要当前有子上下文，就独立求值（包括浏览模式）
+    if (!m_currentCtxId.isEmpty()) {
         auto it = m_subContexts.find(m_currentCtxId);
         if (it != m_subContexts.end())
             CircuitEvaluator::evaluateStandalone(it.value(), m_subContexts);
     }
+
+    // 通知左面板刷新 [in/out] 计数
+    emit subcircuitsChanged();
 }
 
-// Q_INVOKABLE 入口：QML 侧可能调用 circuit.evaluate()
 void Circuit::evaluate() {
     evaluateAll();
 }

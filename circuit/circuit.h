@@ -14,10 +14,13 @@
 #include "CircuitContext.h"
 #include "UndoData.h"
 
+class EventEngine;
+
 class Circuit : public QObject
 {
     Q_OBJECT
     Q_DISABLE_COPY_MOVE(Circuit)
+
     Q_PROPERTY(QVariantList components READ components NOTIFY changed)
     Q_PROPERTY(QVariantList wires READ wires NOTIFY changed)
     Q_PROPERTY(QString contextId READ contextId NOTIFY contextChanged)
@@ -33,6 +36,15 @@ class Circuit : public QObject
     Q_PROPERTY(int clockTickCount READ clockTickCount NOTIFY clockChanged)
     Q_PROPERTY(bool canUndo READ canUndo NOTIFY undoRedoChanged)
     Q_PROPERTY(bool canRedo READ canRedo NOTIFY undoRedoChanged)
+
+    Q_PROPERTY(QString engineType READ engineType WRITE setEngineType NOTIFY engineChanged)
+    Q_PROPERTY(bool simulationRunning READ simulationRunning NOTIFY simulationChanged)
+    Q_PROPERTY(qulonglong simTime READ simTime NOTIFY simulationTick)
+    Q_PROPERTY(qulonglong globalGateDelay READ globalGateDelay WRITE setGlobalGateDelay NOTIFY engineSettingsChanged)
+    Q_PROPERTY(qulonglong wireDelay READ wireDelay WRITE setWireDelay NOTIFY engineSettingsChanged)
+    Q_PROPERTY(qulonglong simulationSpeed READ simulationSpeed WRITE setSimulationSpeed NOTIFY engineSettingsChanged)
+    Q_PROPERTY(int simulationSpeedExp READ simulationSpeedExp WRITE setSimulationSpeedExp NOTIFY engineSettingsChanged)
+    Q_PROPERTY(bool autoSpeed READ autoSpeed WRITE setAutoSpeed NOTIFY engineSettingsChanged)
 
 public:
     explicit Circuit(QObject* parent = nullptr);
@@ -55,6 +67,30 @@ public:
     bool canUndo() const;
     bool canRedo() const;
 
+    QString engineType() const { return m_engineType; }
+    void setEngineType(const QString& t);
+    bool simulationRunning() const { return m_simulationRunning; }
+    qulonglong simTime() const;
+    qulonglong globalGateDelay() const;
+    void setGlobalGateDelay(qulonglong d);
+    qulonglong wireDelay() const;
+    void setWireDelay(qulonglong d);
+    qulonglong simulationSpeed() const { return m_simulationSpeed; }
+    void setSimulationSpeed(qulonglong s);
+    int simulationSpeedExp() const { return m_simulationSpeedExp; }
+    void setSimulationSpeedExp(int e);
+    bool autoSpeed() const { return m_autoSpeed; }
+    void setAutoSpeed(bool a);
+
+    Q_INVOKABLE void setGateTypeDelay(const QString& type, qulonglong d);
+    Q_INVOKABLE qulonglong getGateTypeDelay(const QString& type) const;
+    Q_INVOKABLE void clearGateTypeDelays();
+
+    Q_INVOKABLE void startSimulation();
+    Q_INVOKABLE void pauseSimulation();
+    Q_INVOKABLE void resetSimulation();
+    Q_INVOKABLE void simulateStep();
+
     static int componentInputCount(const QVariantMap& comp);
     static int componentOutputCount(const QVariantMap& comp);
     static int outputPortBitWidth(const QVariantMap& comp, int portIdx);
@@ -73,6 +109,8 @@ public:
     Q_INVOKABLE void renameComponent(const QString& id, const QString& name);
     Q_INVOKABLE void setSplitterSplits(const QString& id, const QString& splitsStr);
     Q_INVOKABLE QString getSplitterSplitsStr(const QString& id) const;
+    Q_INVOKABLE void rotateComponent(const QString& id, int delta);
+    Q_INVOKABLE void toggleClock(const QString& id);
 
     Q_INVOKABLE QString getInputBase(const QString& id) const;
     Q_INVOKABLE void setInputBase(const QString& id, const QString& base);
@@ -148,6 +186,15 @@ signals:
     void clockChanged();
     void undoRedoChanged();
 
+    void engineChanged();
+    void simulationChanged();
+    void simulationTick();
+    void engineSettingsChanged();
+
+    // 结构变化：元件集合 / 元件属性（位宽、inputCount、rotation、splits）
+    // / 上下文切换 / undo-redo / 加载。UI 收到后需要重建端口信息缓存。
+    void structureChanged();
+
 private slots:
     void tick();
 
@@ -169,6 +216,15 @@ private:
     QTimer* m_clockTimer = nullptr;
     QHash<QString, bool> m_clockStates;
 
+    QString m_engineType = "event";
+    bool m_simulationRunning = false;
+    bool m_engineDirty = true;
+    EventEngine* m_eventEngine = nullptr;
+    QTimer* m_simTimer = nullptr;
+    qulonglong m_simulationSpeed = 1000;
+    int m_simulationSpeedExp = 3;
+    bool m_autoSpeed = true;
+
     CircuitUndoData* und() const;
 
     Context& currentCtx();
@@ -188,6 +244,15 @@ private:
 
     void pushUndo(const QString& mergeKey = QString());
     void restoreSnapshot(const QVariantMap& snap, bool emitSignals = true);
+
+    void rebuildEventEngine();
+    void applyEngineOutputsToContexts();
+    void onSimTimerTick();
+
+    QStringList engineQidsFor(const QString& ctxId, const QString& localCompId) const;
+
+    void syncSubStateFromParent(const QString& subId);
+    void applyEngineOutputsToSubContext();
 };
 
 #endif // CIRCUIT_H

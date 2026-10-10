@@ -5,7 +5,7 @@ namespace ComponentTraits {
 
 int inputCount(const QVariantMap& comp) {
     const QString t = comp.value("type").toString();
-    if (t == "input" || t == "clock" || t == "text") return 0;
+    if (t == "input" || t == "clock" || t == "const" || t == "text") return 0;
     if (t == "not") return 1;
     if (t == "and" || t == "or" || t == "nand" || t == "nor" || t == "xor" || t == "xnor") {
         int n = comp.value("inputCount").toInt();
@@ -15,13 +15,13 @@ int inputCount(const QVariantMap& comp) {
     if (t == "splitter") return 1;
     if (t == "hub") return qMax(1, comp.value("outputSplits").toList().size());
     if (t == "sub") return comp.value("subInputNames").toList().size();
-    if (t == "tgate" || t == "ntran" || t == "ptran") return 2; // D, G/EN
+    if (t == "tgate" || t == "ntran" || t == "ptran") return 2;
     return 0;
 }
 
 int outputCount(const QVariantMap& comp) {
     const QString t = comp.value("type").toString();
-    if (t == "input" || t == "clock") return 1;
+    if (t == "input" || t == "clock" || t == "const") return 1;
     if (t == "text") return 0;
     if (t == "not" || t == "and" || t == "or" || t == "nand" ||
         t == "nor" || t == "xor" || t == "xnor") return 1;
@@ -37,8 +37,9 @@ int outputBitWidth(const QVariantMap& comp, int portIdx) {
     const QString t = comp.value("type").toString();
     int bw = comp.value("bitWidth").toInt();
     if (bw < 1) bw = 1;
-    if (t == "input" || t == "clock" || t == "not" || t == "and" || t == "or" ||
-        t == "nand" || t == "nor" || t == "xor" || t == "xnor") return bw;
+    if (t == "input" || t == "const" || t == "clock" || t == "not" ||
+        t == "and" || t == "or" || t == "nand" || t == "nor" ||
+        t == "xor" || t == "xnor") return bw;
     if (t == "tgate" || t == "ntran" || t == "ptran") return bw;
     if (t == "splitter") {
         QVariantList splits = comp.value("outputSplits").toList();

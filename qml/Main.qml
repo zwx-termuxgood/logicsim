@@ -20,19 +20,28 @@ ApplicationWindow {
     property alias circuitRef: circuit
     readonly property bool circuitViewOnly: circuit.isViewOnly
 
-    // ============ 全局状态 ============
     property var subList: []
     property var editCtxList: []
     property var recentList: []
     property bool forceQuit: false
     property bool saveBeforeExit: false
 
-    // 性能缓存
+    property bool topCollapsed: false
+    property bool leftCollapsed: false
+    property bool settingsOpen: false
+
+    property int visibleComponentCount: 0
+
+    // 缓存
     property var cachedComps: []
     property var cachedWires: []
     property var compById: ({})
     property var outPortsById: ({})
     property var inPortsById: ({})
+
+    // 结构检测缓存
+    property var lastCompIds: []
+    property var lastCompProps: ({})
 
     property real viewScale: 1.0
     property real viewX: 0
@@ -53,8 +62,6 @@ ApplicationWindow {
     property string selectedCompId: ""
     property var selectedComp: null
     property var selectedIds: []
-
-    // 【新增】当前选中的子电路（用于属性面板显示）
     property string selectedSubId: ""
 
     property string statusText: "编辑模式"
@@ -87,35 +94,32 @@ ApplicationWindow {
     property alias contextPopupRef: contextPopup
     property alias saveDialogRef: saveDialog
     property alias openDialogRef: openDialog
+    property alias menuPopupRef: menuPopup
 
-    // ============ Circuit ============
+    readonly property string engineType: circuit.engineType
+    readonly property bool simulationRunning: circuit.simulationRunning
+
     Circuit {
         id: circuit
         onChanged: {
-            console.log("[QML] onChanged enter, ctxId=" + circuit.contextId
-                        + " comps=" + circuit.components.length
-                        + " selectedId=" + root.selectedCompId)
-            root.rebuildCaches()
-            console.log("[QML] rebuildCaches done")
+            // 值变化 / 图形变化：只更新 QVariantMap，不查询 C++ 端口信息
+            root.updateCachesValues()
             canvasView.requestPaint()
             root.refreshSel()
-            console.log("[QML] refreshSel done")
             errorDebounce.restart()
-            if (!root.forceQuit) {
-                root.dirty = true
-            }
-            console.log("[QML] onChanged done")
+            if (!root.forceQuit) root.dirty = true
         }
         onGeometryChanged: {
-            var comps = circuit.components
-            root.cachedComps = comps
-            var m = root.compById
-            for (var i = 0; i < comps.length; i++) m[comps[i].id] = comps[i]
-            root.compById = m
+            root.updateCachesValues()
             canvasView.requestPaint()
         }
+        onStructureChanged: {
+            // 元件集合或属性变化：全量重建
+            root.rebuildCachesFull()
+            canvasView.requestPaint()
+            root.refreshSel()
+        }
         onContextChanged: {
-            console.log("[QML] onContextChanged")
             canvasView.requestPaint()
             root.selectedCompId = ""
             root.selectedComp = null
@@ -123,17 +127,19 @@ ApplicationWindow {
             root.placingType = ""
             root.placingSubId = ""
             root.selectedIds = []
-            root.selectedSubId = ""     // 【新增】切换上下文时清空子电路选中
+            root.selectedSubId = ""
+            root.rebuildCachesFull()
         }
         onSubcircuitsChanged: { root.subList = circuit.subcircuits }
         onEditContextsChanged: { root.editCtxList = circuit.editContexts }
         onErrorsChanged: { root.errorList = circuit.errors }
         onRecentFilesChanged: { root.recentList = circuit.recentFiles }
         onClockChanged: { canvasView.requestPaint() }
-        onUndoRedoChanged: {
-            console.log("[QML] onUndoRedoChanged canUndo=" + circuit.canUndo
-                        + " canRedo=" + circuit.canRedo)
-        }
+        onSimulationTick: { canvasView.requestPaint() }
+        onSimulationChanged: { canvasView.requestPaint() }
+        onEngineChanged: { canvasView.requestPaint() }
+        onEngineSettingsChanged: { canvasView.requestPaint() }
+        onUndoRedoChanged: { }
     }
 
     readonly property bool clockRunning: circuit.clockRunning
@@ -146,24 +152,46 @@ ApplicationWindow {
         onTriggered: circuit.refreshErrors()
     }
 
-    function rebuildCaches() {
-        console.log("[QML] rebuildCaches start")
+    // ---- 快速路径：只从 C++ 一次性读取 components，更新 compById 里各元件的值 ----
+    function updateCachesValues() {
+        var comps = circuit.components
+        var wrs = circuit.wires
+        cachedComps = comps
+        cachedWires = wrs
+        var m = compById
+        for (var i = 0; i < comps.length; i++) {
+            m[comps[i].id] = comps[i]
+        }
+        compById = m
+    }
+
+    // ---- 慢速路径：结构变化时重建端口信息 ----
+    function rebuildCachesFull() {
         var comps = circuit.components
         var wrs = circuit.wires
         cachedComps = comps
         cachedWires = wrs
         var m = {}, op = {}, ip = {}
+        var ids = []
+        var props = {}
         for (var i = 0; i < comps.length; i++) {
             var c = comps[i]
             m[c.id] = c
-            console.log("[QML]   comp " + i + " id=" + c.id + " type=" + c.type)
             op[c.id] = circuit.outputPortsInfo(c.id)
             ip[c.id] = circuit.inputPortsInfo(c.id)
+            ids.push(c.id)
+            props[c.id] = {
+                bitWidth: c.bitWidth,
+                inputCount: c.inputCount,
+                rotation: c.rotation,
+                splitsLen: c.outputSplits ? c.outputSplits.length : 0
+            }
         }
         compById = m
         outPortsById = op
         inPortsById = ip
-        console.log("[QML] rebuildCaches done")
+        lastCompIds = ids
+        lastCompProps = props
     }
 
     Timer {
@@ -176,35 +204,26 @@ ApplicationWindow {
     onHeightChanged: triggerRepaint()
 
     Component.onCompleted: {
-        console.log("[QML] Component.onCompleted")
         subList = circuit.subcircuits
         editCtxList = circuit.editContexts
         errorList = circuit.errors
         recentList = circuit.recentFiles
-        rebuildCaches()
+        rebuildCachesFull()
         triggerRepaint()
         root.dirty = false
-        console.log("[QML] Component.onCompleted done")
     }
 
-    // ============ 快捷键 ============
     Shortcut {
         sequences: [StandardKey.Undo]
         context: Qt.WindowShortcut
         enabled: circuit.canUndo && !circuit.isViewOnly
-        onActivated: {
-            console.log("[QML] Shortcut Undo activated")
-            circuit.undo()
-        }
+        onActivated: circuit.undo()
     }
     Shortcut {
         sequences: [StandardKey.Redo]
         context: Qt.WindowShortcut
         enabled: circuit.canRedo && !circuit.isViewOnly
-        onActivated: {
-            console.log("[QML] Shortcut Redo activated")
-            circuit.redo()
-        }
+        onActivated: circuit.redo()
     }
     Shortcut {
         sequence: "Back"
@@ -213,20 +232,17 @@ ApplicationWindow {
         onActivated: root.doExit()
     }
 
-    // ============ 辅助函数 ============
     function refreshSel() {
-        console.log("[QML] refreshSel selectedCompId=" + selectedCompId)
         selectedComp = (selectedCompId !== "") ? compById[selectedCompId] : null
         if (selectedComp && (selectedComp.type === "splitter" || selectedComp.type === "hub"))
             leftPanel.splitterSplitsInput.text = circuit.getSplitterSplitsStr(selectedCompId)
-        if (selectedComp && selectedComp.type === "input") {
+        if (selectedComp && (selectedComp.type === "input" || selectedComp.type === "const")) {
             leftPanel.inputValueField.text = circuit.getInputAsString(selectedCompId)
             inputError = ""
         }
         if (selectedComp && selectedComp.type === "text") {
             leftPanel.textContentField.text = selectedComp.content || ""
         }
-        console.log("[QML] refreshSel done")
     }
 
     function resetView() {
@@ -285,86 +301,169 @@ ApplicationWindow {
         doExit()
     }
 
-    // ============ 布局 ============
-    TopBar {
-        id: topBar
-        main: root
-        anchors.top: parent.top
-        anchors.left: parent.left
-        anchors.right: parent.right
-    }
-
-    ClockBar {
-        id: clockBar
-        main: root
-        anchors.top: topBar.bottom
-        anchors.left: parent.left
-        anchors.right: parent.right
-    }
-
-    Rectangle {
-        id: readonlyBanner
-        visible: circuit.isViewOnly
-        anchors.top: clockBar.bottom
-        anchors.left: parent.left
-        anchors.right: parent.right
-        height: Theme.readonlyBannerH
-        color: Theme.bgReadonly
-        border.color: Theme.borderReadonly
-        border.width: 1
-        RowLayout {
-            anchors.fill: parent
-            anchors.margins: 5
-            spacing: 8
-            Text {
-                text: "🔒 只读浏览：" + circuit.contextName + "（状态与父电路绑定）"
-                color: Theme.accentOrange
-                font.pixelSize: Theme.fsNormal
-                Layout.fillWidth: true
-            }
-            Rectangle {
-                Layout.preferredWidth: 80; Layout.preferredHeight: 22
-                radius: Theme.smallRadius
-                color: backView.pressed ? Theme.bgBackHi : Theme.bgBack
-                Text {
-                    anchors.centerIn: parent; text: "返回"
-                    color: Theme.textWhite; font.pixelSize: Theme.fsSmall
-                }
-                MouseArea {
-                    id: backView; anchors.fill: parent
-                    onClicked: circuit.leaveSubcircuit()
-                }
-            }
-        }
-    }
-
-    LeftPanel {
-        id: leftPanel
-        main: root
-        anchors.top: readonlyBanner.visible ? readonlyBanner.bottom : clockBar.bottom
-        anchors.left: parent.left
-        anchors.bottom: parent.bottom
-    }
-
     Item {
-        id: canvasContainer
-        anchors.top: readonlyBanner.visible ? readonlyBanner.bottom : clockBar.bottom
-        anchors.left: leftPanel.right
-        anchors.right: parent.right
-        anchors.bottom: parent.bottom
-        clip: true
+        id: mainArea
+        anchors.fill: parent
 
-        CanvasView {
-            id: canvasView
-            main: root
-            anchors.fill: parent
-        }
-
-        StatusBar {
-            main: root
+        Item {
+            id: topArea
+            anchors.top: parent.top
             anchors.left: parent.left
             anchors.right: parent.right
+            height: root.topCollapsed
+                    ? Theme.collapsedBarH
+                    : (Theme.topBarH + Theme.clockBarH)
+            z: 10
+
+            TopBar {
+                id: topBar
+                main: root
+                anchors.top: parent.top
+                anchors.left: parent.left
+                anchors.right: parent.right
+                visible: !root.topCollapsed
+            }
+
+            ClockBar {
+                id: clockBar
+                main: root
+                anchors.top: topBar.bottom
+                anchors.left: parent.left
+                anchors.right: parent.right
+                visible: !root.topCollapsed
+            }
+
+            Rectangle {
+                id: expandTopBtn
+                visible: root.topCollapsed
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                height: Theme.collapsedBarH
+                color: Theme.bgBar
+                border.color: Theme.border
+                border.width: 1
+
+                Rectangle {
+                    anchors.centerIn: parent
+                    width: 80; height: 24
+                    radius: Theme.smallRadius
+                    color: expandTopMa.pressed ? Theme.bgButtonHover : Theme.bgButton
+                    border.color: Theme.borderStrong; border.width: 1
+                    Text {
+                        anchors.centerIn: parent
+                        text: "▼ 展开"
+                        color: Theme.text
+                        font.pixelSize: Theme.fsSmall
+                    }
+                    MouseArea {
+                        id: expandTopMa
+                        anchors.fill: parent
+                        onClicked: root.topCollapsed = false
+                    }
+                }
+            }
+        }
+
+        Rectangle {
+            id: readonlyBanner
+            visible: circuit.isViewOnly
+            anchors.top: topArea.bottom
+            anchors.left: parent.left
+            anchors.right: parent.right
+            height: Theme.readonlyBannerH
+            color: Theme.bgReadonly
+            border.color: Theme.borderReadonly
+            border.width: 1
+            z: 9
+            RowLayout {
+                anchors.fill: parent
+                anchors.margins: 5
+                spacing: 8
+                Text {
+                    text: "🔒 只读浏览：" + circuit.contextName + "（状态与父电路绑定）"
+                    color: Theme.accentOrange
+                    font.pixelSize: Theme.fsNormal
+                    Layout.fillWidth: true
+                }
+                Rectangle {
+                    Layout.preferredWidth: 80; Layout.preferredHeight: 22
+                    radius: Theme.smallRadius
+                    color: backView.pressed ? Theme.bgBackHi : Theme.bgBack
+                    Text {
+                        anchors.centerIn: parent; text: "返回"
+                        color: Theme.textWhite; font.pixelSize: Theme.fsSmall
+                    }
+                    MouseArea {
+                        id: backView; anchors.fill: parent
+                        onClicked: circuit.leaveSubcircuit()
+                    }
+                }
+            }
+        }
+
+        Item {
+            id: leftArea
+            anchors.top: readonlyBanner.visible ? readonlyBanner.bottom : topArea.bottom
+            anchors.left: parent.left
             anchors.bottom: parent.bottom
+            width: root.leftCollapsed ? Theme.collapsedBarW : Theme.leftPanelW
+
+            LeftPanel {
+                id: leftPanel
+                main: root
+                anchors.fill: parent
+                visible: !root.leftCollapsed
+            }
+
+            Rectangle {
+                visible: root.leftCollapsed
+                anchors.fill: parent
+                color: Theme.bgPanel
+                border.color: Theme.border
+                border.width: 1
+
+                Rectangle {
+                    anchors.centerIn: parent
+                    width: 24; height: 80
+                    radius: Theme.smallRadius
+                    color: expandLeftMa.pressed ? Theme.bgButtonHover : Theme.bgButton
+                    border.color: Theme.borderStrong; border.width: 1
+                    Text {
+                        anchors.centerIn: parent
+                        text: "▶"
+                        color: Theme.text
+                        font.pixelSize: 16
+                    }
+                    MouseArea {
+                        id: expandLeftMa
+                        anchors.fill: parent
+                        onClicked: root.leftCollapsed = false
+                    }
+                }
+            }
+        }
+
+        Item {
+            id: canvasContainer
+            anchors.top: readonlyBanner.visible ? readonlyBanner.bottom : topArea.bottom
+            anchors.left: leftArea.right
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            clip: true
+
+            CanvasView {
+                id: canvasView
+                main: root
+                anchors.fill: parent
+            }
+
+            StatusBar {
+                main: root
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+            }
         }
     }
 
@@ -373,8 +472,17 @@ ApplicationWindow {
     ExitConfirmDialog { id: exitConfirm; main: root }
     ConfirmDialog { id: confirmDialog; main: root }
     StatsPopup { id: statPopup; main: root }
-    RecentPopup { id: recentPopup; main: root; anchorItem: topBar.recentBtn }
+    RecentPopup { id: recentPopup; main: root }
     ContextPopup { id: contextPopup; main: root; anchorItem: topBar.ctxBtn }
+    MenuPopup { id: menuPopup; main: root; anchorItem: topBar.menuBtn }
+
+    SettingsPage {
+        id: settingsPage
+        main: root
+        visible: root.settingsOpen
+        anchors.fill: parent
+        z: 2000
+    }
 
     FileDialog {
         id: saveDialog

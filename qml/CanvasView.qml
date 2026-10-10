@@ -8,28 +8,36 @@ Item {
     property QtObject main: null
     clip: true
 
-    // ============ 内部工具函数 ============
+    property real nearestAngle: 0
+    property bool hasComponents: false
+
     function compSize(comp) {
         var t = comp.type
         var bw = comp.bitWidth || 1
-        if (t === "text") return { w: 140, h: 44 }
-        if (t === "clock") return { w: 60, h: 40 }
-        if (t === "led") return { w: Math.max(50, bw * 22 + 8), h: 40 }
-        if (t === "input" || t === "output") return { w: Math.max(60, bw * 22 + 8), h: 40 }
-        if (t === "splitter" || t === "hub") {
+        var rot = comp.rotation || 0
+        var w0, h0
+        if (t === "text") { w0 = 140; h0 = 44 }
+        else if (t === "clock") { w0 = 60; h0 = 40 }
+        else if (t === "led") { w0 = Math.max(50, bw * 22 + 8); h0 = 40 }
+        else if (t === "input" || t === "output" || t === "const")
+            { w0 = Math.max(60, bw * 22 + 8); h0 = 40 }
+        else if (t === "splitter" || t === "hub") {
             var oc = (comp.outputSplits && comp.outputSplits.length) || bw
-            return { w: 80, h: Math.max(60, oc * 24) }
+            w0 = 80; h0 = Math.max(60, oc * 24)
         }
-        if (t === "not") return { w: 80, h: 60 }
-        if (t === "tgate" || t === "ntran" || t === "ptran")
-            return { w: 80, h: Math.max(60, 2 * 24) }
-        if (t === "sub") {
+        else if (t === "not") { w0 = 80; h0 = 60 }
+        else if (t === "tgate" || t === "ntran" || t === "ptran") { w0 = 80; h0 = 60 }
+        else if (t === "sub") {
             var ic = (comp.subInputNames || []).length
             var oc2 = (comp.subOutputNames || []).length
-            return { w: 110, h: Math.max(60, Math.max(ic, oc2) * 24) }
+            w0 = 110; h0 = Math.max(60, Math.max(ic, oc2) * 24)
         }
-        var ic2 = comp.inputCount || 2
-        return { w: 80, h: Math.max(60, ic2 * 24) }
+        else {
+            var ic2 = comp.inputCount || 2
+            w0 = 80; h0 = Math.max(60, ic2 * 24)
+        }
+        if (rot === 1 || rot === 3) return { w: h0, h: w0 }
+        return { w: w0, h: h0 }
     }
 
     function worldToScreen(wx, wy) {
@@ -56,7 +64,44 @@ Item {
         return i
     }
 
-    // ============ 绘制 ============
+    function computeNearestAngle() {
+        var comps = main.cachedComps
+        if (comps.length === 0) {
+            hasComponents = false
+            return
+        }
+        hasComponents = true
+        var cx = (canvasWidth() / 2 - main.viewX) / main.viewScale
+        var cy = (canvasHeight() / 2 - main.viewY) / main.viewScale
+        var bestDx = 0, bestDy = 0, bestD = 1e18
+        for (var i = 0; i < comps.length; i++) {
+            var c = comps[i]
+            var dx = c.x - cx, dy = c.y - cy
+            var d = dx * dx + dy * dy
+            if (d < bestD) { bestD = d; bestDx = dx; bestDy = dy }
+        }
+        nearestAngle = Math.atan2(bestDy, bestDx) * 180 / Math.PI
+    }
+
+    function jumpToNearest() {
+        var comps = main.cachedComps
+        if (comps.length === 0) return
+        var cx = (canvasWidth() / 2 - main.viewX) / main.viewScale
+        var cy = (canvasHeight() / 2 - main.viewY) / main.viewScale
+        var best = null, bestD = 1e18
+        for (var i = 0; i < comps.length; i++) {
+            var c = comps[i]
+            var dx = c.x - cx, dy = c.y - cy
+            var d = dx * dx + dy * dy
+            if (d < bestD) { bestD = d; best = c }
+        }
+        if (best) {
+            main.viewX = canvasWidth() / 2 - best.x * main.viewScale
+            main.viewY = canvasHeight() / 2 - best.y * main.viewScale
+            main.triggerRepaint()
+        }
+    }
+
     function paintCanvas(ctx, W, H) {
         if (W <= 0 || H <= 0) return
 
@@ -81,28 +126,30 @@ Item {
         }
 
         var comps = main.cachedComps
+        var visibleCount = 0
         for (var j = 0; j < comps.length; j++) {
             var comp = comps[j]
             var size = compSize(comp)
             if (!Geometry.isVisible(main.viewScale, main.viewX, main.viewY, W, H,
                                     comp.x, comp.y, size.w, size.h)) continue
+            visibleCount++
             Painter.drawComponent(ctx, comp, compSize,
                                   main.viewScale, main.viewX, main.viewY,
                                   main.outPortsById, main.inPortsById,
                                   main.selectedCompId, main.selectedIds,
                                   simplify, main.circuitRef)
         }
+        main.visibleComponentCount = visibleCount
+        computeNearestAngle()
     }
 
-    // ============ 画布 ============
     Canvas {
         id: canvasArea
         anchors.fill: parent
-        renderStrategy: Canvas.Immediate
+        renderStrategy: Canvas.FramebufferObject
         onPaint: canvasView.paintCanvas(getContext("2d"), width, height)
     }
 
-    // ============ 框选矩形 ============
     Rectangle {
         id: selectionBox
         visible: main.boxSelecting
@@ -116,7 +163,35 @@ Item {
         z: 100
     }
 
-    // ============ 鼠标交互 ============
+    Rectangle {
+        id: navIndicator
+        visible: main.visibleComponentCount === 0 && hasComponents
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        anchors.rightMargin: 44
+        anchors.bottomMargin: 60
+        width: 64; height: 64
+        radius: 32
+        color: navMa.pressed ? Theme.accent : Theme.bgButton
+        border.color: Theme.borderStrong
+        border.width: 2
+        z: 200
+
+        Text {
+            anchors.centerIn: parent
+            text: "➤"
+            color: Theme.textWhite
+            font.pixelSize: 24
+            rotation: canvasView.nearestAngle
+        }
+
+        MouseArea {
+            id: navMa
+            anchors.fill: parent
+            onClicked: canvasView.jumpToNearest()
+        }
+    }
+
     MouseArea {
         id: inputArea
         anchors.fill: parent
@@ -134,7 +209,6 @@ Item {
             var wp = screenToWorld(mouse.x, mouse.y)
             var editable = !main.circuitViewOnly
 
-            // 放置模式
             if (editable && main.mode === "edit" && main.placingType !== "") {
                 var subId = main.placingType === "sub" ? main.placingSubId : ""
                 var newId = main.circuitRef.addComponent(main.placingType, wp.x, wp.y,
@@ -154,7 +228,6 @@ Item {
 
             var comps = main.cachedComps
 
-            // 选择模式
             if (main.mode === "select") {
                 for (var i = comps.length - 1; i >= 0; i--) {
                     var c = comps[i]
@@ -177,7 +250,6 @@ Item {
                 return
             }
 
-            // 编辑模式：端口检测
             if (editable && main.mode === "edit") {
                 for (var i2 = comps.length - 1; i2 >= 0; i2--) {
                     var c2 = comps[i2]
@@ -219,7 +291,6 @@ Item {
                 }
             }
 
-            // 元件命中
             for (var i4 = comps.length - 1; i4 >= 0; i4--) {
                 var c4 = comps[i4]
                 var size4 = compSize(c4)
@@ -234,7 +305,10 @@ Item {
                                 var bits = c4.inputBits || []
                                 main.circuitRef.setBitValue(c4.id, bitIdx, !(bits[bitIdx] || false))
                             }
+                        } else if (c4.type === "clock") {
+                            main.circuitRef.toggleClock(c4.id)
                         }
+                        // const 在控制模式下不响应点击
                     } else if (editable && main.mode === "edit") {
                         main.circuitRef.breakUndoMerge()
                         draggingComp = true
@@ -284,7 +358,6 @@ Item {
         }
 
         onReleased: function(mouse) {
-            // 完成框选
             if (main.boxSelecting) {
                 var x1 = Math.min(main.boxStartX, mouse.x)
                 var y1 = Math.min(main.boxStartY, mouse.y)
@@ -308,7 +381,6 @@ Item {
                 canvasArea.requestPaint()
             }
 
-            // 完成连线
             if (main.wiring) {
                 var comps = main.cachedComps
                 var hitTo = false

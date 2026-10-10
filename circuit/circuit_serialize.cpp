@@ -1,5 +1,6 @@
 #include "circuit.h"
 #include "ComponentTraits.h"
+#include "EventEngine.h"
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
@@ -40,7 +41,6 @@ void Circuit::refreshErrors() {
 }
 
 void Circuit::clear() {
-    qDebug() << "[CLEAR] clear()";
     if (m_viewOnly) return;
     pushUndo();
     m_root = Context();
@@ -53,6 +53,9 @@ void Circuit::clear() {
     m_clockStates.clear();
     m_clockTickCount = 0;
     if (m_clockRunning) stopClock();
+    if (m_simulationRunning) pauseSimulation();
+    if (m_eventEngine) m_eventEngine->clear();
+    m_engineDirty = true;
     emit contextChanged();
     emit subcircuitsChanged();
     emit editContextsChanged();
@@ -63,7 +66,7 @@ void Circuit::clear() {
 
 QVariantMap Circuit::toJson() const {
     QVariantMap result;
-    result["version"] = 10;
+    result["version"] = 11;
     result["root"] = QVariantMap{
         {"components", m_root.components},
         {"wires", m_root.wires},
@@ -85,14 +88,26 @@ QVariantMap Circuit::toJson() const {
     result["subCounter"] = m_subCounter;
     result["clockFrequency"] = m_clockFrequency;
     result["clockTickCount"] = m_clockTickCount;
+    result["engineType"] = m_engineType;
+    result["globalGateDelay"] = QVariant::fromValue<qulonglong>(globalGateDelay());
+    result["wireDelay"] = QVariant::fromValue<qulonglong>(wireDelay());
+    result["simulationSpeed"] = QVariant::fromValue<qulonglong>(m_simulationSpeed);
+    result["simulationSpeedExp"] = m_simulationSpeedExp;
+    result["autoSpeed"] = m_autoSpeed;
+    QVariantMap gateDelays;
+    if (m_eventEngine) {
+        auto map = m_eventEngine->gateTypeDelays();
+        for (auto it = map.begin(); it != map.end(); ++it) {
+            gateDelays[it.key()] = QVariant::fromValue<qulonglong>(it.value());
+        }
+    }
+    result["gateTypeDelays"] = gateDelays;
     return result;
 }
 
 bool Circuit::fromJson(const QVariantMap& data) {
     CircuitUndoData* d = und();
     bool wasRestoring = d ? d->restoring : false;
-    qDebug() << "[JSON] fromJson enter, wasRestoring=" << wasRestoring
-             << "data size=" << data.size();
     if (d) d->restoring = true;
 
     m_root = Context();
@@ -110,9 +125,6 @@ bool Circuit::fromJson(const QVariantMap& data) {
         m_root.wireCounter = r.value("wireCounter").toInt();
     }
     QVariantList subs = data.value("subcircuits").toList();
-    qDebug() << "[JSON] loading root comps=" << m_root.components.size()
-             << "wires=" << m_root.wires.size()
-             << "subs=" << subs.size();
     for (auto& sv : subs) {
         QVariantMap s = sv.toMap();
         QString id = s.value("id").toString();
@@ -130,7 +142,29 @@ bool Circuit::fromJson(const QVariantMap& data) {
     m_clockTickCount = data.value("clockTickCount").toInt();
     if (m_clockTickCount < 0) m_clockTickCount = 0;
 
-    qDebug() << "[JSON] fixCtx start";
+    m_engineType = data.value("engineType", "event").toString();
+    if (m_engineType != "iter" && m_engineType != "event") m_engineType = "event";
+    if (m_eventEngine) {
+        qulonglong gd = data.value("globalGateDelay").toULongLong();
+        if (gd < 1) gd = 1;
+        m_eventEngine->setGlobalGateDelay(gd);
+        qulonglong wd = data.value("wireDelay").toULongLong();
+        if (wd < 1) wd = 1;
+        m_eventEngine->setWireDelay(wd);
+        m_eventEngine->clearGateTypeDelays();
+        QVariantMap gmap = data.value("gateTypeDelays").toMap();
+        for (auto it = gmap.begin(); it != gmap.end(); ++it) {
+            qulonglong v = it.value().toULongLong();
+            m_eventEngine->setGateTypeDelay(it.key(), v);
+        }
+    }
+    m_simulationSpeed = data.value("simulationSpeed").toULongLong();
+    if (m_simulationSpeed < 1) m_simulationSpeed = 1000;
+    m_simulationSpeedExp = data.value("simulationSpeedExp").toInt();
+    if (m_simulationSpeedExp < 0) m_simulationSpeedExp = 0;
+    if (m_simulationSpeedExp > 12) m_simulationSpeedExp = 12;
+    m_autoSpeed = data.value("autoSpeed", true).toBool();
+
     auto fixCtx = [&](Context& ctx) {
         for (int i = 0; i < ctx.components.size(); ++i) {
             QVariantMap c = ctx.components[i].toMap();
@@ -156,14 +190,14 @@ bool Circuit::fromJson(const QVariantMap& data) {
     };
     fixCtx(m_root);
     for (auto it = m_subContexts.begin(); it != m_subContexts.end(); ++it) fixCtx(it.value());
-    qDebug() << "[JSON] fixCtx done";
 
-    qDebug() << "[JSON] evaluateAll start";
-    evaluateAll();
-    qDebug() << "[JSON] evaluateAll done";
+    if (m_engineType == "event") {
+        rebuildEventEngine();
+    } else {
+        evaluateAll();
+    }
 
     if (!wasRestoring) {
-        qDebug() << "[JSON] file-load mode, clearing undo/redo stacks";
         if (d) {
             d->undoStack.clear();
             d->redoStack.clear();
@@ -171,22 +205,18 @@ bool Circuit::fromJson(const QVariantMap& data) {
             d->lastUndoTime = QDateTime();
         }
     }
-
     if (d) d->restoring = wasRestoring;
 
-    if (wasRestoring) {
-        qDebug() << "[JSON] restore mode, return without signals";
-        return true;
-    }
+    if (wasRestoring) return true;
 
-    qDebug() << "[JSON] emitting signals";
     emit contextChanged();
     emit subcircuitsChanged();
     emit editContextsChanged();
     emit errorsChanged();
     emit clockChanged();
+    emit engineChanged();
+    emit engineSettingsChanged();
     emit changed();
-    qDebug() << "[JSON] fromJson done";
     return true;
 }
 
@@ -214,52 +244,29 @@ bool Circuit::loadFromFile(const QString& path) {
     return ok;
 }
 
-// ============================================================
-// 撤销 / 重做实现（全部通过 und() 访问堆上的 CircuitUndoData）
-// ============================================================
-
 void Circuit::pushUndo(const QString& mergeKey) {
     CircuitUndoData* d = und();
-    qDebug() << "========================================================";
-    qDebug() << "[UNDO] pushUndo ENTER mergeKey=" << mergeKey;
-    dumpInternalState("pushUndo-entry");
-
-    if (!d)               { qDebug() << "[UNDO] abort: no UndoData"; return; }
-    if (m_viewOnly)       { qDebug() << "[UNDO] abort: viewOnly";    return; }
-    if (d->restoring)     { qDebug() << "[UNDO] abort: restoring";   return; }
-    if (d->redoRunning)   { qDebug() << "[UNDO] abort: redoRunning"; return; }
+    if (!d) return;
+    if (m_viewOnly) return;
+    if (d->restoring) return;
+    if (d->redoRunning) return;
 
     if (!mergeKey.isEmpty() && mergeKey == d->lastMergeKey) {
         if (d->lastUndoTime.isValid() &&
             d->lastUndoTime.msecsTo(QDateTime::currentDateTime()) < 500) {
             d->lastUndoTime = QDateTime::currentDateTime();
-            qDebug() << "[UNDO] merged, skip";
             return;
         }
     }
 
-    qDebug() << "[UNDO] toJson() start";
     QVariantMap snap = toJson();
-    qDebug() << "[UNDO] toJson() done, keys=" << snap.size();
-
-    qDebug() << "[UNDO] push_back start (undoSize before="
-             << (int)d->undoStack.size() << ")";
     d->undoStack.push_back(snap);
-    qDebug() << "[UNDO] push_back done (undoSize after="
-             << (int)d->undoStack.size() << ")";
-
     while (d->undoStack.size() > static_cast<size_t>(d->maxUndo))
         d->undoStack.erase(d->undoStack.begin());
-    qDebug() << "[UNDO] trimming done (undoSize=" << (int)d->undoStack.size() << ")";
-
     d->redoStack.clear();
-    qDebug() << "[UNDO] redo cleared";
-
     d->lastMergeKey = mergeKey;
     d->lastUndoTime = QDateTime::currentDateTime();
     emit undoRedoChanged();
-    qDebug() << "[UNDO] pushUndo DONE";
-    qDebug() << "========================================================";
 }
 
 void Circuit::breakUndoMerge() {
@@ -272,17 +279,11 @@ void Circuit::breakUndoMerge() {
 void Circuit::undo() {
     CircuitUndoData* d = und();
     if (!d) return;
-    qDebug() << "[UNDO] undo() enter, canUndo=" << canUndo()
-             << "stackSize=" << (int)d->undoStack.size()
-             << "viewOnly=" << m_viewOnly
-             << "running=" << d->redoRunning;
-
-    if (m_viewOnly)         { qDebug() << "[UNDO] undo viewOnly abort"; return; }
-    if (d->redoRunning)     { qDebug() << "[UNDO] undo reentered abort"; return; }
-    if (d->undoStack.empty()){ qDebug() << "[UNDO] undo empty abort"; return; }
+    if (m_viewOnly) return;
+    if (d->redoRunning) return;
+    if (d->undoStack.empty()) return;
 
     d->redoRunning = true;
-
     QVariantMap cur = toJson();
     QVariantMap prev = d->undoStack.back();
     d->undoStack.pop_back();
@@ -292,26 +293,18 @@ void Circuit::undo() {
     breakUndoMerge();
 
     restoreSnapshot(prev, true);
-
     d->redoRunning = false;
     emit undoRedoChanged();
-    qDebug() << "[UNDO] undo() done";
 }
 
 void Circuit::redo() {
     CircuitUndoData* d = und();
     if (!d) return;
-    qDebug() << "[UNDO] redo() enter, canRedo=" << canRedo()
-             << "redoSize=" << (int)d->redoStack.size()
-             << "viewOnly=" << m_viewOnly
-             << "running=" << d->redoRunning;
-
-    if (m_viewOnly)          { qDebug() << "[UNDO] redo viewOnly abort"; return; }
-    if (d->redoRunning)      { qDebug() << "[UNDO] redo reentered abort"; return; }
-    if (d->redoStack.empty()){ qDebug() << "[UNDO] redo empty abort"; return; }
+    if (m_viewOnly) return;
+    if (d->redoRunning) return;
+    if (d->redoStack.empty()) return;
 
     d->redoRunning = true;
-
     QVariantMap cur = toJson();
     QVariantMap next = d->redoStack.back();
     d->redoStack.pop_back();
@@ -321,19 +314,14 @@ void Circuit::redo() {
     breakUndoMerge();
 
     restoreSnapshot(next, true);
-
     d->redoRunning = false;
     emit undoRedoChanged();
-    qDebug() << "[UNDO] redo() done";
 }
 
 void Circuit::restoreSnapshot(const QVariantMap& snap, bool emitSignals) {
     CircuitUndoData* d = und();
     if (!d) return;
-    qDebug() << "[RESTORE] enter, emitSignals=" << emitSignals
-             << "restoring=" << d->restoring;
-
-    if (d->restoring) { qDebug() << "[RESTORE] already restoring, abort"; return; }
+    if (d->restoring) return;
 
     QString savedCtx = m_currentCtxId;
     bool savedView = m_viewOnly;
@@ -346,7 +334,6 @@ void Circuit::restoreSnapshot(const QVariantMap& snap, bool emitSignals) {
         savedCtx = "";
         savedView = false;
     }
-
     bool ctxChanged = (savedCtx != m_currentCtxId) || (savedView != m_viewOnly);
     m_currentCtxId = savedCtx;
     m_viewOnly = savedView;
@@ -359,5 +346,4 @@ void Circuit::restoreSnapshot(const QVariantMap& snap, bool emitSignals) {
     emit errorsChanged();
     emit clockChanged();
     emit changed();
-    qDebug() << "[RESTORE] done";
 }

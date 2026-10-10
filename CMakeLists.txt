@@ -21,6 +21,8 @@ set(CIRCUIT_SOURCES
     circuit/PortGeometry.cpp
     circuit/CircuitEvaluator.h
     circuit/CircuitEvaluator.cpp
+    circuit/EventEngine.h
+    circuit/EventEngine.cpp
     circuit/circuit.h
     circuit/circuit.cpp
     circuit/circuit_component.cpp
@@ -51,17 +53,14 @@ set(QML_SOURCES
     qml/StatsPopup.qml
     qml/RecentPopup.qml
     qml/ContextPopup.qml
+    qml/MenuPopup.qml
+    qml/SettingsPage.qml
 )
 
-# Theme.qml 声明为单例
 set_source_files_properties(qml/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 
-# 把 CIRCUIT_SOURCES 加进可执行文件：AUTOMOC 会正确生成 moc_circuit.cpp
 qt_add_executable(applogicsim main.cpp ${CIRCUIT_SOURCES})
 
-# 关键修改：qml 模块里 **不再** 传 SOURCES，
-# 避免 qmltyperegistrar 为 Circuit 自动生成元信息，
-# 防止和 main.cpp 里 qmlRegisterType 手动注册冲突。
 qt_add_qml_module(applogicsim
     URI LogicSim
     VERSION 1.0

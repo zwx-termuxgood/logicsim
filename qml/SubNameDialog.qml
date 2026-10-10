@@ -87,8 +87,8 @@ Dialog {
 
     function doCreate() {
         if (subNameInput.text.trim().length === 0) return
-            main.circuitRef.addSubcircuit(subNameInput.text.trim())
-            close()
+        main.circuitRef.addSubcircuit(subNameInput.text.trim())
+        close()
     }
 
     onOpened: {

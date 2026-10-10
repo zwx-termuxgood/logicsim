@@ -1,4 +1,6 @@
 #include "circuit.h"
+#include "CircuitEvaluator.h"
+#include <QVariantMap>
 
 QString Circuit::addSubcircuit(const QString& name) {
     if (m_viewOnly) return QString();
@@ -86,7 +88,20 @@ bool Circuit::canAddSubInstance(const QString& targetSubId) const {
 void Circuit::enterSubcircuit(const QString& subId) {
     if (!m_subContexts.contains(subId)) return;
     m_currentCtxId = subId; m_viewOnly = true;
-    emit contextChanged(); emit changed();
+
+    // 关键：进入前先把父实例当前输入灌入子电路内部 input 元件
+    syncSubStateFromParent(subId);
+
+    // 用旧引擎迭代一次，让子电路内部值立刻反映出来
+    {
+        auto it = m_subContexts.find(subId);
+        if (it != m_subContexts.end()) {
+            CircuitEvaluator::evaluateStandalone(it.value(), m_subContexts);
+        }
+    }
+
+    emit contextChanged();
+    emit changed();
 }
 
 void Circuit::leaveSubcircuit() {
@@ -108,15 +123,10 @@ void Circuit::setSubcircuitAsRoot(const QString& subId) {
 
     pushUndo();
 
-    // 交换 root 与该子电路的内容
     Context oldRoot = m_root;
     m_root = m_subContexts[subId];
     m_subContexts[subId] = oldRoot;
 
-    // 【修改】不自动重命名 —— 子电路槽位保留原本的名字，
-    //        主电路名称也不变（主电路固定叫"主电路"）。
-
-    // 切回主电路视图
     m_currentCtxId = "";
     m_viewOnly = false;
 
@@ -125,4 +135,53 @@ void Circuit::setSubcircuitAsRoot(const QString& subId) {
     emit subcircuitsChanged();
     emit editContextsChanged();
     emit changed();
+}
+
+// ============================================================
+// 浏览子电路时：把父实例的输入值灌入子电路内部 input 元件
+// ============================================================
+void Circuit::syncSubStateFromParent(const QString& subId) {
+    if (subId.isEmpty()) return;
+    auto sit = m_subContexts.find(subId);
+    if (sit == m_subContexts.end()) return;
+
+    // 找 root 里第一个 subId == subId 的实例
+    QVariantMap inst;
+    bool found = false;
+    for (const auto& cv : m_root.components) {
+        QVariantMap c = cv.toMap();
+        if (c.value("type").toString() == "sub" &&
+            c.value("subId").toString() == subId) {
+            inst = c;
+            found = true;
+            break;
+        }
+    }
+    if (!found) return;
+
+    QVariantList instIns = inst.value("inputPortValues").toList();
+
+    Context& sub = sit.value();
+    int idx = 0;
+    for (int i = 0; i < sub.components.size(); ++i) {
+        QVariantMap sc = sub.components[i].toMap();
+        if (sc.value("type").toString() != "input") continue;
+        if (idx >= instIns.size()) break;
+
+        QString s = instIns[idx].toString();
+        int bw = sc.value("bitWidth").toInt();
+        if (bw < 1) bw = 1;
+        while (s.length() < bw) s = "0" + s;
+        if (s.length() > bw) s = s.right(bw);
+
+        QVariantList bits;
+        for (int k = 0; k < bw; ++k) bits.append(s[k] == '1');
+        sc["inputBits"] = bits;
+
+        if (s.contains('E') || s.contains('Z')) sc["outputOverride"] = s;
+        else                                    sc["outputOverride"] = QVariant();
+
+        sub.components[i] = sc;
+        idx++;
+    }
 }
