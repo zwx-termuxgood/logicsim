@@ -11,22 +11,13 @@
 #include <queue>
 #include <cstdint>
 
-// 事件驱动电路仿真引擎
-// 关键设计：
-// - 时间只随事件推进；没有事件时时间可安全跳过空隙
-// - run(units, budget)：推进 units 个逻辑时间单位，最多处理 budget 个事件
-//     预算耗尽 → 时间停在最后处理的事件时间，返回 false，下次继续
-//     处理完 → 时间推进到 m_time+units，返回 true
-// - 没有 runIdle：不存在"跑到稳定"这回事，振荡电路永远跑不完
-// - initDriverValues 末尾给所有非 input/clock 节点排一个 recalc 事件，
-//   作为振荡电路的引爆点；否则自环电路启动不了
 class EventEngine
 {
 public:
     struct Options {
         quint64 globalGateDelay = 1;
         quint64 wireDelay       = 1;
-        quint64 runBudget       = 200000;   // 默认每帧事件预算
+        quint64 runBudget       = 200000;
     };
 
     EventEngine();
@@ -52,31 +43,32 @@ public:
     void clear();
     void reset();
 
-    // ---- 外部触发 ----
     void triggerInputBit(const QString& compId, int bit, bool value);
     void triggerInputString(const QString& compId, const QString& binStr);
     void triggerClockToggle(const QString& compId);
     void triggerForceOutput(const QString& compId, int port, const QString& value);
 
-    // ---- 推进 ----
-    // 处理一个事件；队列为空返回 false
     bool step();
-
-    // 推进 units 个逻辑时间单位；最多处理 budget 个事件
-    // 返回 true  = 时间已推进到 m_time+units（窗口内无更多事件 / 队列空）
-    // 返回 false = 预算耗尽，时间停在最后处理的事件时间
     bool run(quint64 units, quint64 budget = 0);
-
-    // 只处理 m_time 时刻的已排队事件，不推进时间
     int drainNow(quint64 budget = 0);
 
-    // ---- 查询 ----
     quint64 time() const { return m_time; }
     bool isIdle() const { return m_queue.empty(); }
     quint64 totalEventsProcessed() const { return m_totalEventsProcessed; }
     int nodeCount() const { return m_nodes.size(); }
     QString getOutput(const QString& compId, int port = 0) const;
     QStringList getOutputs(const QString& compId) const;
+
+    // ---- 脏节点追踪（性能优化）----
+    // 每次 recalcNode 输出变化 / trigger* 修改输出时，把节点 qid 加入
+    // takeDirtyQids() 取走并清空
+    QVector<QString> takeDirtyQids() {
+        QVector<QString> r;
+        r.swap(m_dirtyQids);
+        return r;
+    }
+    void clearDirtyQids() { m_dirtyQids.clear(); }
+    int dirtyCount() const { return m_dirtyQids.size(); }
 
 private:
     struct Node {
@@ -97,11 +89,11 @@ private:
         enum Kind { Recalc, Wire } kind;
         quint64 time;
         quint64 seq;
-        int     nodeIdx;   // Recalc: 目标节点；Wire: 源节点
-        int     port;      // Wire: 源端口
-        int     toIdx;     // Wire: 目标节点
-        int     toPort;    // Wire: 目标端口
-        QString value;     // Wire: 携带的值
+        int     nodeIdx;
+        int     port;
+        int     toIdx;
+        int     toPort;
+        QString value;
         bool operator<(const Event& o) const {
             if (time != o.time) return time > o.time;
             return seq > o.seq;
@@ -123,6 +115,8 @@ private:
 
     QHash<QString, quint64> m_gateDelays;
     Options m_opts;
+
+    QVector<QString> m_dirtyQids;
 
     static quint64 pkey(int idx, int port) {
         return (quint64(quint32(idx)) << 16) | quint64(port & 0xFFFF);

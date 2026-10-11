@@ -9,7 +9,10 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QFile>
+#include <QSaveFile>
 #include <QFileInfo>
+#include <QUrl>
+#include <QDir>
 #include <QDateTime>
 #include <QDebug>
 
@@ -120,72 +123,97 @@ void Circuit::rebuildEventEngine() {
     }
     m_eventEngine->build(m_root.components, m_root.wires, subComps, subWires);
     m_engineDirty = false;
+    m_needFullApply = true;  // 全量回填一次
+}
+
+// ---------- 单个元件的输出回填（内部辅助）----------
+static void updateOneComponent(QVariantMap& c,
+                               EventEngine* eng,
+                               const QHash<QString, CircuitContext>& subContexts)
+{
+    QString localId = c.value("id").toString();
+    QString type = c.value("type").toString();
+
+    if (type == "sub") {
+        QString subId = c.value("subId").toString();
+        auto sit = subContexts.find(subId);
+        if (sit == subContexts.end()) return;
+
+        QVariantList outVals;
+        for (const auto& scv : sit.value().components) {
+            QVariantMap sc = scv.toMap();
+            if (sc.value("type").toString() != "output") continue;
+            QString innerQid = localId + "/" + sc.value("id").toString();
+            QStringList outs = eng->getOutputs(innerQid);
+            QString v = outs.isEmpty() ? QString() : outs[0];
+            if (v.isEmpty()) {
+                int w = sc.value("bitWidth").toInt();
+                if (w < 1) w = 1;
+                v = QString(w, '0');
+            }
+            outVals.append(v);
+        }
+        if (!outVals.isEmpty()) c["outputPorts"] = outVals;
+
+        QVariantList inVals;
+        for (const auto& scv : sit.value().components) {
+            QVariantMap sc = scv.toMap();
+            if (sc.value("type").toString() != "input") continue;
+            QString innerQid = localId + "/" + sc.value("id").toString();
+            QStringList outs = eng->getOutputs(innerQid);
+            QString v = outs.isEmpty() ? QString() : outs[0];
+            if (v.isEmpty()) {
+                int w = sc.value("bitWidth").toInt();
+                if (w < 1) w = 1;
+                v = QString(w, '0');
+            }
+            inVals.append(v);
+        }
+        if (!inVals.isEmpty()) c["inputPortValues"] = inVals;
+        return;
+    }
+
+    QStringList outs = eng->getOutputs(localId);
+    if (!outs.isEmpty()) {
+        QVariantList ops;
+        ops.reserve(outs.size());
+        for (const auto& s : outs) ops.append(s);
+        c["outputPorts"] = ops;
+    }
+    if (type == "output" || type == "led") {
+        if (!outs.isEmpty()) {
+            QVariantList ips;
+            ips.reserve(outs.size());
+            for (const auto& s : outs) ips.append(s);
+            c["inputPortValues"] = ips;
+        }
+    }
 }
 
 void Circuit::applyEngineOutputsToContexts() {
     if (!m_eventEngine) return;
 
-    for (int i = 0; i < m_root.components.size(); ++i) {
-        QVariantMap c = m_root.components[i].toMap();
-        QString localId = c.value("id").toString();
-        QString type = c.value("type").toString();
-
-        if (type == "sub") {
-            QString subId = c.value("subId").toString();
-            auto sit = m_subContexts.find(subId);
-            if (sit == m_subContexts.end()) continue;
-
-            QVariantList outVals;
-            for (const auto& scv : sit.value().components) {
-                QVariantMap sc = scv.toMap();
-                if (sc.value("type").toString() != "output") continue;
-                QString innerQid = localId + "/" + sc.value("id").toString();
-                QStringList outs = m_eventEngine->getOutputs(innerQid);
-                QString v = outs.isEmpty() ? QString() : outs[0];
-                if (v.isEmpty()) {
-                    int w = sc.value("bitWidth").toInt();
-                    if (w < 1) w = 1;
-                    v = QString(w, '0');
-                }
-                outVals.append(v);
-            }
-            if (!outVals.isEmpty()) c["outputPorts"] = outVals;
-
-            QVariantList inVals;
-            for (const auto& scv : sit.value().components) {
-                QVariantMap sc = scv.toMap();
-                if (sc.value("type").toString() != "input") continue;
-                QString innerQid = localId + "/" + sc.value("id").toString();
-                QStringList outs = m_eventEngine->getOutputs(innerQid);
-                QString v = outs.isEmpty() ? QString() : outs[0];
-                if (v.isEmpty()) {
-                    int w = sc.value("bitWidth").toInt();
-                    if (w < 1) w = 1;
-                    v = QString(w, '0');
-                }
-                inVals.append(v);
-            }
-            if (!inVals.isEmpty()) c["inputPortValues"] = inVals;
-
+    if (m_needFullApply) {
+        m_needFullApply = false;
+        for (int i = 0; i < m_root.components.size(); ++i) {
+            QVariantMap c = m_root.components[i].toMap();
+            updateOneComponent(c, m_eventEngine, m_subContexts);
             m_root.components[i] = c;
-            continue;
         }
+        m_eventEngine->clearDirtyQids();
+        return;
+    }
 
-        QStringList outs = m_eventEngine->getOutputs(localId);
-        if (!outs.isEmpty()) {
-            QVariantList ops;
-            ops.reserve(outs.size());
-            for (const auto& s : outs) ops.append(s);
-            c["outputPorts"] = ops;
-        }
-        if (type == "output" || type == "led") {
-            if (!outs.isEmpty()) {
-                QVariantList ips;
-                ips.reserve(outs.size());
-                for (const auto& s : outs) ips.append(s);
-                c["inputPortValues"] = ips;
-            }
-        }
+    // 增量路径：只处理本次输出变化的节点
+    QVector<QString> dirty = m_eventEngine->takeDirtyQids();
+    if (dirty.isEmpty()) return;
+
+    for (const QString& qid : dirty) {
+        if (qid.contains('/')) continue;  // 子电路内节点，不进 root
+        int i = m_root.indexOfComponent(qid);
+        if (i < 0) continue;
+        QVariantMap c = m_root.components[i].toMap();
+        updateOneComponent(c, m_eventEngine, m_subContexts);
         m_root.components[i] = c;
     }
 }
@@ -218,6 +246,8 @@ void Circuit::clear() {
     m_errors.clear();
     m_clockStates.clear();
     m_clockTickCount = 0;
+    m_clipboardCache.clear();
+    m_needFullApply = true;
     if (m_clockRunning) stopClock();
     if (m_simulationRunning) pauseSimulation();
     if (m_eventEngine) m_eventEngine->clear();
@@ -290,6 +320,7 @@ bool Circuit::fromJson(const QVariantMap& data) {
     m_clockFrequency = dec.clockFrequency;
     m_clockTickCount = dec.clockTickCount;
     m_engineType = dec.engineType;
+    m_needFullApply = true;
 
     if (m_eventEngine) {
         m_eventEngine->setGlobalGateDelay(dec.globalGateDelay);
@@ -331,8 +362,7 @@ bool Circuit::fromJson(const QVariantMap& data) {
     return true;
 }
 
-// 从字节流里提取第一个完整的 { ... } 块
-// 用于读取被写坏的文件（末尾有旧内容残留）
+// 从字节流里提取第一个完整的 { ... } 块（字符串内的 { } 会正确跳过）
 static QByteArray extractFirstJsonObject(const QByteArray& data) {
     int depth = 0;
     int start = -1;
@@ -343,7 +373,7 @@ static QByteArray extractFirstJsonObject(const QByteArray& data) {
         if (esc) { esc = false; continue; }
         if (inStr) {
             if (c == '\\') { esc = true; continue; }
-            if (c == '"')   { inStr = false; }
+            if (c == '"')  { inStr = false; }
             continue;
         }
         if (c == '"') { inStr = true; continue; }
@@ -359,36 +389,82 @@ static QByteArray extractFirstJsonObject(const QByteArray& data) {
     return QByteArray();
 }
 
+// data 是否以 clean 为首个完整 JSON + 后面只有空白
+static bool isCleanTail(const QByteArray& data, const QByteArray& clean) {
+    if (clean.isEmpty()) return false;
+    for (int i = clean.size(); i < data.size(); ++i) {
+        char c = data[i];
+        if (c != ' ' && c != '\t' && c != '\n' && c != '\r')
+            return false;
+    }
+    return true;
+}
+
 bool Circuit::saveToFile(const QString& path) {
-    QFile f(path);
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) return false;
+    if (path.isEmpty()) return false;
+
     QJsonObject obj = QJsonObject::fromVariantMap(toJson());
-    f.write(QJsonDocument(obj).toJson(QJsonDocument::Indented));
+    QByteArray bytes = QJsonDocument(obj).toJson(QJsonDocument::Indented);
+    if (bytes.isEmpty()) return false;
+
+    QFile f(path);
+
+    if (path.startsWith("content://")) {
+        // Android SAF：ContentResolver 不支持 Truncate flag
+        // 直接 WriteOnly，系统会替换内容
+        if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
+            qWarning() << "[saveToFile] content:// open failed:" << path
+                       << "reason:" << f.errorString();
+            return false;
+        }
+    } else {
+        // 桌面 / file:// 路径：带 Truncate，杜绝旧内容残留
+        QString local = path;
+        if (local.startsWith("file://")) {
+            local = QUrl(local).toLocalFile();
+        }
+        f.setFileName(local);
+        if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
+            qWarning() << "[saveToFile] open failed:" << local
+                       << "reason:" << f.errorString();
+            return false;
+        }
+    }
+
+    qint64 n = f.write(bytes);
+    if (n != bytes.size()) {
+        qWarning() << "[saveToFile] short write:" << n << "/" << bytes.size()
+                   << "reason:" << f.errorString();
+        f.close();
+        return false;
+    }
+    if (!f.flush()) {
+        qWarning() << "[saveToFile] flush failed:" << f.errorString();
+    }
     f.close();
     addRecentFile(path);
     return true;
 }
 
 bool Circuit::loadFromFile(const QString& path) {
+    if (path.isEmpty()) return false;
+
     QFile f(path);
-    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) return false;
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        qWarning() << "[loadFromFile] open failed:" << path
+                   << "reason:" << f.errorString();
+        return false;
+    }
     QByteArray data = f.readAll();
     f.close();
 
     QJsonParseError err;
     QJsonDocument doc = QJsonDocument::fromJson(data, &err);
-
     if (err.error != QJsonParseError::NoError) {
-        // 末尾有垃圾（旧内容残留），提取第一个完整的 { ... }
-        QByteArray clean = extractFirstJsonObject(data);
-        if (clean.isEmpty() || clean == data) return false;
-        QJsonParseError err2;
-        QJsonDocument doc2 = QJsonDocument::fromJson(clean, &err2);
-        if (err2.error != QJsonParseError::NoError || !doc2.isObject())
-            return false;
-        doc = doc2;
+        qWarning() << "[loadFromFile] JSON parse error:" << err.errorString()
+                   << "at offset" << err.offset;
+        return false;
     }
-
     if (!doc.isObject()) return false;
     bool ok = fromJson(doc.object().toVariantMap());
     if (ok) addRecentFile(path);

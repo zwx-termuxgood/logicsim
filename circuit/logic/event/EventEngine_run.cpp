@@ -181,6 +181,9 @@ void EventEngine::recalcNode(int idx) {
     }
     if (!changed) return;
 
+    // 记录输出变化的节点，供 Circuit 侧增量更新
+    m_dirtyQids.append(n.qid);
+
     quint64 at = m_time + gateDelayFor(n.type);
     for (int p = 0; p < n.outVals.size(); ++p) {
         auto it = m_outDests.constFind(pkey(idx, p));

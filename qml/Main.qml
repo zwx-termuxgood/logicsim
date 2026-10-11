@@ -172,14 +172,17 @@ ApplicationWindow {
         var wrs = circuit.wires
         cachedComps = comps
         cachedWires = wrs
+        // 性能：一次 C++ 调用返回所有端口信息，避免 2N 次跨语言调用
+        var allPorts = circuit.allPortsInfo()
         var m = {}, op = {}, ip = {}
         var ids = []
         var props = {}
         for (var i = 0; i < comps.length; i++) {
             var c = comps[i]
             m[c.id] = c
-            op[c.id] = circuit.outputPortsInfo(c.id)
-            ip[c.id] = circuit.inputPortsInfo(c.id)
+            var p = allPorts[c.id]
+            op[c.id] = p ? (p.out || []) : []
+            ip[c.id] = p ? (p.in  || []) : []
             ids.push(c.id)
             props[c.id] = {
                 bitWidth: c.bitWidth,

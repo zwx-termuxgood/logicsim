@@ -208,6 +208,9 @@ private:
     QVariantList m_errors;
     QVariantList m_recentFiles;
 
+    QVariantList m_clipboardCache;      // 剪贴板 C++ 缓存（避免 QML 往返破坏深层结构）
+    bool         m_needFullApply = true; // 事件引擎重建后需要一次全量回填
+
     bool m_clockRunning = false;
     int m_clockFrequency = 2;
     int m_clockTickCount = 0;

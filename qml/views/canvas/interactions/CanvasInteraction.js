@@ -1,13 +1,41 @@
 .pragma library
 
 // ============================================================
-// CanvasView 的鼠标交互逻辑
-// 所有函数接收 (main, cv, event)，其中：
-//   main = Main.qml 的 root 对象
-//   cv   = CanvasView 的根 Item，用于访问 compSize / worldToScreen
-//          / screenToWorld / portPos / bitIndexAt / requestPaint
-//          / panning / draggingComp / dragCompId / lastMouseX / lastMouseY
+// 端口命中检测：返回鼠标下最近的端口
+//   { compId, portIdx, isOutput } 或 null
+// 任意端口（输入 or 输出）都可作为起点或终点
 // ============================================================
+function findPortAt(main, cv, sx, sy) {
+    var comps = main.cachedComps
+    var best = null
+    var bestDist = 900   // 30px 半径
+    for (var i = 0; i < comps.length; i++) {
+        var c = comps[i]
+        var outs = main.outPortsById[c.id] || []
+        for (var k = 0; k < outs.length; k++) {
+            var p = outs[k]
+            var pp = cv.worldToScreen(c.x + p.x, c.y + p.y)
+            var dx = sx - pp.x, dy = sy - pp.y
+            var d = dx*dx + dy*dy
+            if (d < bestDist) {
+                bestDist = d
+                best = { compId: c.id, portIdx: k, isOutput: true }
+            }
+        }
+        var ins = main.inPortsById[c.id] || []
+        for (var k2 = 0; k2 < ins.length; k2++) {
+            var p2 = ins[k2]
+            var pp2 = cv.worldToScreen(c.x + p2.x, c.y + p2.y)
+            var dx2 = sx - pp2.x, dy2 = sy - pp2.y
+            var d2 = dx2*dx2 + dy2*dy2
+            if (d2 < bestDist) {
+                bestDist = d2
+                best = { compId: c.id, portIdx: k2, isOutput: false }
+            }
+        }
+    }
+    return best
+}
 
 function onPressed(main, cv, mouse) {
     cv.lastMouseX = mouse.x; cv.lastMouseY = mouse.y
@@ -21,7 +49,7 @@ function onPressed(main, cv, mouse) {
                                                  main.placingInputCount,
                                                  subId)
         if (newId === "") {
-            main.statusText = "⚠ 无法放置：会造成子电路循环引用"
+            main.statusText = "⚠ 无法放置"
         } else {
             main.selectedCompId = newId
             main.refreshSel()
@@ -55,44 +83,18 @@ function onPressed(main, cv, mouse) {
         return
     }
 
+    // 编辑模式：任意端口都能开始拖拽
     if (editable && main.mode === "edit") {
-        for (var i2 = comps.length - 1; i2 >= 0; i2--) {
-            var c2 = comps[i2]
-            var outs = main.outPortsById[c2.id] || []
-            for (var k = 0; k < outs.length; k++) {
-                var p = outs[k]
-                var pp = cv.worldToScreen(c2.x + p.x, c2.y + p.y)
-                var dx = mouse.x - pp.x, dy = mouse.y - pp.y
-                if (dx*dx + dy*dy < 900) {
-                    main.wiringFromComp = c2.id
-                    main.wiringFromPort = k
-                    main.wiringStartIsOutput = true
-                    main.wiring = true
-                    main.wireEndX = mouse.x
-                    main.wireEndY = mouse.y
-                    cv.requestPaint()
-                    return
-                }
-            }
-        }
-        for (var i3 = comps.length - 1; i3 >= 0; i3--) {
-            var c3 = comps[i3]
-            var ins = main.inPortsById[c3.id] || []
-            for (var k3 = 0; k3 < ins.length; k3++) {
-                var p3 = ins[k3]
-                var pp3 = cv.worldToScreen(c3.x + p3.x, c3.y + p3.y)
-                var dx3 = mouse.x - pp3.x, dy3 = mouse.y - pp3.y
-                if (dx3*dx3 + dy3*dy3 < 900) {
-                    main.wiringFromComp = c3.id
-                    main.wiringFromPort = k3
-                    main.wiringStartIsOutput = false
-                    main.wiring = true
-                    main.wireEndX = mouse.x
-                    main.wireEndY = mouse.y
-                    cv.requestPaint()
-                    return
-                }
-            }
+        var port = findPortAt(main, cv, mouse.x, mouse.y)
+        if (port) {
+            main.wiringFromComp = port.compId
+            main.wiringFromPort = port.portIdx
+            main.wiringStartIsOutput = port.isOutput
+            main.wiring = true
+            main.wireEndX = mouse.x
+            main.wireEndY = mouse.y
+            cv.requestPaint()
+            return
         }
     }
 
@@ -186,47 +188,25 @@ function onReleased(main, cv, mouse) {
     }
 
     if (main.wiring) {
-        var comps = main.cachedComps
-        var hitTo = false
-
-        if (main.wiringStartIsOutput) {
-            for (var i = comps.length - 1; i >= 0 && !hitTo; i--) {
-                var c = comps[i]
-                var ins = main.inPortsById[c.id] || []
-                for (var k = 0; k < ins.length; k++) {
-                    var p = ins[k]
-                    var pp = cv.worldToScreen(c.x + p.x, c.y + p.y)
-                    var dx = mouse.x - pp.x, dy = mouse.y - pp.y
-                    if (dx*dx + dy*dy < 900) {
-                        if (!(c.id === main.wiringFromComp && k === main.wiringFromPort)) {
-                            main.circuitRef.addWire(main.wiringFromComp,
-                                                    main.wiringFromPort, c.id, k)
-                            main.statusText = "已连线"
-                        }
-                        hitTo = true
-                        break
-                    }
+        var port = findPortAt(main, cv, mouse.x, mouse.y)
+        if (port) {
+            var startComp = main.wiringFromComp
+            var startPort = main.wiringFromPort
+            var startIsOut = main.wiringStartIsOutput
+            var same = (port.compId === startComp
+                        && port.portIdx === startPort
+                        && port.isOutput === startIsOut)
+            if (!same) {
+                if (startIsOut) {
+                    // 起点是输出：作为 from
+                    main.circuitRef.addWire(startComp, startPort,
+                                            port.compId, port.portIdx)
+                } else {
+                    // 起点是输入：反转，终点作为 from
+                    main.circuitRef.addWire(port.compId, port.portIdx,
+                                            startComp, startPort)
                 }
-            }
-        } else {
-            for (var i4b = comps.length - 1; i4b >= 0 && !hitTo; i4b--) {
-                var c4b = comps[i4b]
-                var outs = main.outPortsById[c4b.id] || []
-                for (var k4b = 0; k4b < outs.length; k4b++) {
-                    var p4b = outs[k4b]
-                    var pp4b = cv.worldToScreen(c4b.x + p4b.x, c4b.y + p4b.y)
-                    var dx4b = mouse.x - pp4b.x, dy4b = mouse.y - pp4b.y
-                    if (dx4b*dx4b + dy4b*dy4b < 900) {
-                        if (!(c4b.id === main.wiringFromComp && k4b === main.wiringFromPort)) {
-                            main.circuitRef.addWire(c4b.id, k4b,
-                                                    main.wiringFromComp,
-                                                    main.wiringFromPort)
-                            main.statusText = "已连线"
-                        }
-                        hitTo = true
-                        break
-                    }
-                }
+                main.statusText = "已连线"
             }
         }
         main.wiring = false
