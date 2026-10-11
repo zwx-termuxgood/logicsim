@@ -19,6 +19,7 @@ void EventEngine::triggerInputBit(const QString& compId, int bit, bool value) {
         for (int i = 0; i < s.length(); ++i) bits.append(s[i] == '1');
         n.raw["inputBits"] = bits;
     }
+    markDirty(n.qid);
 
     quint64 at = m_time + m_opts.wireDelay;
     auto it = m_outDests.constFind(pkey(idx, 0));
@@ -45,6 +46,7 @@ void EventEngine::triggerInputString(const QString& compId, const QString& binSt
         for (int i = 0; i < s.length(); ++i) bits.append(s[i] == '1');
         n.raw["inputBits"] = bits;
     }
+    markDirty(n.qid);
 
     quint64 at = m_time + m_opts.wireDelay;
     auto it = m_outDests.constFind(pkey(idx, 0));
@@ -77,6 +79,7 @@ void EventEngine::triggerClockToggle(const QString& compId) {
         ops.append(s);
         n.raw["outputPorts"] = ops;
     }
+    markDirty(n.qid);
 
     quint64 at = m_time + m_opts.wireDelay;
     auto it = m_outDests.constFind(pkey(idx, 0));
@@ -100,6 +103,7 @@ void EventEngine::triggerForceOutput(const QString& compId, int port, const QStr
 
     if (n.outVals[port] == value) return;
     n.outVals[port] = value;
+    markDirty(n.qid);
 
     quint64 at = m_time + m_opts.wireDelay;
     auto it = m_outDests.constFind(pkey(idx, port));
@@ -124,5 +128,15 @@ QStringList EventEngine::getOutputs(const QString& compId) const {
     QStringList out;
     out.reserve(n.outVals.size());
     for (const auto& s : n.outVals) out << s;
+    return out;
+}
+
+QStringList EventEngine::getInputs(const QString& compId) const {
+    int idx = idxOf(compId);
+    if (idx < 0) return QStringList();
+    const Node& n = m_nodes[idx];
+    QStringList out;
+    out.reserve(n.inVals.size());
+    for (const auto& s : n.inVals) out << s;
     return out;
 }

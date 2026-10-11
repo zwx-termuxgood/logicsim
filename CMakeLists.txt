@@ -55,6 +55,7 @@ set(QML_SOURCES
     qml/views/dialogs/MenuPopup.qml
     qml/views/dialogs/RecentPopup.qml
     qml/views/dialogs/StatsPopup.qml
+    qml/views/dialogs/UnsavedDialog.qml
 )
 
 set_source_files_properties(qml/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)

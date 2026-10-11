@@ -42,6 +42,7 @@ void EventEngine::clear() {
     m_seq = 0;
     m_totalEventsProcessed = 0;
     m_dirtyQids.clear();
+    m_dirtySet.clear();
 }
 
 void EventEngine::reset() {
@@ -58,6 +59,7 @@ void EventEngine::reset() {
     m_seq = 0;
     m_totalEventsProcessed = 0;
     m_dirtyQids.clear();
+    m_dirtySet.clear();
 
     for (auto& n : m_nodes) {
         for (auto& s : n.inVals)  s = QString(s.length(), '0');

@@ -76,6 +76,7 @@ ApplicationWindow {
     property var clipboardData: null
 
     property bool dirty: false
+    property var  pendingAfterSave: null   // 保存成功后要执行的挂起动作
     property string currentFilePath: ""
 
     property bool boxSelecting: false
@@ -94,6 +95,7 @@ ApplicationWindow {
     property alias closeConfirmRef: closeConfirm
     property alias exitConfirmRef: exitConfirm
     property alias confirmDialogRef: confirmDialog
+    property alias unsavedDialogRef: unsavedDialog
     property alias statPopupRef: statPopup
     property alias recentPopupRef: recentPopup
     property alias contextPopupRef: contextPopup
@@ -168,6 +170,7 @@ ApplicationWindow {
     }
 
     function rebuildCachesFull() {
+        canvasView.clearSizeCache()
         var comps = circuit.components
         var wrs = circuit.wires
         cachedComps = comps
@@ -291,6 +294,23 @@ ApplicationWindow {
     }
 
     function quitApp() { root.forceQuit = true; Qt.quit() }
+
+    // 统一的"打开文件"入口：
+    //   dirty → 先问是否保存（保存/不保存/取消），通过后才执行 action
+    //   否则直接执行 action
+    function doOpenFile(action) {
+        console.log("[QMLTRACE] doOpenFile ENTER, dirty=", dirty,
+                    "currentFilePath=", currentFilePath)
+        if (dirty) {
+            console.log("[QMLTRACE] doOpenFile: dirty=true, opening UnsavedDialog")
+            unsavedDialog.pendingAction = action
+            unsavedDialog.open()
+        } else {
+            console.log("[QMLTRACE] doOpenFile: dirty=false, calling action directly")
+            action()
+            console.log("[QMLTRACE] doOpenFile: action returned")
+        }
+    }
 
     function doSave() {
         if (currentFilePath === "") { saveDialog.open(); return }
@@ -484,6 +504,7 @@ ApplicationWindow {
     CloseConfirmDialog { id: closeConfirm; main: root }
     ExitConfirmDialog { id: exitConfirm; main: root }
     ConfirmDialog { id: confirmDialog; main: root }
+    UnsavedDialog { id: unsavedDialog; main: root }
     StatsPopup { id: statPopup; main: root }
     RecentPopup { id: recentPopup; main: root }
     ContextPopup { id: contextPopup; main: root; anchorItem: topBar.ctxBtn }
@@ -507,9 +528,13 @@ ApplicationWindow {
             var path = root.fileUrlToLocal(selectedFile)
             if (circuit.saveToFile(path)) {
                 root.currentFilePath = path
+                console.log("[QMLTRACE] saveDialog: currentFilePath set to", root.currentFilePath)
                 root.dirty = false
                 root.statusText = "已保存：" + path
                 if (root.saveBeforeExit) { root.saveBeforeExit = false; root.quitApp() }
+                var act = root.pendingAfterSave
+                root.pendingAfterSave = null
+                if (act) act()
             } else {
                 root.statusText = "保存失败：" + path
                 root.saveBeforeExit = false

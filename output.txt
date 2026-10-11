@@ -247,7 +247,11 @@ app/
 │             QStringList qids = engineQidsFor(m_currentCtxId, id);
 │             for (const auto& qid : qids)
 │                 m_eventEngine->triggerInputString(qid, binStr);
-│             applyEngineOutputsToContexts();
+│             quint64 wd = m_eventEngine->wireDelay();
+│             quint64 gd = m_eventEngine->globalGateDelay();
+│             quint64 advance = (wd + gd) * 8 + 20;
+│             m_eventEngine->run(advance, 200000);
+│     applyEngineOutputsToContexts();
 │             emit simulationTick();
 │         } else {
 │             evaluateAll();
@@ -278,7 +282,11 @@ app/
 │             QStringList qids = engineQidsFor(m_currentCtxId, id);
 │             for (const auto& qid : qids)
 │                 m_eventEngine->triggerInputBit(qid, bit, value);
-│             applyEngineOutputsToContexts();
+│             quint64 wd = m_eventEngine->wireDelay();
+│             quint64 gd = m_eventEngine->globalGateDelay();
+│             quint64 advance = (wd + gd) * 8 + 20;
+│             m_eventEngine->run(advance, 200000);
+│     applyEngineOutputsToContexts();
 │             emit simulationTick();
 │         } else {
 │             evaluateAll();
@@ -446,7 +454,10 @@ app/
 │     #include <QJsonDocument>
 │     #include <QJsonObject>
 │     #include <QFile>
+│     #include <QSaveFile>
 │     #include <QFileInfo>
+│     #include <QUrl>
+│     #include <QDir>
 │     #include <QDateTime>
 │     #include <QDebug>
 │     
@@ -522,13 +533,20 @@ app/
 │         }
 │     
 │         if (m_engineType == "event") {
-│             m_engineDirty = true;
-│             emit subcircuitsChanged();
-│             return;
+│             if (m_simulationRunning && m_eventEngine) {
+│                 // 仿真进行中：立即重建引擎，让编辑（新门、新连线、属性变化）立即生效
+│                 rebuildEventEngine();
+│                 applyEngineOutputsToContexts();
+│             } else {
+│                 // 未仿真：等用户点"开始仿真"时再重建
+│                 m_engineDirty = true;
+│             }
+│         } else {
+│             IterEngine::evaluateAll(m_root, m_subContexts);
 │         }
 │     
-│         IterEngine::evaluateAll(m_root, m_subContexts);
-│     
+│         // 无论哪个引擎，都独立求值一次当前子电路
+│         // （与旧引擎行为一致：编辑视图下的子电路始终显示它作为独立电路的求值结果）
 │         if (!m_currentCtxId.isEmpty()) {
 │             auto it = m_subContexts.find(m_currentCtxId);
 │             if (it != m_subContexts.end())
@@ -557,7 +575,8 @@ app/
 │         }
 │         m_eventEngine->build(m_root.components, m_root.wires, subComps, subWires);
 │         m_engineDirty = false;
-│         m_needFullApply = true;  // 全量回填一次
+│         m_needFullApply = true;
+│         m_ctxSubInstCache.clear();  // 全量回填一次
 │     }
 │     
 │     // ---------- 单个元件的输出回填（内部辅助）----------
@@ -642,33 +661,51 @@ app/
 │         QVector<QString> dirty = m_eventEngine->takeDirtyQids();
 │         if (dirty.isEmpty()) return;
 │     
+│         // 一次性建索引：O(C)
+│         QHash<QString, int> idToIdx;
+│         idToIdx.reserve(m_root.components.size() * 2);
+│         for (int i = 0; i < m_root.components.size(); ++i)
+│             idToIdx.insert(m_root.components[i].toMap().value("id").toString(), i);
+│     
 │         for (const QString& qid : dirty) {
 │             if (qid.contains('/')) continue;  // 子电路内节点，不进 root
-│             int i = m_root.indexOfComponent(qid);
+│             int i = idToIdx.value(qid, -1);
 │             if (i < 0) continue;
 │             QVariantMap c = m_root.components[i].toMap();
 │             updateOneComponent(c, m_eventEngine, m_subContexts);
 │             m_root.components[i] = c;
 │         }
+│     
+│         refreshCurrentSubContext();
 │     }
 │     
 │     QStringList Circuit::engineQidsFor(const QString& ctxId, const QString& localCompId) const {
-│         QStringList result;
-│         if (ctxId.isEmpty()) {
-│             result << localCompId;
-│             return result;
-│         }
-│         for (const auto& cv : m_root.components) {
-│             QVariantMap c = cv.toMap();
-│             if (c.value("type").toString() != "sub") continue;
-│             if (c.value("subId").toString() == ctxId) {
-│                 result << (c.value("id").toString() + "/" + localCompId);
+│         if (ctxId.isEmpty()) return QStringList{ localCompId };
+│     
+│         // 惰性构建/复用：ctxId → 该子电路的所有实例 localId 列表
+│         auto it = m_ctxSubInstCache.constFind(ctxId);
+│         QStringList instIds;
+│         if (it != m_ctxSubInstCache.constEnd()) {
+│             instIds = it.value();
+│         } else {
+│             for (const auto& cv : m_root.components) {
+│                 QVariantMap c = cv.toMap();
+│                 if (c.value("type").toString() != "sub") continue;
+│                 if (c.value("subId").toString() == ctxId)
+│                     instIds.append(c.value("id").toString());
 │             }
+│             m_ctxSubInstCache.insert(ctxId, instIds);
 │         }
+│     
+│         QStringList result;
+│         result.reserve(instIds.size());
+│         for (const QString& instId : instIds)
+│             result.append(instId + "/" + localCompId);
 │         return result;
 │     }
 │     
 │     void Circuit::clear() {
+│         qWarning() << "[FPTRACE] Circuit::clear() ENTER";
 │         if (m_viewOnly) return;
 │         pushUndo();
 │         m_root = Context();
@@ -697,18 +734,20 @@ app/
 │     void Circuit::refreshErrors() {
 │         m_errors.clear();
 │         auto checkCtx = [&](const Context& ctx, const QString& label) {
+│             // 一次性建索引：O(C)
+│             QHash<QString, int> idToIdx;
+│             idToIdx.reserve(ctx.components.size() * 2);
+│             for (int i = 0; i < ctx.components.size(); ++i)
+│                 idToIdx.insert(ctx.components[i].toMap().value("id").toString(), i);
+│     
 │             for (auto& wv : ctx.wires) {
 │                 QVariantMap w = wv.toMap();
 │                 QString fromId = w.value("fromComp").toString();
 │                 QString toId = w.value("toComp").toString();
 │                 int fromPort = w.value("fromPort").toInt();
 │                 int toPort = w.value("toPort").toInt();
-│                 int fi = -1, ti = -1;
-│                 for (int i = 0; i < ctx.components.size(); ++i) {
-│                     QString cid = ctx.components[i].toMap().value("id").toString();
-│                     if (cid == fromId) fi = i;
-│                     if (cid == toId) ti = i;
-│                 }
+│                 int fi = idToIdx.value(fromId, -1);
+│                 int ti = idToIdx.value(toId, -1);
 │                 if (fi < 0 || ti < 0) continue;
 │                 int fbw = ComponentLogic::outputBitWidth(ctx.components[fi].toMap(), fromPort);
 │                 int tbw = ComponentLogic::inputBitWidth(ctx.components[ti].toMap(), toPort);
@@ -835,71 +874,161 @@ app/
 │     }
 │     
 │     bool Circuit::saveToFile(const QString& path) {
-│         QFile f(path);
-│         // ★ 显式 Truncate，防止旧内容残留（QIODevice::WriteOnly 不保证截断）
-│         if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text))
+│         qWarning() << "[FPTRACE] saveToFile ENTER path=" << path;
+│         if (path.isEmpty()) {
+│             qWarning() << "[FPTRACE] saveToFile EXIT: empty";
 │             return false;
+│         }
+│     
 │         QJsonObject obj = QJsonObject::fromVariantMap(toJson());
-│         f.write(QJsonDocument(obj).toJson(QJsonDocument::Indented));
+│         QByteArray bytes = QJsonDocument(obj).toJson(QJsonDocument::Indented);
+│         if (bytes.isEmpty()) return false;
+│     
+│         QFile f(path);
+│     
+│         if (path.startsWith("content://")) {
+│             // Android SAF：ContentResolver 不支持 Truncate flag
+│             // 直接 WriteOnly，系统会替换内容
+│             if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
+│                 qWarning() << "[saveToFile] content:// open failed:" << path
+│                            << "reason:" << f.errorString();
+│                 return false;
+│             }
+│         } else {
+│             // 桌面 / file:// 路径：带 Truncate，杜绝旧内容残留
+│             QString local = path;
+│             if (local.startsWith("file://")) {
+│                 local = QUrl(local).toLocalFile();
+│             }
+│             f.setFileName(local);
+│             if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
+│                 qWarning() << "[saveToFile] open failed:" << local
+│                            << "reason:" << f.errorString();
+│                 return false;
+│             }
+│         }
+│     
+│         qint64 n = f.write(bytes);
+│         if (n != bytes.size()) {
+│             qWarning() << "[saveToFile] short write:" << n << "/" << bytes.size()
+│                        << "reason:" << f.errorString();
+│             f.close();
+│             return false;
+│         }
+│         if (!f.flush()) {
+│             qWarning() << "[saveToFile] flush failed:" << f.errorString();
+│         }
 │         f.close();
+│         qWarning() << "[FPTRACE] saveToFile: file written, about to addRecentFile path=" << path;
 │         addRecentFile(path);
+│         qWarning() << "[FPTRACE] saveToFile EXIT OK path=" << path;
 │         return true;
 │     }
 │     
 │     bool Circuit::loadFromFile(const QString& path) {
+│         qWarning() << "[FPTRACE] loadFromFile ENTER path=" << path;
+│         if (path.isEmpty()) {
+│             qWarning() << "[FPTRACE] loadFromFile EXIT: empty";
+│             return false;
+│         }
+│     
 │         QFile f(path);
-│         if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) return false;
+│         if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+│             qWarning() << "[loadFromFile] open failed:" << path
+│                        << "reason:" << f.errorString();
+│             return false;
+│         }
 │         QByteArray data = f.readAll();
 │         f.close();
+│     
+│         qWarning() << "[FPTRACE] loadFromFile: read" << data.size() << "bytes";
 │     
 │         QJsonParseError err;
 │         QJsonDocument doc = QJsonDocument::fromJson(data, &err);
 │     
-│         bool recovered = false;
-│         QByteArray clean;
+│         QByteArray cleanData;
+│         bool needsHeal = false;
 │     
 │         if (err.error != QJsonParseError::NoError) {
-│             clean = extractFirstJsonObject(data);
-│             if (clean.isEmpty() || clean == data) {
-│                 qWarning() << "[loadFromFile] parse error and cannot recover:"
-│                            << err.errorString() << "at offset" << err.offset;
+│             qWarning() << "[loadFromFile] parse error:" << err.errorString()
+│                        << "at offset" << err.offset
+│                        << "(file size" << data.size() << ")";
+│     
+│             // 尝试从垃圾里提取第一个完整 JSON 对象
+│             cleanData = extractFirstJsonObject(data);
+│             if (cleanData.isEmpty()) {
+│                 qWarning() << "[loadFromFile] extract returned empty, cannot recover";
 │                 return false;
 │             }
-│             if (isCleanTail(data, clean)) {
-│                 // clean 后面只有空白，说明问题不在这里，不恢复
-│                 qWarning() << "[loadFromFile] parse error (no tail garbage):"
-│                            << err.errorString() << "at offset" << err.offset;
+│             if (cleanData.size() == data.size()) {
+│                 qWarning() << "[loadFromFile] extracted size == file size,"
+│                               " not a tail-garbage case";
 │                 return false;
 │             }
+│     
+│             int endPos = data.indexOf(cleanData) + cleanData.size();
+│             needsHeal = !isOnlyWhitespaceFrom(data, endPos);
+│     
+│             qWarning() << "[loadFromFile] extracted" << cleanData.size()
+│                        << "of" << data.size() << "bytes, needsHeal=" << needsHeal;
+│     
 │             QJsonParseError err2;
-│             QJsonDocument doc2 = QJsonDocument::fromJson(clean, &err2);
-│             if (err2.error != QJsonParseError::NoError || !doc2.isObject()) {
-│                 qWarning() << "[loadFromFile] recovered part invalid:"
-│                            << err2.errorString();
+│             QJsonDocument doc2 = QJsonDocument::fromJson(cleanData, &err2);
+│             if (err2.error != QJsonParseError::NoError) {
+│                 qWarning() << "[loadFromFile] extracted part invalid:"
+│                            << err2.errorString() << "at offset" << err2.offset;
 │                 return false;
 │             }
-│             qWarning() << "[loadFromFile] recovered" << clean.size()
-│                        << "of" << data.size() << "bytes";
+│             if (!doc2.isObject()) {
+│                 qWarning() << "[loadFromFile] extracted part is not object";
+│                 return false;
+│             }
 │             doc = doc2;
-│             recovered = true;
 │         }
 │     
-│         if (!doc.isObject()) return false;
+│         if (!doc.isObject()) {
+│             qWarning() << "[FPTRACE] loadFromFile EXIT: not object";
+│             return false;
+│         }
 │     
+│         qWarning() << "[FPTRACE] loadFromFile: about to call fromJson";
 │         bool ok = fromJson(doc.object().toVariantMap());
-│         if (!ok) return false;
+│         qWarning() << "[FPTRACE] loadFromFile: fromJson returned ok=" << ok;
+│         if (!ok) {
+│             qWarning() << "[FPTRACE] loadFromFile EXIT: fromJson failed";
+│             return false;
+│         }
 │     
-│         // 自愈：文件里有垃圾，用干净内容重写一遍
-│         if (recovered) {
+│         // 自愈：把干净内容写回原文件，删掉垃圾
+│         if (needsHeal) {
+│             qWarning() << "[loadFromFile] healing: writing" << cleanData.size()
+│                        << "bytes back to" << path;
 │             QFile wf(path);
-│             if (wf.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
-│                 wf.write(clean);
+│             bool openOk = false;
+│             if (path.startsWith("content://")) {
+│                 // Android SAF：ContentResolver 不支持 Truncate flag
+│                 openOk = wf.open(QIODevice::WriteOnly | QIODevice::Text);
+│             } else {
+│                 openOk = wf.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text);
+│             }
+│             if (openOk) {
+│                 qint64 n = wf.write(cleanData);
 │                 wf.close();
+│                 if (n == cleanData.size())
+│                     qWarning() << "[loadFromFile] heal OK";
+│                 else
+│                     qWarning() << "[loadFromFile] heal short write:" << n
+│                                << "/" << cleanData.size();
+│             } else {
+│                 qWarning() << "[loadFromFile] heal open failed:"
+│                            << wf.errorString();
 │             }
 │         }
 │     
+│         qWarning() << "[FPTRACE] loadFromFile: about to addRecentFile path=" << path;
 │         addRecentFile(path);
-│         return true;
+│         qWarning() << "[FPTRACE] loadFromFile EXIT path=" << path << "ok=" << ok;
+│         return ok;
 │     }
 │     
 │     void Circuit::pushUndo(const QString& mergeKey) {
@@ -1015,7 +1144,12 @@ app/
 │     }
 │     
 │     void Circuit::addRecentFile(const QString& path) {
-│         if (path.isEmpty()) return;
+│         qWarning() << "[FPTRACE] addRecentFile ENTER path=" << path
+│                    << "old_size=" << m_recentFiles.size();
+│         if (path.isEmpty()) {
+│             qWarning() << "[FPTRACE] addRecentFile EXIT: empty";
+│             return;
+│         }
 │         for (int i = m_recentFiles.size() - 1; i >= 0; --i) {
 │             if (m_recentFiles[i].toMap().value("path").toString() == path)
 │                 m_recentFiles.removeAt(i);
@@ -1027,8 +1161,18 @@ app/
 │         m["time"] = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm");
 │         m_recentFiles.prepend(m);
 │         while (m_recentFiles.size() > 10) m_recentFiles.removeLast();
+│         qWarning() << "[FPTRACE] addRecentFile: about to saveRecentFiles";
 │         saveRecentFiles();
-│         emit recentFilesChanged();
+│         qWarning() << "[FPTRACE] addRecentFile: about to EMIT recentFilesChanged (queued)";
+│         // ★ 关键修复：必须用队列连接延迟发信号。
+│         // 若同步 emit，会立即触发 QML 的 onRecentFilesChanged
+│         // → Repeater 同步重建委托 → 委托作用域失效
+│         // → 调用栈上层（loadFromFile 之后的 currentFilePath = path）抛 ReferenceError
+│         // → 路径赋值丢失，后续 saveToFile 写到旧文件
+│         QMetaObject::invokeMethod(this, [this]() {
+│             emit recentFilesChanged();
+│         }, Qt::QueuedConnection);
+│         qWarning() << "[FPTRACE] addRecentFile EXIT path=" << path;
 │     }
 │     
 │     void Circuit::removeRecentFile(const QString& path) {
@@ -1165,7 +1309,11 @@ app/
 │             QStringList qids = engineQidsFor(m_currentCtxId, id);
 │             for (const auto& qid : qids)
 │                 m_eventEngine->triggerInputString(qid, binStr);
-│             applyEngineOutputsToContexts();
+│             quint64 wd = m_eventEngine->wireDelay();
+│             quint64 gd = m_eventEngine->globalGateDelay();
+│             quint64 advance = (wd + gd) * 8 + 20;
+│             m_eventEngine->run(advance, 200000);
+│     applyEngineOutputsToContexts();
 │             emit simulationTick();
 │         } else {
 │             evaluateAll();
@@ -1239,13 +1387,12 @@ app/
 │     #include "../io/ClipboardCodec.h"
 │     
 │     QVariantList Circuit::copySelection(const QStringList& ids) {
-│         // 关键：数据只存在 C++ 侧，QML 里的 clipboardData 仅作"是否复制过"的标记
 │         m_clipboardCache = ClipboardCodec::encode(currentCtx(), ids);
 │         return m_clipboardCache;
 │     }
 │     
 │     QStringList Circuit::pasteSelection(const QVariantList& data, double dx, double dy) {
-│         Q_UNUSED(data);  // 忽略 QML 传回来的可能已被 JS 引擎破坏的数据
+│         Q_UNUSED(data);
 │     
 │         QStringList newIds;
 │         if (m_viewOnly) return newIds;
@@ -1261,6 +1408,8 @@ app/
 │     
 │         evaluateAll();
 │         emit changed();
+│         // ★ 关键修复：QML 需要重建端口缓存，否则新元件的引脚/连线在画布上不可见
+│         emit structureChanged();
 │         return r.newIds;
 │     }
 
@@ -1532,6 +1681,12 @@ app/
 │     
 │     void Circuit::onSimTimerTick() {
 │         if (!m_eventEngine || !m_simulationRunning) return;
+│     
+│         // 电路被编辑过 → 重建引擎
+│         if (m_engineDirty) {
+│             rebuildEventEngine();
+│         }
+│     
 │         quint64 units = m_autoSpeed ? 1000 : (m_simulationSpeed / 60);
 │         if (units < 1) units = 1;
 │         m_eventEngine->run(units, kSimRunBudget);
@@ -1544,6 +1699,7 @@ app/
 │   内容:
 │     #include "../Circuit.h"
 │     #include "../logic/iter/IterEngine.h"
+│     #include "../logic/event/EventEngine.h"
 │     #include <QVariantMap>
 │     
 │     QString Circuit::addSubcircuit(const QString& name) {
@@ -1629,18 +1785,39 @@ app/
 │         return !hasSubCycle(targetSubId, m_currentCtxId, visited);
 │     }
 │     
+│     // ============================================================
+│     // 刷新当前子电路视图
+│     // ============================================================
+│     // 语义：
+│     // - 浏览模式（m_viewOnly）：从父实例的输入同步进子电路 input，然后独立求值
+│     // - 编辑模式：独立求值（子电路自己作为独立电路的行为）
+│     void Circuit::refreshCurrentSubContext() {
+│         if (m_currentCtxId.isEmpty()) return;
+│         auto it = m_subContexts.find(m_currentCtxId);
+│         if (it == m_subContexts.end()) return;
+│     
+│         if (m_viewOnly) {
+│             // 浏览模式：把父实例的输入值灌入子电路的 input 元件
+│             syncSubStateFromParent(m_currentCtxId);
+│         }
+│     
+│         // 独立求值子电路
+│         IterEngine::evaluateStandalone(it.value(), m_subContexts);
+│     }
+│     
+│     // ============================================================
+│     // 从主电路进入子电路（浏览模式）
+│     // ============================================================
 │     void Circuit::enterSubcircuit(const QString& subId) {
 │         if (!m_subContexts.contains(subId)) return;
 │         m_currentCtxId = subId; m_viewOnly = true;
 │     
+│         // 从主电路同步实例输入到子电路
 │         syncSubStateFromParent(subId);
-│     
-│         {
-│             auto it = m_subContexts.find(subId);
-│             if (it != m_subContexts.end()) {
-│                 IterEngine::evaluateStandalone(it.value(), m_subContexts);
-│             }
-│         }
+│         // 独立求值
+│         auto it = m_subContexts.find(subId);
+│         if (it != m_subContexts.end())
+│             IterEngine::evaluateStandalone(it.value(), m_subContexts);
 │     
 │         emit contextChanged();
 │         emit changed();
@@ -1652,9 +1829,20 @@ app/
 │         emit contextChanged(); emit changed();
 │     }
 │     
+│     // ============================================================
+│     // 从右上角切换电路（编辑模式）
+│     // ============================================================
 │     void Circuit::switchEditContext(const QString& ctxId) {
 │         if (!ctxId.isEmpty() && !m_subContexts.contains(ctxId)) return;
 │         m_currentCtxId = ctxId; m_viewOnly = false;
+│     
+│         // 独立求值当前子电路：让用户看到它作为独立电路的行为
+│         if (!m_currentCtxId.isEmpty()) {
+│             auto it = m_subContexts.find(m_currentCtxId);
+│             if (it != m_subContexts.end())
+│                 IterEngine::evaluateStandalone(it.value(), m_subContexts);
+│         }
+│     
 │         emit contextChanged(); emit changed();
 │     }
 │     
@@ -1671,6 +1859,7 @@ app/
 │     
 │         m_currentCtxId = "";
 │         m_viewOnly = false;
+│         m_ctxSubInstCache.clear();
 │     
 │         evaluateAll();
 │         emit contextChanged();
@@ -1684,31 +1873,51 @@ app/
 │         auto sit = m_subContexts.find(subId);
 │         if (sit == m_subContexts.end()) return;
 │     
+│         // 找 root 里第一个匹配的实例
 │         QVariantMap inst;
+│         QString instId;
 │         bool found = false;
 │         for (const auto& cv : m_root.components) {
 │             QVariantMap c = cv.toMap();
 │             if (c.value("type").toString() == "sub" &&
 │                 c.value("subId").toString() == subId) {
 │                 inst = c;
+│                 instId = c.value("id").toString();
 │                 found = true;
 │                 break;
 │             }
 │         }
 │         if (!found) return;
 │     
-│         QVariantList instIns = inst.value("inputPortValues").toList();
+│         // ★ 关键修复：优先从事件引擎读实时值。
+│         // 事件引擎里子电路实例被展开——外部 wire 直达内部 input 元件的输入侧，
+│         // getInputs("C7/C1") 就是父侧此刻的真实驱动值。
+│         // 而 inst.inputPortValues 只在引擎重建时更新过，之后改主电路不会刷新它。
+│         bool fromEngine = (m_engineType == "event" && m_eventEngine && !m_engineDirty);
+│         QVariantList instIns;
+│         if (!fromEngine) {
+│             instIns = inst.value("inputPortValues").toList();
+│         }
 │     
 │         Context& sub = sit.value();
 │         int idx = 0;
 │         for (int i = 0; i < sub.components.size(); ++i) {
 │             QVariantMap sc = sub.components[i].toMap();
 │             if (sc.value("type").toString() != "input") continue;
-│             if (idx >= instIns.size()) break;
 │     
-│             QString s = instIns[idx].toString();
 │             int bw = sc.value("bitWidth").toInt();
 │             if (bw < 1) bw = 1;
+│     
+│             QString s;
+│             if (fromEngine) {
+│                 QString qid = instId + "/" + sc.value("id").toString();
+│                 QStringList ins = m_eventEngine->getInputs(qid);
+│                 s = ins.isEmpty() ? QString() : ins[0];
+│             } else {
+│                 if (idx >= instIns.size()) break;
+│                 s = instIns[idx].toString();
+│             }
+│     
 │             while (s.length() < bw) s = "0" + s;
 │             if (s.length() > bw) s = s.right(bw);
 │     
@@ -2902,6 +3111,7 @@ event/
 │         m_seq = 0;
 │         m_totalEventsProcessed = 0;
 │         m_dirtyQids.clear();
+│         m_dirtySet.clear();
 │     }
 │     
 │     void EventEngine::reset() {
@@ -2918,6 +3128,7 @@ event/
 │         m_seq = 0;
 │         m_totalEventsProcessed = 0;
 │         m_dirtyQids.clear();
+│         m_dirtySet.clear();
 │     
 │         for (auto& n : m_nodes) {
 │             for (auto& s : n.inVals)  s = QString(s.length(), '0');
@@ -2949,6 +3160,7 @@ event/
 │     #include <QVariantList>
 │     #include <QVariantMap>
 │     #include <QHash>
+│     #include <QSet>
 │     #include <QVector>
 │     #include <QPair>
 │     #include <queue>
@@ -3001,6 +3213,7 @@ event/
 │         int nodeCount() const { return m_nodes.size(); }
 │         QString getOutput(const QString& compId, int port = 0) const;
 │         QStringList getOutputs(const QString& compId) const;
+│         QStringList getInputs(const QString& compId) const;
 │     
 │         // ---- 脏节点追踪（性能优化）----
 │         // 每次 recalcNode 输出变化 / trigger* 修改输出时，把节点 qid 加入
@@ -3008,10 +3221,18 @@ event/
 │         QVector<QString> takeDirtyQids() {
 │             QVector<QString> r;
 │             r.swap(m_dirtyQids);
+│             m_dirtySet.clear();
 │             return r;
 │         }
-│         void clearDirtyQids() { m_dirtyQids.clear(); }
+│         void clearDirtyQids() { m_dirtyQids.clear(); m_dirtySet.clear(); }
 │         int dirtyCount() const { return m_dirtyQids.size(); }
+│     
+│         // 去重：同一节点一次 run() 里只追加一次
+│         void markDirty(const QString& qid) {
+│             if (m_dirtySet.contains(qid)) return;
+│             m_dirtySet.insert(qid);
+│             m_dirtyQids.append(qid);
+│         }
 │     
 │     private:
 │         struct Node {
@@ -3060,6 +3281,8 @@ event/
 │         Options m_opts;
 │     
 │         QVector<QString> m_dirtyQids;
+│         QSet<QString>    m_dirtySet;      // 去重
+│         QVector<QString> m_driverValBuf;   // 复用，避免热路径堆分配
 │     
 │         static quint64 pkey(int idx, int port) {
 │             return (quint64(quint32(idx)) << 16) | quint64(port & 0xFFFF);
@@ -3239,7 +3462,9 @@ event/
 │         QHash<qint64, QString>& dv = m_portDriverValues[tkey];
 │         dv[dk] = ev.value;
 │     
-│         QVector<QString> driverVals;
+│         // 复用成员缓冲区，避免每事件堆分配
+│         QVector<QString>& driverVals = m_driverValBuf;
+│         driverVals.clear();
 │         auto it = m_inDrivers.constFind(tkey);
 │         if (it != m_inDrivers.constEnd()) {
 │             driverVals.reserve(it.value().size());
@@ -3280,8 +3505,8 @@ event/
 │         }
 │         if (!changed) return;
 │     
-│         // 记录输出变化的节点，供 Circuit 侧增量更新
-│         m_dirtyQids.append(n.qid);
+│         // 记录输出变化的节点，供 Circuit 侧增量更新（去重）
+│         markDirty(n.qid);
 │     
 │         quint64 at = m_time + gateDelayFor(n.type);
 │         for (int p = 0; p < n.outVals.size(); ++p) {
@@ -3442,6 +3667,7 @@ event/
               for (int i = 0; i < s.length(); ++i) bits.append(s[i] == '1');
               n.raw["inputBits"] = bits;
           }
+          markDirty(n.qid);
       
           quint64 at = m_time + m_opts.wireDelay;
           auto it = m_outDests.constFind(pkey(idx, 0));
@@ -3468,6 +3694,7 @@ event/
               for (int i = 0; i < s.length(); ++i) bits.append(s[i] == '1');
               n.raw["inputBits"] = bits;
           }
+          markDirty(n.qid);
       
           quint64 at = m_time + m_opts.wireDelay;
           auto it = m_outDests.constFind(pkey(idx, 0));
@@ -3500,6 +3727,7 @@ event/
               ops.append(s);
               n.raw["outputPorts"] = ops;
           }
+          markDirty(n.qid);
       
           quint64 at = m_time + m_opts.wireDelay;
           auto it = m_outDests.constFind(pkey(idx, 0));
@@ -3523,6 +3751,7 @@ event/
       
           if (n.outVals[port] == value) return;
           n.outVals[port] = value;
+          markDirty(n.qid);
       
           quint64 at = m_time + m_opts.wireDelay;
           auto it = m_outDests.constFind(pkey(idx, port));
@@ -3547,6 +3776,16 @@ event/
           QStringList out;
           out.reserve(n.outVals.size());
           for (const auto& s : n.outVals) out << s;
+          return out;
+      }
+      
+      QStringList EventEngine::getInputs(const QString& compId) const {
+          int idx = idxOf(compId);
+          if (idx < 0) return QStringList();
+          const Node& n = m_nodes[idx];
+          QStringList out;
+          out.reserve(n.inVals.size());
+          for (const auto& s : n.inVals) out << s;
           return out;
       }
 
@@ -4777,6 +5016,7 @@ iter/
           QVariantList m_recentFiles;
       
           QVariantList m_clipboardCache;      // 剪贴板 C++ 缓存（避免 QML 往返破坏深层结构）
+          mutable QHash<QString, QStringList> m_ctxSubInstCache;  // ctxId → 子实例 localId 列表，惰性缓存
           bool         m_needFullApply = true; // 事件引擎重建后需要一次全量回填
       
           bool m_clockRunning = false;
@@ -4821,6 +5061,7 @@ iter/
           QStringList engineQidsFor(const QString& ctxId, const QString& localCompId) const;
       
           void syncSubStateFromParent(const QString& subId);
+          void refreshCurrentSubContext();
       };
       
       #endif // CIRCUIT_H

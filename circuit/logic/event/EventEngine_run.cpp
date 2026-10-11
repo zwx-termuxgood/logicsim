@@ -140,7 +140,9 @@ void EventEngine::processEvent(const Event& ev) {
     QHash<qint64, QString>& dv = m_portDriverValues[tkey];
     dv[dk] = ev.value;
 
-    QVector<QString> driverVals;
+    // 复用成员缓冲区，避免每事件堆分配
+    QVector<QString>& driverVals = m_driverValBuf;
+    driverVals.clear();
     auto it = m_inDrivers.constFind(tkey);
     if (it != m_inDrivers.constEnd()) {
         driverVals.reserve(it.value().size());
@@ -181,8 +183,8 @@ void EventEngine::recalcNode(int idx) {
     }
     if (!changed) return;
 
-    // 记录输出变化的节点，供 Circuit 侧增量更新
-    m_dirtyQids.append(n.qid);
+    // 记录输出变化的节点，供 Circuit 侧增量更新（去重）
+    markDirty(n.qid);
 
     quint64 at = m_time + gateDelayFor(n.type);
     for (int p = 0; p < n.outVals.size(); ++p) {

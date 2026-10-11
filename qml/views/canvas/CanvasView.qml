@@ -19,10 +19,22 @@ Item {
     property bool draggingComp: false
     property string dragCompId: ""
 
+    // 缓存：元件 ID → 尺寸，签名匹配则复用
+    property var _sizeCache: ({})
+
     function compSize(comp) {
         var t = comp.type
         var bw = comp.bitWidth || 1
         var rot = comp.rotation || 0
+        var ic = comp.inputCount || 2
+        var splits = comp.outputSplits ? comp.outputSplits.length : 0
+        var subIn = comp.subInputNames ? comp.subInputNames.length : 0
+        var subOut = comp.subOutputNames ? comp.subOutputNames.length : 0
+        var sig = t + "|" + bw + "|" + rot + "|" + ic + "|" + splits + "|" + subIn + "|" + subOut
+
+        var cached = _sizeCache[comp.id]
+        if (cached !== undefined && cached._sig === sig) return cached
+
         var w0, h0
         if (t === "text") { w0 = 140; h0 = 44 }
         else if (t === "clock") { w0 = 60; h0 = 40 }
@@ -30,23 +42,26 @@ Item {
         else if (t === "input" || t === "output" || t === "const")
             { w0 = Math.max(60, bw * 22 + 8); h0 = 40 }
         else if (t === "splitter" || t === "hub") {
-            var oc = (comp.outputSplits && comp.outputSplits.length) || bw
+            var oc = splits || bw
             w0 = 80; h0 = Math.max(60, oc * 24)
         }
         else if (t === "not") { w0 = 80; h0 = 60 }
         else if (t === "tgate" || t === "ntran" || t === "ptran") { w0 = 80; h0 = 60 }
         else if (t === "sub") {
-            var ic = (comp.subInputNames || []).length
-            var oc2 = (comp.subOutputNames || []).length
-            w0 = 110; h0 = Math.max(60, Math.max(ic, oc2) * 24)
+            w0 = 110; h0 = Math.max(60, Math.max(subIn, subOut) * 24)
         }
         else {
-            var ic2 = comp.inputCount || 2
-            w0 = 80; h0 = Math.max(60, ic2 * 24)
+            w0 = 80; h0 = Math.max(60, ic * 24)
         }
-        if (rot === 1 || rot === 3) return { w: h0, h: w0 }
-        return { w: w0, h: h0 }
+        var result
+        if (rot === 1 || rot === 3) result = { w: h0, h: w0, _sig: sig }
+        else                        result = { w: w0, h: h0, _sig: sig }
+        _sizeCache[comp.id] = result
+        return result
     }
+
+    // 结构变化时清空缓存
+    function clearSizeCache() { _sizeCache = ({}) }
 
     function worldToScreen(wx, wy) {
         return Geometry.worldToScreen(main.viewScale, main.viewX, main.viewY, wx, wy)

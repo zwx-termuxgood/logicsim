@@ -6,6 +6,7 @@
 #include <QVariantList>
 #include <QVariantMap>
 #include <QHash>
+#include <QSet>
 #include <QVector>
 #include <QPair>
 #include <queue>
@@ -58,6 +59,7 @@ public:
     int nodeCount() const { return m_nodes.size(); }
     QString getOutput(const QString& compId, int port = 0) const;
     QStringList getOutputs(const QString& compId) const;
+    QStringList getInputs(const QString& compId) const;
 
     // ---- 脏节点追踪（性能优化）----
     // 每次 recalcNode 输出变化 / trigger* 修改输出时，把节点 qid 加入
@@ -65,10 +67,18 @@ public:
     QVector<QString> takeDirtyQids() {
         QVector<QString> r;
         r.swap(m_dirtyQids);
+        m_dirtySet.clear();
         return r;
     }
-    void clearDirtyQids() { m_dirtyQids.clear(); }
+    void clearDirtyQids() { m_dirtyQids.clear(); m_dirtySet.clear(); }
     int dirtyCount() const { return m_dirtyQids.size(); }
+
+    // 去重：同一节点一次 run() 里只追加一次
+    void markDirty(const QString& qid) {
+        if (m_dirtySet.contains(qid)) return;
+        m_dirtySet.insert(qid);
+        m_dirtyQids.append(qid);
+    }
 
 private:
     struct Node {
@@ -117,6 +127,8 @@ private:
     Options m_opts;
 
     QVector<QString> m_dirtyQids;
+    QSet<QString>    m_dirtySet;      // 去重
+    QVector<QString> m_driverValBuf;   // 复用，避免热路径堆分配
 
     static quint64 pkey(int idx, int port) {
         return (quint64(quint32(idx)) << 16) | quint64(port & 0xFFFF);

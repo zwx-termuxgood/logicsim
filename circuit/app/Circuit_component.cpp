@@ -214,7 +214,11 @@ void Circuit::toggleInput(const QString& id) {
         QStringList qids = engineQidsFor(m_currentCtxId, id);
         for (const auto& qid : qids)
             m_eventEngine->triggerInputString(qid, binStr);
-        applyEngineOutputsToContexts();
+        quint64 wd = m_eventEngine->wireDelay();
+        quint64 gd = m_eventEngine->globalGateDelay();
+        quint64 advance = (wd + gd) * 8 + 20;
+        m_eventEngine->run(advance, 200000);
+applyEngineOutputsToContexts();
         emit simulationTick();
     } else {
         evaluateAll();
@@ -245,7 +249,11 @@ void Circuit::setBitValue(const QString& id, int bit, bool value) {
         QStringList qids = engineQidsFor(m_currentCtxId, id);
         for (const auto& qid : qids)
             m_eventEngine->triggerInputBit(qid, bit, value);
-        applyEngineOutputsToContexts();
+        quint64 wd = m_eventEngine->wireDelay();
+        quint64 gd = m_eventEngine->globalGateDelay();
+        quint64 advance = (wd + gd) * 8 + 20;
+        m_eventEngine->run(advance, 200000);
+applyEngineOutputsToContexts();
         emit simulationTick();
     } else {
         evaluateAll();

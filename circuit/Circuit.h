@@ -209,6 +209,7 @@ private:
     QVariantList m_recentFiles;
 
     QVariantList m_clipboardCache;      // 剪贴板 C++ 缓存（避免 QML 往返破坏深层结构）
+    mutable QHash<QString, QStringList> m_ctxSubInstCache;  // ctxId → 子实例 localId 列表，惰性缓存
     bool         m_needFullApply = true; // 事件引擎重建后需要一次全量回填
 
     bool m_clockRunning = false;
@@ -253,6 +254,7 @@ private:
     QStringList engineQidsFor(const QString& ctxId, const QString& localCompId) const;
 
     void syncSubStateFromParent(const QString& subId);
+    void refreshCurrentSubContext();
 };
 
 #endif // CIRCUIT_H

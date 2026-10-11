@@ -264,6 +264,12 @@ void Circuit::simulateStep() {
 
 void Circuit::onSimTimerTick() {
     if (!m_eventEngine || !m_simulationRunning) return;
+
+    // 电路被编辑过 → 重建引擎
+    if (m_engineDirty) {
+        rebuildEventEngine();
+    }
+
     quint64 units = m_autoSpeed ? 1000 : (m_simulationSpeed / 60);
     if (units < 1) units = 1;
     m_eventEngine->run(units, kSimRunBudget);

@@ -113,18 +113,35 @@ Popup {
                     anchors.fill: parent
                     anchors.rightMargin: 40
                     onClicked: {
-                        if (main.circuitRef.loadFromFile(modelData.path)) {
-                            main.currentFilePath = modelData.path
-                            main.dirty = false
-                            main.selectedCompId = ""
-                            main.selectedComp = null
-                            main.selectedIds = []
-                            main.resetView()
-                            main.statusText = "已打开：" + modelData.name
-                        } else {
-                            main.statusText = "打开失败：" + modelData.path
-                        }
+                        // ★ 所有外部引用在闭包创建前捕获到局部变量
+                        // （loadFromFile 触发 recentFilesChanged 时，Repeater 会重建本委托，
+                        //  之后闭包里的外部标识符（main）会失效 → ReferenceError）
+                        var savedPath = modelData.path
+                        var savedName = modelData.name
+                        var mainRef = main
+                        var circRef = main.circuitRef
+                        console.log("[QMLTRACE] RecentPopup.onClicked savedPath=", savedPath,
+                                    "currentFilePath(before)=", mainRef.currentFilePath)
                         recentPopup.close()
+
+                        mainRef.doOpenFile(function() {
+                            console.log("[QMLTRACE] Recent action: ENTER, currentFilePath(before)=",
+                                        mainRef.currentFilePath, "target=", savedPath)
+                            if (circRef.loadFromFile(savedPath)) {
+                                mainRef.currentFilePath = savedPath
+                                console.log("[QMLTRACE] Recent action: currentFilePath set to",
+                                            mainRef.currentFilePath)
+                                mainRef.dirty = false
+                                mainRef.selectedCompId = ""
+                                mainRef.selectedComp = null
+                                mainRef.selectedIds = []
+                                mainRef.selectedSubId = ""
+                                mainRef.resetView()
+                                mainRef.statusText = "已打开：" + savedName
+                            } else {
+                                mainRef.statusText = "打开失败：" + savedPath
+                            }
+                        })
                     }
                 }
             }

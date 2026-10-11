@@ -1,5 +1,6 @@
 #include "../Circuit.h"
 #include "../logic/iter/IterEngine.h"
+#include "../logic/event/EventEngine.h"
 #include <QVariantMap>
 
 QString Circuit::addSubcircuit(const QString& name) {
@@ -85,18 +86,39 @@ bool Circuit::canAddSubInstance(const QString& targetSubId) const {
     return !hasSubCycle(targetSubId, m_currentCtxId, visited);
 }
 
+// ============================================================
+// 刷新当前子电路视图
+// ============================================================
+// 语义：
+// - 浏览模式（m_viewOnly）：从父实例的输入同步进子电路 input，然后独立求值
+// - 编辑模式：独立求值（子电路自己作为独立电路的行为）
+void Circuit::refreshCurrentSubContext() {
+    if (m_currentCtxId.isEmpty()) return;
+    auto it = m_subContexts.find(m_currentCtxId);
+    if (it == m_subContexts.end()) return;
+
+    if (m_viewOnly) {
+        // 浏览模式：把父实例的输入值灌入子电路的 input 元件
+        syncSubStateFromParent(m_currentCtxId);
+    }
+
+    // 独立求值子电路
+    IterEngine::evaluateStandalone(it.value(), m_subContexts);
+}
+
+// ============================================================
+// 从主电路进入子电路（浏览模式）
+// ============================================================
 void Circuit::enterSubcircuit(const QString& subId) {
     if (!m_subContexts.contains(subId)) return;
     m_currentCtxId = subId; m_viewOnly = true;
 
+    // 从主电路同步实例输入到子电路
     syncSubStateFromParent(subId);
-
-    {
-        auto it = m_subContexts.find(subId);
-        if (it != m_subContexts.end()) {
-            IterEngine::evaluateStandalone(it.value(), m_subContexts);
-        }
-    }
+    // 独立求值
+    auto it = m_subContexts.find(subId);
+    if (it != m_subContexts.end())
+        IterEngine::evaluateStandalone(it.value(), m_subContexts);
 
     emit contextChanged();
     emit changed();
@@ -108,9 +130,20 @@ void Circuit::leaveSubcircuit() {
     emit contextChanged(); emit changed();
 }
 
+// ============================================================
+// 从右上角切换电路（编辑模式）
+// ============================================================
 void Circuit::switchEditContext(const QString& ctxId) {
     if (!ctxId.isEmpty() && !m_subContexts.contains(ctxId)) return;
     m_currentCtxId = ctxId; m_viewOnly = false;
+
+    // 独立求值当前子电路：让用户看到它作为独立电路的行为
+    if (!m_currentCtxId.isEmpty()) {
+        auto it = m_subContexts.find(m_currentCtxId);
+        if (it != m_subContexts.end())
+            IterEngine::evaluateStandalone(it.value(), m_subContexts);
+    }
+
     emit contextChanged(); emit changed();
 }
 
@@ -127,6 +160,7 @@ void Circuit::setSubcircuitAsRoot(const QString& subId) {
 
     m_currentCtxId = "";
     m_viewOnly = false;
+    m_ctxSubInstCache.clear();
 
     evaluateAll();
     emit contextChanged();
@@ -140,31 +174,51 @@ void Circuit::syncSubStateFromParent(const QString& subId) {
     auto sit = m_subContexts.find(subId);
     if (sit == m_subContexts.end()) return;
 
+    // 找 root 里第一个匹配的实例
     QVariantMap inst;
+    QString instId;
     bool found = false;
     for (const auto& cv : m_root.components) {
         QVariantMap c = cv.toMap();
         if (c.value("type").toString() == "sub" &&
             c.value("subId").toString() == subId) {
             inst = c;
+            instId = c.value("id").toString();
             found = true;
             break;
         }
     }
     if (!found) return;
 
-    QVariantList instIns = inst.value("inputPortValues").toList();
+    // ★ 关键修复：优先从事件引擎读实时值。
+    // 事件引擎里子电路实例被展开——外部 wire 直达内部 input 元件的输入侧，
+    // getInputs("C7/C1") 就是父侧此刻的真实驱动值。
+    // 而 inst.inputPortValues 只在引擎重建时更新过，之后改主电路不会刷新它。
+    bool fromEngine = (m_engineType == "event" && m_eventEngine && !m_engineDirty);
+    QVariantList instIns;
+    if (!fromEngine) {
+        instIns = inst.value("inputPortValues").toList();
+    }
 
     Context& sub = sit.value();
     int idx = 0;
     for (int i = 0; i < sub.components.size(); ++i) {
         QVariantMap sc = sub.components[i].toMap();
         if (sc.value("type").toString() != "input") continue;
-        if (idx >= instIns.size()) break;
 
-        QString s = instIns[idx].toString();
         int bw = sc.value("bitWidth").toInt();
         if (bw < 1) bw = 1;
+
+        QString s;
+        if (fromEngine) {
+            QString qid = instId + "/" + sc.value("id").toString();
+            QStringList ins = m_eventEngine->getInputs(qid);
+            s = ins.isEmpty() ? QString() : ins[0];
+        } else {
+            if (idx >= instIns.size()) break;
+            s = instIns[idx].toString();
+        }
+
         while (s.length() < bw) s = "0" + s;
         if (s.length() > bw) s = s.right(bw);
 

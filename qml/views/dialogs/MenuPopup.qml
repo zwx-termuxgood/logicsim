@@ -94,14 +94,11 @@ Popup {
                 label: "新建"
                 onTriggered: {
                     menuPopup.close()
-                    main.confirmDialogRef.title = "新建电路"
-                    main.confirmDialogRef.message = "确定清空并新建？"
-                    main.confirmDialogRef.action = function() {
+                    main.doOpenFile(function() {
                         main.circuitRef.clear()
                         main.currentFilePath = ""
                         main.dirty = false
-                    }
-                    main.confirmDialogRef.open()
+                    })
                 }
             }
 
