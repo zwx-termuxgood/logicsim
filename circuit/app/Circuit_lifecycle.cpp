@@ -209,12 +209,16 @@ void Circuit::applyEngineOutputsToContexts() {
             m_root.components[i] = c;
         }
         m_eventEngine->clearDirtyQids();
+        refreshCurrentSubContext();
         return;
     }
 
     // 增量路径：只处理本次输出变化的节点
     QVector<QString> dirty = m_eventEngine->takeDirtyQids();
-    if (dirty.isEmpty()) return;
+    if (dirty.isEmpty()) {
+        refreshCurrentSubContext();
+        return;
+    }
 
     // 一次性建索引：O(C)
     QHash<QString, int> idToIdx;
