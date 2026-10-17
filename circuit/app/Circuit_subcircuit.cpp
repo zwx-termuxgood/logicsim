@@ -5,7 +5,7 @@
 
 QString Circuit::addSubcircuit(const QString& name) {
     if (m_viewOnly) return QString();
-    pushUndo();
+    pushUndoMeta();
     QString id = QString("S%1").arg(++m_subCounter);
     Context ctx;
     m_subContexts[id] = ctx;
@@ -19,7 +19,7 @@ QString Circuit::addSubcircuit(const QString& name) {
 void Circuit::deleteSubcircuit(const QString& subId) {
     if (m_viewOnly) return;
     if (!m_subContexts.contains(subId)) return;
-    pushUndo();
+    pushUndoAll();
     m_subContexts.remove(subId);
     m_subNames.remove(subId);
     auto removeFrom = [&](Context& ctx) {
@@ -48,7 +48,7 @@ void Circuit::setSubcircuitName(const QString& subId, const QString& name) {
     if (m_viewOnly) return;
     if (!m_subNames.contains(subId)) return;
     if (m_subNames.value(subId) == name) return;
-    pushUndo();
+    pushUndoMeta();
     m_subNames[subId] = name;
     emit subcircuitsChanged();
     emit editContextsChanged();
@@ -88,12 +88,6 @@ bool Circuit::canAddSubInstance(const QString& targetSubId) const {
     return !hasSubCycle(targetSubId, m_currentCtxId, visited);
 }
 
-// ============================================================
-// 刷新当前子电路视图
-// ============================================================
-// 语义：
-// - 浏览模式（m_viewOnly）：从父实例的输入同步进子电路 input，然后独立求值
-// - 编辑模式：独立求值（子电路自己作为独立电路的行为）
 void Circuit::refreshCurrentSubContext() {
     if (m_currentCtxId.isEmpty()) return;
     auto it = m_subContexts.find(m_currentCtxId);
@@ -107,36 +101,60 @@ void Circuit::refreshCurrentSubContext() {
 }
 
 // ============================================================
-// 从主电路进入子电路（浏览模式）
+// 进入子电路（浏览模式）
 // ============================================================
-// ★ 支持递归浏览：每次进入都把当前状态压栈，leaveSubcircuit 弹栈即可返回上一级
+// ★ 路径解析规则：
+//   - 浏览模式下：基于 m_currentInstancePath 拼接（父实例路径 + "/" + 本实例 localId）
+//   - 编辑模式下：
+//       当前是 root → 直接查 root 里的 localId
+//       当前是子电路 A → 从 root 查 A 的实例路径，再拼 A 里本实例 localId
+//   这样无论从 root 直接进入，还是在 A 里编辑时再进入 B，都能得到正确完整路径。
+//
+// ★ 进入后必须先刷新事件引擎（event 引擎 + dirty 时 rebuild），
+//   再调用 syncSubStateFromParent，才能走引擎的实时值分支；
+//   同步完成后再标 m_engineDirty = true。
 void Circuit::enterSubcircuit(const QString& subId) {
     if (!m_subContexts.contains(subId)) return;
 
-    // 在"当前上下文"里找 subId 的第一个 sub 实例
-    const Context* curCtx = ctxById(m_currentCtxId);
-    QString instId;
-    if (curCtx) {
-        for (const auto& cv : curCtx->components) {
+    // ---- 1. 解析实例完整路径 ----
+    QString newPath;
+
+    auto findInstInCtx = [&](const Context* ctx, const QString& wantSubId) -> QString {
+        if (!ctx) return QString();
+        for (const auto& cv : ctx->components) {
             QVariantMap c = cv.toMap();
             if (c.value("type").toString() == "sub" &&
-                c.value("subId").toString() == subId) {
-                instId = c.value("id").toString();
-                break;
-            }
+                c.value("subId").toString() == wantSubId)
+                return c.value("id").toString();
+        }
+        return QString();
+    };
+
+    if (m_viewOnly && !m_currentInstancePath.isEmpty()) {
+        // 浏览模式递归进入
+        QString instId = findInstInCtx(ctxById(m_currentCtxId), subId);
+        if (!instId.isEmpty())
+            newPath = m_currentInstancePath + "/" + instId;
+    } else if (m_currentCtxId.isEmpty()) {
+        // 编辑模式，当前是 root
+        newPath = findInstInCtx(&m_root, subId);
+    } else {
+        // 编辑模式，当前是子电路 A：从 root 查 A 的实例路径，再拼 A 里的 localId
+        QString aInstId = findInstInCtx(&m_root, m_currentCtxId);
+        if (!aInstId.isEmpty()) {
+            QString bInstId = findInstInCtx(ctxById(m_currentCtxId), subId);
+            if (!bInstId.isEmpty())
+                newPath = aInstId + "/" + bInstId;
         }
     }
 
-    // 完整实例路径（从 root 展开）：父路径 + 本实例 localId
-    QString newPath;
-    if (!instId.isEmpty()) {
-        newPath = m_currentInstancePath.isEmpty()
-        ? instId
-        : (m_currentInstancePath + "/" + instId);
+    // ---- 2. 若事件引擎就绪但 dirty，先 rebuild，确保能读实时值 ----
+    if (m_engineType == "event" && m_eventEngine && m_engineDirty) {
+        rebuildEventEngine();
+        applyEngineOutputsToContexts();
     }
-    // instId 为空（例如从左侧面板"进入浏览"却没有画布实例）→ 不绑定，newPath 留空
 
-    // 保存进入前的状态
+    // ---- 3. 入浏览栈 ----
     BrowseFrame f;
     f.ctxId = m_currentCtxId;
     f.viewOnly = m_viewOnly;
@@ -146,12 +164,16 @@ void Circuit::enterSubcircuit(const QString& subId) {
     m_currentCtxId = subId;
     m_viewOnly = true;
     m_currentInstancePath = newPath;
-    m_engineDirty = true;
 
-    // 从父实例同步输入 + 独立求值
+    // ---- 4. 先同步（此时引擎仍可用，m_engineDirty 未标）----
     if (!newPath.isEmpty()) {
         syncSubStateFromParent(subId);
     }
+
+    // ---- 5. 同步完成后再标 dirty（切上下文后旧引擎状态不再适用于新 ctx）----
+    m_engineDirty = true;
+
+    // ---- 6. 独立求值子电路 ----
     auto it = m_subContexts.find(subId);
     if (it != m_subContexts.end())
         IterEngine::evaluateStandalone(it.value(), m_subContexts);
@@ -161,7 +183,6 @@ void Circuit::enterSubcircuit(const QString& subId) {
 }
 
 void Circuit::leaveSubcircuit() {
-    // ★ 有浏览栈：返回上一级
     if (!m_browseStack.isEmpty()) {
         BrowseFrame f = m_browseStack.takeLast();
         m_currentCtxId = f.ctxId;
@@ -183,7 +204,6 @@ void Circuit::leaveSubcircuit() {
         return;
     }
 
-    // 无栈：直接回主电路编辑
     if (m_currentCtxId.isEmpty() && !m_viewOnly) return;
     m_currentCtxId = "";
     m_viewOnly = false;
@@ -193,18 +213,14 @@ void Circuit::leaveSubcircuit() {
     emit changed();
 }
 
-// ============================================================
-// 从右上角切换电路（编辑模式）
-// ============================================================
 void Circuit::switchEditContext(const QString& ctxId) {
     if (!ctxId.isEmpty() && !m_subContexts.contains(ctxId)) return;
     m_currentCtxId = ctxId;
     m_viewOnly = false;
     m_currentInstancePath.clear();
-    m_browseStack.clear();   // ★ 切换编辑上下文即重置导航
+    m_browseStack.clear();
     m_engineDirty = true;
 
-    // 仿真中切换电路：立即按新根重建引擎
     if (m_engineType == "event" && m_eventEngine && m_simulationRunning) {
         rebuildEventEngine();
         applyEngineOutputsToContexts();
@@ -225,7 +241,7 @@ void Circuit::setSubcircuitAsRoot(const QString& subId) {
     if (subId.isEmpty()) return;
     if (!m_subContexts.contains(subId)) return;
 
-    pushUndo();
+    pushUndoAll();
 
     Context oldRoot = m_root;
     m_root = m_subContexts[subId];
@@ -245,26 +261,23 @@ void Circuit::setSubcircuitAsRoot(const QString& subId) {
 }
 
 // ============================================================
-// 从父实例同步输入到当前子电路的 input 元件
+// 从父实例同步输入到子电路 input 元件
 // ============================================================
-// ★ 现在使用 m_currentInstancePath 作为实例在 root 中的完整路径，
-//   支持任意层级的递归浏览（不再只找 root 里第一个匹配实例）。
+// ★ 找不到父侧驱动（instIns 为空）时，明确置 0，而非 break 保留旧值。
+//   否则：用户编辑时把 input 全设为 1，进入浏览时若找不到实例，
+//   会保留全 1 假象，误以为"父电路值是全 1"。
 void Circuit::syncSubStateFromParent(const QString& subId) {
     if (subId.isEmpty()) return;
     auto sit = m_subContexts.find(subId);
     if (sit == m_subContexts.end()) return;
 
     const QString instPath = m_currentInstancePath;
-    if (instPath.isEmpty()) {
-        // 没有绑定（例如从左侧面板进入但 root 无该实例）
-        return;
-    }
+    if (instPath.isEmpty()) return;
 
     bool fromEngine = (m_engineType == "event" && m_eventEngine && !m_engineDirty);
     QVariantList instIns;
 
     if (!fromEngine) {
-        // 非引擎路径：沿实例路径在 m_root 中展开，找到最终的 sub 元件
         const Context* curCtx = &m_root;
         QVariantMap inst;
         QStringList parts = instPath.split('/', Qt::SkipEmptyParts);
@@ -300,13 +313,12 @@ void Circuit::syncSubStateFromParent(const QString& subId) {
 
         QString s;
         if (fromEngine) {
-            // 事件引擎里子电路已展开，直接用完整路径读父侧驱动值
             QString qid = instPath + "/" + sc.value("id").toString();
             QStringList ins = m_eventEngine->getInputs(qid);
             s = ins.isEmpty() ? QString() : ins[0];
         } else {
-            if (idx >= instIns.size()) break;
-            s = instIns[idx].toString();
+            // ★ 找不到时保持空字符串，下面自动补 0（不再 break 保留旧值）
+            if (idx < instIns.size()) s = instIns[idx].toString();
         }
 
         while (s.length() < bw) s = "0" + s;

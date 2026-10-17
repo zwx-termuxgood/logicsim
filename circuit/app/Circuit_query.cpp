@@ -110,7 +110,8 @@ QString Circuit::setInputFromString(const QString& id, const QString& text) {
     c["inputBits"] = bits;
     ctx.components[idx] = c;
 
-    if (m_engineType == "event" && m_eventEngine) {
+    // ★ 只有仿真中才传播
+    if (m_engineType == "event" && m_eventEngine && m_simulationRunning) {
         QString binStr = ValueCodec::bitsToString(bits, bw);
         QStringList qids = engineQidsFor(m_currentCtxId, id);
         for (const auto& qid : qids)
@@ -119,8 +120,10 @@ QString Circuit::setInputFromString(const QString& id, const QString& text) {
         quint64 gd = m_eventEngine->globalGateDelay();
         quint64 advance = (wd + gd) * 8 + 20;
         m_eventEngine->run(advance, 200000);
-applyEngineOutputsToContexts();
+        applyEngineOutputsToContexts();
         emit simulationTick();
+    } else if (m_engineType == "event") {
+        m_engineDirty = true;
     } else {
         evaluateAll();
     }

@@ -83,13 +83,18 @@ Rectangle {
 
                 Rectangle { width: 1; height: 22; color: Theme.borderStrong }
 
+                // ★ 仿真时间：由 showSimTime 开关控制显隐
                 Text {
+                    visible: main.circuitRef.showSimTime
                     text: "仿真时间：" + main.circuitRef.simTime
                     color: Theme.text; font.pixelSize: Theme.fsSmall
                     anchors.verticalCenter: parent.verticalCenter
                 }
 
-                Rectangle { width: 1; height: 22; color: Theme.borderStrong }
+                Rectangle {
+                    visible: main.circuitRef.showSimTime
+                    width: 1; height: 22; color: Theme.borderStrong
+                }
             }
 
             Row {
@@ -102,7 +107,7 @@ Rectangle {
                            : (main.clockRunning ? Theme.bgButtonRun : Theme.bgButton)
                     border.color: main.clockRunning ? Theme.accentGreen : Theme.borderStrong
                     border.width: 1
-                    opacity: (main.engineType === "event" && !main.simulationRunning) ? 0.5 : 1
+                    opacity: (main.engineType === "event" && !main.simulationRunning && !main.clockRunning) ? 0.5 : 1
                     Text {
                         anchors.centerIn: parent
                         text: main.clockRunning ? "⏸ 停止" : "▶ 时钟"
@@ -110,7 +115,9 @@ Rectangle {
                     }
                     MouseArea {
                         id: playBtn; anchors.fill: parent
-                        enabled: !(main.engineType === "event" && !main.simulationRunning)
+                        // ★ 时钟在跑时总能点（为了停）；否则要求「事件引擎必须仿真中」才能启动
+                        enabled: main.clockRunning
+                                 || !(main.engineType === "event" && !main.simulationRunning)
                         onClicked: {
                             if (main.clockRunning) main.circuitRef.stopClock()
                             else                    main.circuitRef.startClock()

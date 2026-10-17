@@ -56,6 +56,7 @@ bool IterEngine::evalOne(QVariantMap& c,
     const QVariantList oldInList = c.value("inputPortValues").toList();
     const QString idPrefix = id + ':';
 
+    // ---- 从连线收集各输入端的驱动值（保持原有逻辑）----
     QVariantList newInList;
     newInList.reserve(ic);
     bool inputChanged = false;
@@ -100,6 +101,7 @@ bool IterEngine::evalOne(QVariantMap& c,
         changed = true;
     }
 
+    // ---- 计算输出：数据源相关类型各自处理，其余委托 ComponentLogic ----
     QVariantList newOutList;
 
     if (t == "input" || t == "const") {
@@ -114,127 +116,24 @@ bool IterEngine::evalOne(QVariantMap& c,
         newOutList = c.value("outputPorts").toList();
         if (newOutList.isEmpty()) newOutList.append(QString(bw, '0'));
     }
-    else if (t == "not") {
-        QString a = newInList.isEmpty() ? QString(bw, '0') : newInList[0].toString();
-        QString out; out.reserve(bw);
-        const int alen = a.length();
-        for (int b = 0; b < bw; ++b) {
-            QChar ch = (b < alen) ? a[b] : QChar('0');
-            if (ch == 'Z' || ch == 'E') out += 'E';
-            else                        out += (ch == '1') ? '0' : '1';
-        }
-        newOutList.append(out);
-    }
-    else if (t == "and" || t == "or" || t == "nand" ||
-             t == "nor" || t == "xor" || t == "xnor") {
-        QString out; out.reserve(bw);
-        const bool isAnd   = (t == "and"   || t == "nand");
-        const bool isOr    = (t == "or"    || t == "nor");
-        const bool needNot = (t == "nand"  || t == "nor" || t == "xnor");
-
-        QVector<QString> inStrs(ic);
-        for (int p = 0; p < ic; ++p)
-            inStrs[p] = (p < newInList.size())
-                            ? newInList[p].toString()
-                            : QString(bw, '0');
-
-        for (int b = 0; b < bw; ++b) {
-            bool hasErr = false;
-            for (int p = 0; p < ic; ++p) {
-                const QString& pv = inStrs[p];
-                QChar ch = (b < pv.length()) ? pv[b] : QChar('0');
-                if (ch == 'Z' || ch == 'E') { hasErr = true; break; }
-            }
-            if (hasErr) { out += 'E'; continue; }
-
-            bool r = isAnd ? true : false;
-            for (int p = 0; p < ic; ++p) {
-                const QString& pv = inStrs[p];
-                bool v = (b < pv.length() && pv[b] == '1');
-                if (isAnd)      r = r && v;
-                else if (isOr)  r = r || v;
-                else            r = r != v;
-            }
-            if (needNot) r = !r;
-            out += r ? '1' : '0';
-        }
-        newOutList.append(out);
-    }
-    else if (t == "tgate") {
-        QString d = newInList.isEmpty()    ? QString(bw, '0') : newInList[0].toString();
-        QString e = newInList.size() > 1   ? newInList[1].toString() : QString(bw, '0');
-        QString out; out.reserve(bw);
-        for (int b = 0; b < bw; ++b) {
-            QChar dv = (b < d.length()) ? d[b] : QChar('0');
-            QChar ev = (b < e.length()) ? e[b] : QChar('0');
-            if (ev == 'Z' || ev == 'E') out += 'E';
-            else if (ev == '1')         out += dv;
-            else                        out += 'Z';
-        }
-        newOutList.append(out);
-    }
-    else if (t == "ntran") {
-        QString g = newInList.isEmpty()    ? QString(bw, '0') : newInList[0].toString();
-        QString d = newInList.size() > 1   ? newInList[1].toString() : QString(bw, '0');
-        QString out; out.reserve(bw);
-        for (int b = 0; b < bw; ++b) {
-            QChar gv = (b < g.length()) ? g[b] : QChar('0');
-            QChar dv = (b < d.length()) ? d[b] : QChar('0');
-            if (gv == 'Z' || gv == 'E') out += 'E';
-            else if (gv == '1')         out += dv;
-            else                        out += 'Z';
-        }
-        newOutList.append(out);
-    }
-    else if (t == "ptran") {
-        QString g = newInList.isEmpty()    ? QString(bw, '0') : newInList[0].toString();
-        QString d = newInList.size() > 1   ? newInList[1].toString() : QString(bw, '0');
-        QString out; out.reserve(bw);
-        for (int b = 0; b < bw; ++b) {
-            QChar gv = (b < g.length()) ? g[b] : QChar('0');
-            QChar dv = (b < d.length()) ? d[b] : QChar('0');
-            if (gv == 'Z' || gv == 'E') out += 'E';
-            else if (gv == '0')         out += dv;
-            else                        out += 'Z';
-        }
-        newOutList.append(out);
-    }
-    else if (t == "splitter") {
-        QString mainIn = newInList.isEmpty() ? QString(bw, '0') : newInList[0].toString();
-        while (mainIn.length() < bw) mainIn += '0';
-        if (mainIn.length() > bw) mainIn = mainIn.left(bw);
-        QVariantList splits = c.value("outputSplits").toList();
-        int offset = bw;
-        for (auto& sv : splits) {
-            int len = sv.toInt();
-            if (len < 1) len = 1;
-            offset -= len;
-            if (offset < 0) offset = 0;
-            QString out;
-            out.reserve(len);
-            for (int b = 0; b < len; ++b)
-                out += mainIn[offset + b];
-            newOutList.append(out);
-        }
-    }
-    else if (t == "hub") {
-        QString merged;
-        merged.reserve(bw + 8);
-        for (int s = newInList.size() - 1; s >= 0; --s) {
-            int len = ComponentLogic::inputBitWidth(c, s);
-            QString sv = newInList[s].toString();
-            while (sv.length() < len) sv += '0';
-            merged += sv.left(len);
-        }
-        while (merged.length() < bw) merged += '0';
-        newOutList.append(merged.left(bw));
-    }
     else if (t == "led" || t == "output") {
         if (!newInList.isEmpty()) newOutList.append(newInList[0]);
         else                      newOutList.append(QString(bw, '0'));
     }
     else if (t == "sub") {
+        // sub 的输出由 evalInstance 独立计算后写入，本函数只保持
         newOutList = c.value("outputPorts").toList();
+    }
+    else {
+        // 纯组合逻辑类型：委托 ComponentLogic 统一实现
+        // 覆盖 not/and/or/nand/nor/xor/xnor/tgate/ntran/ptran/splitter/hub
+        QVector<QString> ins;
+        ins.reserve(newInList.size());
+        for (const auto& v : newInList) ins.append(v.toString());
+
+        QVector<QString> outs = ComponentLogic::computeCombinationalOutputs(
+            t, ins, bw, c.value("outputSplits").toList());
+        for (const auto& s : outs) newOutList.append(s);
     }
 
     const QVariantList oldOutList = c.value("outputPorts").toList();

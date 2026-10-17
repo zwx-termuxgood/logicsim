@@ -275,4 +275,141 @@ QVariantList inputPorts(const QVariantMap& comp) {
     return result;
 }
 
+// ============================================================
+// 组合逻辑输出计算（两个引擎共用）
+// ============================================================
+QVector<QString> computeCombinationalOutputs(const QString& type,
+                                             const QVector<QString>& inputs,
+                                             int bitWidth,
+                                             const QVariantList& outputSplits)
+{
+    QVector<QString> outs;
+    int bw = bitWidth < 1 ? 1 : bitWidth;
+
+    auto bitAt = [](const QString& s, int b) -> QChar {
+        return (b < s.length()) ? s[b] : QChar('0');
+    };
+    auto inStr = [&](int i) -> QString {
+        if (i < inputs.size()) return inputs[i];
+        return QString(bw, '0');
+    };
+
+    // ---- NOT ----
+    if (type == "not") {
+        const QString a = inStr(0);
+        QString out; out.reserve(bw);
+        for (int b = 0; b < bw; ++b) {
+            QChar c = bitAt(a, b);
+            if (c == 'Z' || c == 'E') out += 'E';
+            else                       out += (c == '1') ? '0' : '1';
+        }
+        outs.append(out);
+        return outs;
+    }
+
+    // ---- AND / OR / NAND / NOR / XOR / XNOR ----
+    if (type == "and" || type == "or" || type == "nand" ||
+        type == "nor" || type == "xor" || type == "xnor") {
+        const int  ic      = inputs.size();
+        const bool isAnd   = (type == "and"  || type == "nand");
+        const bool isOr    = (type == "or"   || type == "nor");
+        const bool needNot = (type == "nand" || type == "nor" || type == "xnor");
+
+        QString out; out.reserve(bw);
+        for (int b = 0; b < bw; ++b) {
+            bool hasErr = false;
+            for (int p = 0; p < ic; ++p) {
+                QChar c = bitAt(inputs[p], b);
+                if (c == 'Z' || c == 'E') { hasErr = true; break; }
+            }
+            if (hasErr) { out += 'E'; continue; }
+
+            bool r = isAnd ? true : false;
+            for (int p = 0; p < ic; ++p) {
+                bool v = (b < inputs[p].length() && inputs[p][b] == '1');
+                if (isAnd)      r = r && v;
+                else if (isOr)  r = r || v;
+                else            r = r != v;
+            }
+            if (needNot) r = !r;
+            out += r ? '1' : '0';
+        }
+        outs.append(out);
+        return outs;
+    }
+
+    // ---- TGATE / NTRAN / PTRAN ----
+    if (type == "tgate" || type == "ntran" || type == "ptran") {
+        const QString in0 = inStr(0);
+        const QString in1 = inStr(1);
+        const bool isT = (type == "tgate");
+        const bool isN = (type == "ntran");
+        // else: ptran
+
+        QString out; out.reserve(bw);
+        for (int b = 0; b < bw; ++b) {
+            QChar v0 = bitAt(in0, b);
+            QChar v1 = bitAt(in1, b);
+            if (isT) {
+                // tgate：in0=data，in1=enable；enable=1 时输出 data，否则 Z
+                if (v1 == 'Z' || v1 == 'E') out += 'E';
+                else if (v1 == '1')         out += v0;
+                else                        out += 'Z';
+            } else if (isN) {
+                // ntran：in0=gate，in1=data；gate=1 时导通
+                if (v0 == 'Z' || v0 == 'E') out += 'E';
+                else if (v0 == '1')         out += v1;
+                else                        out += 'Z';
+            } else {
+                // ptran：in0=gate，in1=data；gate=0 时导通
+                if (v0 == 'Z' || v0 == 'E') out += 'E';
+                else if (v0 == '0')         out += v1;
+                else                        out += 'Z';
+            }
+        }
+        outs.append(out);
+        return outs;
+    }
+
+    // ---- SPLITTER ----
+    if (type == "splitter") {
+        QString mainIn = inStr(0);
+        while (mainIn.length() < bw) mainIn += '0';
+        if (mainIn.length() > bw) mainIn = mainIn.left(bw);
+
+        int offset = bw;
+        for (auto& sv : outputSplits) {
+            int len = sv.toInt();
+            if (len < 1) len = 1;
+            offset -= len;
+            if (offset < 0) offset = 0;
+            QString out; out.reserve(len);
+            for (int b = 0; b < len; ++b)
+                out += (offset + b < mainIn.length()) ? mainIn[offset + b] : QChar('0');
+            outs.append(out);
+        }
+        return outs;
+    }
+
+    // ---- HUB ----
+    if (type == "hub") {
+        QString merged; merged.reserve(bw + 8);
+        for (int s = inputs.size() - 1; s >= 0; --s) {
+            int len = (s < outputSplits.size()) ? outputSplits[s].toInt() : 1;
+            if (len < 1) len = 1;
+            QString sv = inputs[s];
+            while (sv.length() < len) sv += '0';
+            if (sv.length() > len) sv = sv.left(len);
+            merged += sv;
+        }
+        while (merged.length() < bw) merged += '0';
+        if (merged.length() > bw) merged = merged.left(bw);
+        outs.append(merged);
+        return outs;
+    }
+
+    // 未识别类型（如 sub）由调用者处理
+    return outs;
+}
+
 } // namespace ComponentLogic

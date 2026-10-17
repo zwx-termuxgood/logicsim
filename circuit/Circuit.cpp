@@ -5,6 +5,7 @@
 #include <QVariantMap>
 #include <QString>
 #include <QDebug>
+#include <QSettings>
 
 static const char* kUndoPropName = "__logicsim_undo_v1";
 
@@ -22,6 +23,8 @@ Circuit::Circuit(QObject* parent) : QObject(parent) {
     m_simTimer = new QTimer(this);
     m_simTimer->setInterval(16);
     connect(m_simTimer, &QTimer::timeout, this, &Circuit::onSimTimerTick);
+
+    loadSettings();
 }
 
 Circuit::~Circuit() {
@@ -32,6 +35,59 @@ Circuit::~Circuit() {
     }
     if (m_eventEngine) { delete m_eventEngine; m_eventEngine = nullptr; }
 }
+
+// ============================================================
+// 全局设置持久化（QSettings）
+// ============================================================
+
+void Circuit::loadSettings() {
+    QSettings s;
+    QString et = s.value("sim/engineType", "event").toString();
+    m_engineType = (et == "iter") ? "iter" : "event";
+
+    if (m_eventEngine) {
+        qulonglong gd = s.value("sim/globalGateDelay", 1).toULongLong();
+        if (gd < 1) gd = 1;
+        m_eventEngine->setGlobalGateDelay(gd);
+
+        qulonglong wd = s.value("sim/wireDelay", 1).toULongLong();
+        if (wd < 1) wd = 1;
+        m_eventEngine->setWireDelay(wd);
+    }
+
+    m_simulationSpeedExp = qBound(0, s.value("sim/simulationSpeedExp", 3).toInt(), 12);
+    qulonglong sp = 1;
+    for (int i = 0; i < m_simulationSpeedExp; ++i) sp *= 10;
+    m_simulationSpeed = sp;
+
+    m_autoSpeed      = s.value("sim/autoSpeed", true).toBool();
+    m_showSimTime    = s.value("sim/showSimTime", false).toBool();
+    m_clockFrequency = qBound(1, s.value("sim/clockFrequency", 2).toInt(), 1000);
+}
+
+void Circuit::saveSettings() {
+    QSettings s;
+    s.setValue("sim/engineType", m_engineType);
+    s.setValue("sim/globalGateDelay",
+               m_eventEngine ? m_eventEngine->globalGateDelay() : qulonglong(1));
+    s.setValue("sim/wireDelay",
+               m_eventEngine ? m_eventEngine->wireDelay() : qulonglong(1));
+    s.setValue("sim/simulationSpeedExp", m_simulationSpeedExp);
+    s.setValue("sim/autoSpeed", m_autoSpeed);
+    s.setValue("sim/showSimTime", m_showSimTime);
+    s.setValue("sim/clockFrequency", m_clockFrequency);
+}
+
+void Circuit::setShowSimTime(bool b) {
+    if (m_showSimTime == b) return;
+    m_showSimTime = b;
+    saveSettings();
+    emit showSimTimeChanged();
+}
+
+// ============================================================
+// 以下为原 Circuit.cpp 内容（逐字保留）
+// ============================================================
 
 CircuitUndoData* Circuit::und() const {
     return static_cast<CircuitUndoData*>(property(kUndoPropName).value<void*>());
@@ -102,6 +158,7 @@ void Circuit::setGlobalGateDelay(qulonglong d) {
     if (d < 1) d = 1;
     if (m_eventEngine->globalGateDelay() == d) return;
     m_eventEngine->setGlobalGateDelay(d);
+    saveSettings();
     emit engineSettingsChanged();
 }
 qulonglong Circuit::wireDelay() const {
@@ -112,11 +169,13 @@ void Circuit::setWireDelay(qulonglong d) {
     if (d < 1) d = 1;
     if (m_eventEngine->wireDelay() == d) return;
     m_eventEngine->setWireDelay(d);
+    saveSettings();
     emit engineSettingsChanged();
 }
 void Circuit::setSimulationSpeed(qulonglong s) {
     if (m_simulationSpeed == s) return;
     m_simulationSpeed = s;
+    saveSettings();
     emit engineSettingsChanged();
 }
 void Circuit::setSimulationSpeedExp(int e) {
@@ -127,10 +186,12 @@ void Circuit::setSimulationSpeedExp(int e) {
     qulonglong v = 1;
     for (int i = 0; i < e; ++i) v *= 10;
     m_simulationSpeed = v;
+    saveSettings();
     emit engineSettingsChanged();
 }
 void Circuit::setAutoSpeed(bool a) {
     if (m_autoSpeed == a) return;
     m_autoSpeed = a;
+    saveSettings();
     emit engineSettingsChanged();
 }

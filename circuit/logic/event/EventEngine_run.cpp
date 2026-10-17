@@ -200,124 +200,26 @@ void EventEngine::recalcNode(int idx) {
 QVector<QString> EventEngine::computeOutputs(const Node& n,
                                              const QVector<QString>& inputs) const
 {
-    QVector<QString> outs;
-    int bw = n.bitWidth;
+    const int bw = n.bitWidth;
     const QString& t = n.type;
 
-    auto inAt = [&](int i, int w) -> QString {
-        if (i < inputs.size()) {
-            QString s = inputs[i];
-            if (s.length() != w) {
-                if (s.length() < w) s = QString(w - s.length(), '0') + s;
-                else s = s.right(w);
-            }
-            return s;
+    // ---- 数据源相关类型：各自处理 ----
+    if (t == "input" || t == "const" || t == "output" || t == "led") {
+        QString s = inputs.isEmpty() ? QString(bw, '0') : inputs[0];
+        if (s.length() != bw) {
+            if (s.length() < bw) s = QString(bw - s.length(), '0') + s;
+            else                 s = s.right(bw);
         }
-        return QString(w, '0');
-    };
-
-    if (t == "input" || t == "const") {
-        outs.append(inAt(0, bw));
-    } else if (t == "clock") {
-        if (!n.outVals.isEmpty()) outs.append(n.outVals[0]);
-        else                      outs.append(QString(bw, '0'));
-    } else if (t == "output" || t == "led") {
-        outs.append(inAt(0, bw));
-    } else if (t == "not") {
-        outs.append(mapUnary(inAt(0, bw), bw));
-    } else if (t == "and" || t == "or" || t == "nand" ||
-               t == "nor" || t == "xor" || t == "xnor") {
-        int ic = inputs.size();
-        const bool isAnd   = (t == "and" || t == "nand");
-        const bool isOr    = (t == "or"  || t == "nor");
-        const bool needNot = (t == "nand" || t == "nor" || t == "xnor");
-        QString out; out.reserve(bw);
-        for (int b = 0; b < bw; ++b) {
-            bool hasErr = false;
-            for (int p = 0; p < ic; ++p) {
-                QChar c = (b < inputs[p].length()) ? inputs[p][b] : QChar('0');
-                if (c == 'Z' || c == 'E') { hasErr = true; break; }
-            }
-            if (hasErr) { out += 'E'; continue; }
-            bool r = isAnd ? true : false;
-            for (int p = 0; p < ic; ++p) {
-                bool v = (b < inputs[p].length() && inputs[p][b] == '1');
-                if (isAnd)      r = r && v;
-                else if (isOr)  r = r || v;
-                else            r = r != v;
-            }
-            if (needNot) r = !r;
-            out += r ? '1' : '0';
-        }
-        outs.append(out);
-    } else if (t == "tgate") {
-        QString d = inAt(0, bw);
-        QString e = inAt(1, bw);
-        QString out; out.reserve(bw);
-        for (int b = 0; b < bw; ++b) {
-            QChar dv = (b < d.length()) ? d[b] : QChar('0');
-            QChar ev = (b < e.length()) ? e[b] : QChar('0');
-            if (ev == 'Z' || ev == 'E') out += 'E';
-            else if (ev == '1')         out += dv;
-            else                        out += 'Z';
-        }
-        outs.append(out);
-    } else if (t == "ntran") {
-        QString g = inAt(0, bw);
-        QString d = inAt(1, bw);
-        QString out; out.reserve(bw);
-        for (int b = 0; b < bw; ++b) {
-            QChar gv = (b < g.length()) ? g[b] : QChar('0');
-            QChar dv = (b < d.length()) ? d[b] : QChar('0');
-            if (gv == 'Z' || gv == 'E') out += 'E';
-            else if (gv == '1')         out += dv;
-            else                        out += 'Z';
-        }
-        outs.append(out);
-    } else if (t == "ptran") {
-        QString g = inAt(0, bw);
-        QString d = inAt(1, bw);
-        QString out; out.reserve(bw);
-        for (int b = 0; b < bw; ++b) {
-            QChar gv = (b < g.length()) ? g[b] : QChar('0');
-            QChar dv = (b < d.length()) ? d[b] : QChar('0');
-            if (gv == 'Z' || gv == 'E') out += 'E';
-            else if (gv == '0')         out += dv;
-            else                        out += 'Z';
-        }
-        outs.append(out);
-    } else if (t == "splitter") {
-        QString mainIn;
-        if (!inputs.isEmpty()) mainIn = inputs[0];
-        while (mainIn.length() < bw) mainIn += '0';
-        if (mainIn.length() > bw) mainIn = mainIn.left(bw);
-
-        QVariantList splits = n.raw.value("outputSplits").toList();
-        int offset = bw;
-        for (auto& sv : splits) {
-            int len = sv.toInt();
-            if (len < 1) len = 1;
-            offset -= len;
-            if (offset < 0) offset = 0;
-            QString out; out.reserve(len);
-            for (int b = 0; b < len; ++b)
-                out += (offset + b < mainIn.length()) ? mainIn[offset + b] : QChar('0');
-            outs.append(out);
-        }
-    } else if (t == "hub") {
-        QString merged; merged.reserve(bw + 8);
-        for (int s = inputs.size() - 1; s >= 0; --s) {
-            int len = ComponentLogic::inputBitWidth(n.raw, s);
-            if (len < 1) len = 1;
-            QString sv = (s < inputs.size()) ? inputs[s] : QString(len, '0');
-            while (sv.length() < len) sv += '0';
-            if (sv.length() > len) sv = sv.left(len);
-            merged += sv;
-        }
-        while (merged.length() < bw) merged += '0';
-        if (merged.length() > bw) merged = merged.left(bw);
-        outs.append(merged);
+        return { s };
+    }
+    if (t == "clock") {
+        if (!n.outVals.isEmpty()) return { n.outVals[0] };
+        return { QString(bw, '0') };
     }
 
-    return outs;
+    // ---- 纯组合逻辑类型：委托 ComponentLogic 统一实现 ----
+    // 覆盖 not/and/or/nand/nor/xor/xnor/tgate/ntran/ptran/splitter/hub
+    // 未识别类型（如 sub）返回空，保持与旧行为一致（sub 节点输出由外部驱动）
+    return ComponentLogic::computeCombinationalOutputs(
+        t, inputs, bw, n.raw.value("outputSplits").toList());
 }

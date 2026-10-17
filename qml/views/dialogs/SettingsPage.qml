@@ -15,6 +15,7 @@ Rectangle {
     property string wireDelayText: "1"
     property int speedExp: 3
     property bool autoSpeed: true
+    property bool showSimTime: false
     property string errorText: ""
 
     function syncFromCircuit() {
@@ -23,6 +24,7 @@ Rectangle {
         wireDelayText = String(main.circuitRef.wireDelay)
         autoSpeed = main.circuitRef.autoSpeed
         speedExp = main.circuitRef.simulationSpeedExp
+        showSimTime = main.circuitRef.showSimTime
         errorText = ""
     }
 
@@ -244,7 +246,7 @@ Rectangle {
 
             Rectangle {
                 width: parent.width
-                height: settingsPage.engineIndex === 0 ? 190 : 0
+                height: settingsPage.engineIndex === 0 ? 250 : 0
                 visible: settingsPage.engineIndex === 0
                 color: Theme.bgPanel
                 border.color: Theme.border
@@ -323,6 +325,21 @@ Rectangle {
                             anchors.verticalCenter: parent.verticalCenter
                         }
                     }
+
+                    // ★ 新增：显示仿真时间开关
+                    CheckBox {
+                        id: showSimTimeBox
+                        text: "显示仿真时间"
+                        checked: settingsPage.showSimTime
+                        onToggled: settingsPage.showSimTime = checked
+                        contentItem: Text {
+                            text: showSimTimeBox.text
+                            color: Theme.text
+                            font.pixelSize: Theme.fsNormal
+                            leftPadding: showSimTimeBox.indicator.width + 6
+                            verticalAlignment: Text.AlignVCenter
+                        }
+                    }
                 }
             }
 
@@ -394,6 +411,9 @@ Rectangle {
             }
         }
 
+        // ★ 显示仿真时间开关
+        main.circuitRef.showSimTime = showSimTime
+
         main.statusText = "设置已应用"
     }
 
@@ -402,5 +422,6 @@ Rectangle {
         wireDelayText = "1"
         speedExp = 3
         autoSpeed = true
+        showSimTime = false
     }
 }

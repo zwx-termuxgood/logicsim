@@ -63,6 +63,7 @@ void Circuit::setEngineType(const QString& t) {
     if (m_clockRunning) stopClock();
 
     m_engineType = t;
+    saveSettings();
 
     if (m_engineType == "event") {
         rebuildEventEngine();
@@ -89,23 +90,15 @@ void Circuit::evaluateAll() {
 
     if (m_engineType == "event") {
         if (m_simulationRunning && m_eventEngine) {
-            // 仿真进行中：立即重建引擎，让编辑（新门、新连线、属性变化）立即生效
             rebuildEventEngine();
             applyEngineOutputsToContexts();
         } else {
-            // 未仿真：等用户点"开始仿真"时再重建
             m_engineDirty = true;
         }
     } else {
         IterEngine::evaluateAll(m_root, m_subContexts);
     }
 
-    // 无论哪个引擎，都独立求值一次当前子电路
-    // （与旧引擎行为一致：编辑视图下的子电路始终显示它作为独立电路的求值结果）
-    //
-    // ★ 但子电路编辑模式（switchEditContext 进入，!m_viewOnly）且事件引擎仿真中时，
-    //   currentCtx 的求值已由事件引擎完成（rebuild + applyEngineOutputsToContexts），
-    //   再用 IterEngine 独立求值会把引擎的实时结果覆盖掉，必须跳过。
     bool eventSimOnCurrent = !m_viewOnly &&
                              m_engineType == "event" &&
                              m_simulationRunning;
@@ -136,9 +129,6 @@ void Circuit::rebuildEventEngine() {
         subWires[it.key()] = it.value().wires;
     }
 
-    // ★ 若以「子电路编辑模式」查看某个子电路（switchEditContext 进入，非 viewOnly），
-    //   则该子电路在主电路中可能根本没有被实例化。此时把当前子电路当作 root 构建，
-    //   使它能被事件引擎仿真。
     bool editingSubAsRoot = !m_currentCtxId.isEmpty() && !m_viewOnly;
     if (editingSubAsRoot) {
         auto it = m_subContexts.find(m_currentCtxId);
@@ -155,10 +145,9 @@ void Circuit::rebuildEventEngine() {
     m_eventEngine->build(m_root.components, m_root.wires, subComps, subWires);
     m_engineDirty = false;
     m_needFullApply = true;
-    m_ctxSubInstCache.clear();  // 全量回填一次
+    m_ctxSubInstCache.clear();
 }
 
-// ---------- 单个元件的输出回填（内部辅助）----------
 static void updateOneComponent(QVariantMap& c,
                                EventEngine* eng,
                                const QHash<QString, CircuitContext>& subContexts)
@@ -225,7 +214,6 @@ static void updateOneComponent(QVariantMap& c,
 void Circuit::applyEngineOutputsToContexts() {
     if (!m_eventEngine) return;
 
-    // ★ 子电路编辑模式：引擎的根就是当前子电路，需要回填到 currentCtx 而非 m_root
     bool editingSubAsRoot = !m_currentCtxId.isEmpty() && !m_viewOnly;
     Context* targetPtr = editingSubAsRoot ? ctxById(m_currentCtxId) : &m_root;
     if (!targetPtr) targetPtr = &m_root;
@@ -242,18 +230,16 @@ void Circuit::applyEngineOutputsToContexts() {
         return;
     }
 
-    // 增量路径：只处理本次输出变化的节点
     QVector<QString> dirty = m_eventEngine->takeDirtyQids();
     if (dirty.isEmpty()) return;
 
-    // 一次性建索引：O(C)
     QHash<QString, int> idToIdx;
     idToIdx.reserve(targetCtx.components.size() * 2);
     for (int i = 0; i < targetCtx.components.size(); ++i)
         idToIdx.insert(targetCtx.components[i].toMap().value("id").toString(), i);
 
     for (const QString& qid : dirty) {
-        if (qid.contains('/')) continue;  // 子电路内节点，不进 target root
+        if (qid.contains('/')) continue;
         int i = idToIdx.value(qid, -1);
         if (i < 0) continue;
         QVariantMap c = targetCtx.components[i].toMap();
@@ -261,22 +247,18 @@ void Circuit::applyEngineOutputsToContexts() {
         targetCtx.components[i] = c;
     }
 
-    // ★ 只在浏览模式（viewOnly）下需要从父实例同步刷新；
-    //   editingSubAsRoot 已经直接写回 currentCtx，再用 IterEngine 覆盖会抹掉事件引擎结果。
     if (m_viewOnly) {
         refreshCurrentSubContext();
     }
 }
 
 QStringList Circuit::engineQidsFor(const QString& ctxId, const QString& localCompId) const {
-    // ★ 子电路编辑模式：当前子电路就是引擎的根，localId 即是 qid，无前缀
     if (!m_currentCtxId.isEmpty() && !m_viewOnly) {
         return QStringList{ localCompId };
     }
 
     if (ctxId.isEmpty()) return QStringList{ localCompId };
 
-    // 惰性构建/复用：ctxId → 该子电路的所有实例 localId 列表
     auto it = m_ctxSubInstCache.constFind(ctxId);
     QStringList instIds;
     if (it != m_ctxSubInstCache.constEnd()) {
@@ -317,6 +299,7 @@ void Circuit::clear() {
     if (m_simulationRunning) pauseSimulation();
     if (m_eventEngine) m_eventEngine->clear();
     m_engineDirty = true;
+    m_ctxSubInstCache.clear();
     emit contextChanged();
     emit subcircuitsChanged();
     emit editContextsChanged();
@@ -328,7 +311,6 @@ void Circuit::clear() {
 void Circuit::refreshErrors() {
     m_errors.clear();
     auto checkCtx = [&](const Context& ctx, const QString& label) {
-        // 一次性建索引：O(C)
         QHash<QString, int> idToIdx;
         idToIdx.reserve(ctx.components.size() * 2);
         for (int i = 0; i < ctx.components.size(); ++i)
@@ -384,21 +366,24 @@ bool Circuit::fromJson(const QVariantMap& data) {
     m_viewOnly = false;
     m_clockStates = dec.clockStates;
     m_subCounter = dec.subCounter;
-    m_clockFrequency = dec.clockFrequency;
     m_clockTickCount = dec.clockTickCount;
-    m_engineType = dec.engineType;
     m_needFullApply = true;
 
+    // ★ 全局设置不随电路文件恢复（保留 QSettings 中当前配置）
+    //   m_clockFrequency  = dec.clockFrequency;
+    //   m_engineType      = dec.engineType;
+    //   m_simulationSpeed = dec.simulationSpeed;
+    //   m_simulationSpeedExp = dec.simulationSpeedExp;
+    //   m_autoSpeed       = dec.autoSpeed;
+
     if (m_eventEngine) {
-        m_eventEngine->setGlobalGateDelay(dec.globalGateDelay);
-        m_eventEngine->setWireDelay(dec.wireDelay);
+        // ★ 全局延迟不随电路恢复
+        //   m_eventEngine->setGlobalGateDelay(dec.globalGateDelay);
+        //   m_eventEngine->setWireDelay(dec.wireDelay);
         m_eventEngine->clearGateTypeDelays();
         for (auto it = dec.gateTypeDelays.begin(); it != dec.gateTypeDelays.end(); ++it)
             m_eventEngine->setGateTypeDelay(it.key(), it.value());
     }
-    m_simulationSpeed = dec.simulationSpeed;
-    m_simulationSpeedExp = dec.simulationSpeedExp;
-    m_autoSpeed = dec.autoSpeed;
 
     if (m_engineType == "event") {
         rebuildEventEngine();
@@ -425,12 +410,11 @@ bool Circuit::fromJson(const QVariantMap& data) {
     emit clockChanged();
     emit engineChanged();
     emit engineSettingsChanged();
-    emit structureChanged();   // ★ 新增：加载存档后 QML 需重建端口/连线缓存
+    emit structureChanged();
     emit changed();
     return true;
 }
 
-// 从字节流里提取第一个完整的 { ... } 块（字符串内的 { } 会正确跳过）
 static QByteArray extractFirstJsonObject(const QByteArray& data) {
     int depth = 0;
     int start = -1;
@@ -457,7 +441,6 @@ static QByteArray extractFirstJsonObject(const QByteArray& data) {
     return QByteArray();
 }
 
-// 从 pos 开始是否只剩空白字符
 static bool isOnlyWhitespaceFrom(const QByteArray& data, int pos) {
     for (int i = pos; i < data.size(); ++i) {
         char c = data[i];
@@ -466,7 +449,6 @@ static bool isOnlyWhitespaceFrom(const QByteArray& data, int pos) {
     }
     return true;
 }
-
 
 bool Circuit::saveToFile(const QString& path) {
     qWarning() << "[FPTRACE] saveToFile ENTER path=" << path;
@@ -482,15 +464,12 @@ bool Circuit::saveToFile(const QString& path) {
     QFile f(path);
 
     if (path.startsWith("content://")) {
-        // Android SAF：ContentResolver 不支持 Truncate flag
-        // 直接 WriteOnly，系统会替换内容
         if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
             qWarning() << "[saveToFile] content:// open failed:" << path
                        << "reason:" << f.errorString();
             return false;
         }
     } else {
-        // 桌面 / file:// 路径：带 Truncate，杜绝旧内容残留
         QString local = path;
         if (local.startsWith("file://")) {
             local = QUrl(local).toLocalFile();
@@ -549,7 +528,6 @@ bool Circuit::loadFromFile(const QString& path) {
         << "at offset" << err.offset
         << "(file size" << data.size() << ")";
 
-        // 尝试从垃圾里提取第一个完整 JSON 对象
         cleanData = extractFirstJsonObject(data);
         if (cleanData.isEmpty()) {
             qWarning() << "[loadFromFile] extract returned empty, cannot recover";
@@ -594,14 +572,12 @@ bool Circuit::loadFromFile(const QString& path) {
         return false;
     }
 
-    // 自愈：把干净内容写回原文件，删掉垃圾
     if (needsHeal) {
         qWarning() << "[loadFromFile] healing: writing" << cleanData.size()
         << "bytes back to" << path;
         QFile wf(path);
         bool openOk = false;
         if (path.startsWith("content://")) {
-            // Android SAF：ContentResolver 不支持 Truncate flag
             openOk = wf.open(QIODevice::WriteOnly | QIODevice::Text);
         } else {
             openOk = wf.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text);
@@ -626,7 +602,97 @@ bool Circuit::loadFromFile(const QString& path) {
     return ok;
 }
 
-void Circuit::pushUndo(const QString& mergeKey) {
+// ============================================================
+// 撤销 / 重做：基于 UndoEntry（增量）
+// ============================================================
+
+UndoEntry Circuit::captureUndoEntry(UndoScope scope, const QString& ctxId,
+                                    const QString& mergeKey) const
+{
+    UndoEntry e;
+    e.scope = scope;
+    e.mergeKey = mergeKey;
+    e.time = QDateTime::currentDateTime();
+
+    if (scope == UndoScope::CurrentCtx) {
+        e.ctxId = ctxId;
+        if (ctxId.isEmpty()) {
+            e.singleCtx = m_root;
+        } else {
+            auto it = m_subContexts.constFind(ctxId);
+            if (it != m_subContexts.constEnd())
+                e.singleCtx = it.value();
+        }
+    } else if (scope == UndoScope::Full) {
+        e.allContexts.insert(QString(), m_root);
+        for (auto it = m_subContexts.constBegin(); it != m_subContexts.constEnd(); ++it)
+            e.allContexts.insert(it.key(), it.value());
+        e.subNames = m_subNames;
+        e.subCounter = m_subCounter;
+        e.clockStates = m_clockStates;
+    } else { // MetaOnly
+        e.subNames = m_subNames;
+        e.subCounter = m_subCounter;
+    }
+    return e;
+}
+
+UndoEntry Circuit::captureSameScopeAs(const UndoEntry& ref) const {
+    return captureUndoEntry(ref.scope, ref.ctxId, QString());
+}
+
+void Circuit::applyUndoEntry(const UndoEntry& e) {
+    QString savedCtx = m_currentCtxId;
+    bool savedView = m_viewOnly;
+
+    if (e.scope == UndoScope::CurrentCtx) {
+        if (e.ctxId.isEmpty()) m_root = e.singleCtx;
+        else                   m_subContexts[e.ctxId] = e.singleCtx;
+    } else if (e.scope == UndoScope::Full) {
+        auto it = e.allContexts.constFind(QString());
+        if (it != e.allContexts.constEnd()) m_root = it.value();
+        m_subContexts.clear();
+        for (auto it2 = e.allContexts.constBegin(); it2 != e.allContexts.constEnd(); ++it2) {
+            if (!it2.key().isEmpty())
+                m_subContexts.insert(it2.key(), it2.value());
+        }
+        m_subNames = e.subNames;
+        m_subCounter = e.subCounter;
+        m_clockStates = e.clockStates;
+    } else { // MetaOnly
+        m_subNames = e.subNames;
+        m_subCounter = e.subCounter;
+    }
+
+    // 恢复后当前上下文可能已不存在
+    if (!savedCtx.isEmpty() && !m_subContexts.contains(savedCtx)) {
+        savedCtx = "";
+        savedView = false;
+    }
+    bool ctxChanged = (savedCtx != m_currentCtxId) || (savedView != m_viewOnly);
+    m_currentCtxId = savedCtx;
+    m_viewOnly = savedView;
+
+    m_engineDirty = true;
+    if (m_engineType == "event") {
+        rebuildEventEngine();
+        applyEngineOutputsToContexts();
+    } else {
+        evaluateAll();
+    }
+
+    if (ctxChanged) emit contextChanged();
+    emit subcircuitsChanged();
+    emit editContextsChanged();
+    emit errorsChanged();
+    emit clockChanged();
+    emit structureChanged();
+    emit changed();
+}
+
+void Circuit::pushUndoInternal(UndoScope scope, const QString& ctxId,
+                               const QString& mergeKey)
+{
     CircuitUndoData* d = und();
     if (!d) return;
     if (m_viewOnly) return;
@@ -641,14 +707,26 @@ void Circuit::pushUndo(const QString& mergeKey) {
         }
     }
 
-    QVariantMap snap = toJson();
-    d->undoStack.push_back(snap);
+    UndoEntry e = captureUndoEntry(scope, ctxId, mergeKey);
+    d->undoStack.push_back(e);
     while (d->undoStack.size() > static_cast<size_t>(d->maxUndo))
         d->undoStack.erase(d->undoStack.begin());
     d->redoStack.clear();
     d->lastMergeKey = mergeKey;
     d->lastUndoTime = QDateTime::currentDateTime();
     emit undoRedoChanged();
+}
+
+void Circuit::pushUndo(const QString& mergeKey) {
+    pushUndoInternal(UndoScope::CurrentCtx, m_currentCtxId, mergeKey);
+}
+
+void Circuit::pushUndoAll(const QString& mergeKey) {
+    pushUndoInternal(UndoScope::Full, QString(), mergeKey);
+}
+
+void Circuit::pushUndoMeta(const QString& mergeKey) {
+    pushUndoInternal(UndoScope::MetaOnly, QString(), mergeKey);
 }
 
 void Circuit::breakUndoMerge() {
@@ -666,15 +744,21 @@ void Circuit::undo() {
     if (d->undoStack.empty()) return;
 
     d->redoRunning = true;
-    QVariantMap cur = toJson();
-    QVariantMap prev = d->undoStack.back();
+
+    UndoEntry toUndo = d->undoStack.back();
     d->undoStack.pop_back();
+
+    UndoEntry cur = captureSameScopeAs(toUndo);
     d->redoStack.push_back(cur);
     while (d->redoStack.size() > static_cast<size_t>(d->maxUndo))
         d->redoStack.erase(d->redoStack.begin());
+
     breakUndoMerge();
 
-    restoreSnapshot(prev, true);
+    d->restoring = true;
+    applyUndoEntry(toUndo);
+    d->restoring = false;
+
     d->redoRunning = false;
     emit undoRedoChanged();
 }
@@ -687,55 +771,28 @@ void Circuit::redo() {
     if (d->redoStack.empty()) return;
 
     d->redoRunning = true;
-    QVariantMap cur = toJson();
-    QVariantMap next = d->redoStack.back();
+
+    UndoEntry toRedo = d->redoStack.back();
     d->redoStack.pop_back();
+
+    UndoEntry cur = captureSameScopeAs(toRedo);
     d->undoStack.push_back(cur);
     while (d->undoStack.size() > static_cast<size_t>(d->maxUndo))
         d->undoStack.erase(d->undoStack.begin());
+
     breakUndoMerge();
 
-    restoreSnapshot(next, true);
+    d->restoring = true;
+    applyUndoEntry(toRedo);
+    d->restoring = false;
+
     d->redoRunning = false;
     emit undoRedoChanged();
 }
 
-void Circuit::restoreSnapshot(const QVariantMap& snap, bool emitSignals) {
-    CircuitUndoData* d = und();
-    if (!d) return;
-    if (d->restoring) return;
-
-    QString savedCtx = m_currentCtxId;
-    bool savedView = m_viewOnly;
-
-    d->restoring = true;
-    fromJson(snap);
-    d->restoring = false;
-
-    if (!savedCtx.isEmpty() && !m_subContexts.contains(savedCtx)) {
-        savedCtx = "";
-        savedView = false;
-    }
-    bool ctxChanged = (savedCtx != m_currentCtxId) || (savedView != m_viewOnly);
-    m_currentCtxId = savedCtx;
-    m_viewOnly = savedView;
-
-    // ★ 恢复 ctx 后按当前 ctx 重新求值/重建引擎。
-    //   fromJson 内部是按 m_currentCtxId="" （root）重建引擎的，
-    //   若撤销/重做发生在子电路编辑模式下，引擎状态会错成 root 的，
-    //   这里用 evaluateAll 统一处理，它会根据当前 ctx 与引擎类型正确求值/标记 dirty。
-    evaluateAll();
-
-    if (!emitSignals) return;
-
-    if (ctxChanged) emit contextChanged();
-    emit subcircuitsChanged();
-    emit editContextsChanged();
-    emit errorsChanged();
-    emit clockChanged();
-    emit structureChanged();   // ★ 修复：撤销/重做后 QML 必须重建端口/连线缓存
-    emit changed();
-}
+// ============================================================
+// 最近文件
+// ============================================================
 
 void Circuit::loadRecentFiles() {
     m_recentFiles = RecentStore::load();
@@ -763,14 +820,7 @@ void Circuit::addRecentFile(const QString& path) {
     m["time"] = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm");
     m_recentFiles.prepend(m);
     while (m_recentFiles.size() > 10) m_recentFiles.removeLast();
-    qWarning() << "[FPTRACE] addRecentFile: about to saveRecentFiles";
     saveRecentFiles();
-    qWarning() << "[FPTRACE] addRecentFile: about to EMIT recentFilesChanged (queued)";
-    // ★ 关键修复：必须用队列连接延迟发信号。
-    // 若同步 emit，会立即触发 QML 的 onRecentFilesChanged
-    // → Repeater 同步重建委托 → 委托作用域失效
-    // → 调用栈上层（loadFromFile 之后的 currentFilePath = path）抛 ReferenceError
-    // → 路径赋值丢失，后续 saveToFile 写到旧文件
     QMetaObject::invokeMethod(this, [this]() {
         emit recentFilesChanged();
     }, Qt::QueuedConnection);

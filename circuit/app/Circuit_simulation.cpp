@@ -8,6 +8,12 @@ static const quint64 kSimRunBudget = 200000;
 // ============================================================
 
 void Circuit::tick() {
+    // ★ 保护：事件引擎下，非仿真状态不允许驱动时钟
+    if (m_engineType == "event" && !m_simulationRunning) {
+        if (m_clockRunning) stopClock();
+        return;
+    }
+
     m_clockTickCount++;
 
     for (auto it = m_clockStates.begin(); it != m_clockStates.end(); ++it)
@@ -27,19 +33,10 @@ void Circuit::tick() {
         }
     };
 
-    // ★ 子电路编辑模式：引擎根是当前子电路，触发 clock 时只需作用在 currentCtx
     bool editingSubAsRoot = !m_currentCtxId.isEmpty() && !m_viewOnly;
 
     if (m_engineType == "event" && m_eventEngine) {
-        if (!m_simulationRunning) {
-            updateClockOutputs(m_root);
-            for (auto it = m_subContexts.begin(); it != m_subContexts.end(); ++it)
-                updateClockOutputs(it.value());
-            emit changed();
-            emit clockChanged();
-            return;
-        }
-
+        // 走到这里说明 m_simulationRunning == true（开头已拦截非仿真）
         auto applyToCtx = [&](Context& ctx, const QString& ctxId) {
             for (int i = 0; i < ctx.components.size(); ++i) {
                 QVariantMap c = ctx.components[i].toMap();
@@ -59,8 +56,6 @@ void Circuit::tick() {
             }
         };
 
-        // ★ 子电路编辑模式：引擎根是当前子电路，只需处理 currentCtx 的 clock，
-        //   强行遍历 m_root 等会命中引擎中不存在的 qid（root 的元件不在引擎里）。
         if (editingSubAsRoot) {
             applyToCtx(currentCtx(), QString());
         } else {
@@ -75,6 +70,7 @@ void Circuit::tick() {
         m_eventEngine->run(advance, 200000);
         applyEngineOutputsToContexts();
     } else {
+        // 迭代引擎：时钟独立运行，非仿真也能 tick
         updateClockOutputs(m_root);
         for (auto it = m_subContexts.begin(); it != m_subContexts.end(); ++it)
             updateClockOutputs(it.value());
@@ -87,6 +83,7 @@ void Circuit::tick() {
 
 void Circuit::startClock() {
     if (!m_clockTimer) return;
+    // ★ 事件引擎下，非仿真状态禁止启动时钟
     if (m_engineType == "event" && !m_simulationRunning) return;
     m_clockRunning = true;
     int interval = qMax(1, 1000 / qMax(1, m_clockFrequency));
@@ -107,6 +104,7 @@ void Circuit::setClockFrequency(int hz) {
         int interval = qMax(1, 1000 / m_clockFrequency);
         m_clockTimer->start(interval);
     }
+    saveSettings();                       // ★ 新增：频率持久化
     emit clockChanged();
 }
 
@@ -247,12 +245,14 @@ void Circuit::pauseSimulation() {
     if (!m_simulationRunning) return;
     m_simulationRunning = false;
     if (m_simTimer) m_simTimer->stop();
+    if (m_clockRunning) stopClock();      // ★ 关键：暂停仿真时停时钟
     emit simulationChanged();
     emit changed();
 }
 
 void Circuit::resetSimulation() {
     if (!m_eventEngine) return;
+    if (m_clockRunning) stopClock();      // ★ 关键：复位仿真时停时钟
     m_eventEngine->reset();
     applyEngineOutputsToContexts();
     emit simulationChanged();
@@ -275,7 +275,6 @@ void Circuit::simulateStep() {
 void Circuit::onSimTimerTick() {
     if (!m_eventEngine || !m_simulationRunning) return;
 
-    // 电路被编辑过 → 重建引擎
     if (m_engineDirty) {
         rebuildEventEngine();
     }
