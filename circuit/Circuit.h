@@ -8,6 +8,7 @@
 #include <QStringList>
 #include <QHash>
 #include <QSet>
+#include <QVector>
 #include <QTimer>
 #include <QDateTime>
 
@@ -199,6 +200,14 @@ private slots:
 private:
     using Context = CircuitContext;
 
+    // ★ 浏览栈帧：记录进入子电路前的上下文与当前实例路径，
+    //   leaveSubcircuit 时弹栈即可逐级返回
+    struct BrowseFrame {
+        QString ctxId;         // 进入前所在的上下文 ID（root 为 ""）
+        bool    viewOnly;      // 进入前是否为浏览模式
+        QString instancePath;  // 进入前"当前浏览的实例"在 root 中的完整路径
+    };
+
     Context m_root;
     QHash<QString, Context> m_subContexts;
     QHash<QString, QString> m_subNames;
@@ -207,6 +216,9 @@ private:
     int m_subCounter = 0;
     QVariantList m_errors;
     QVariantList m_recentFiles;
+
+    QVector<BrowseFrame> m_browseStack;       // ★ 浏览历史栈
+    QString m_currentInstancePath;            // ★ 当前浏览的实例在 root 中的完整路径（如 "C1/C2"）
 
     QVariantList m_clipboardCache;      // 剪贴板 C++ 缓存（避免 QML 往返破坏深层结构）
     mutable QHash<QString, QStringList> m_ctxSubInstCache;  // ctxId → 子实例 localId 列表，惰性缓存

@@ -102,7 +102,14 @@ void Circuit::evaluateAll() {
 
     // 无论哪个引擎，都独立求值一次当前子电路
     // （与旧引擎行为一致：编辑视图下的子电路始终显示它作为独立电路的求值结果）
-    if (!m_currentCtxId.isEmpty()) {
+    //
+    // ★ 但子电路编辑模式（switchEditContext 进入，!m_viewOnly）且事件引擎仿真中时，
+    //   currentCtx 的求值已由事件引擎完成（rebuild + applyEngineOutputsToContexts），
+    //   再用 IterEngine 独立求值会把引擎的实时结果覆盖掉，必须跳过。
+    bool eventSimOnCurrent = !m_viewOnly &&
+                             m_engineType == "event" &&
+                             m_simulationRunning;
+    if (!m_currentCtxId.isEmpty() && !eventSimOnCurrent) {
         auto it = m_subContexts.find(m_currentCtxId);
         if (it != m_subContexts.end())
             IterEngine::evaluateStandalone(it.value(), m_subContexts);
@@ -128,6 +135,23 @@ void Circuit::rebuildEventEngine() {
         subComps[it.key()] = it.value().components;
         subWires[it.key()] = it.value().wires;
     }
+
+    // ★ 若以「子电路编辑模式」查看某个子电路（switchEditContext 进入，非 viewOnly），
+    //   则该子电路在主电路中可能根本没有被实例化。此时把当前子电路当作 root 构建，
+    //   使它能被事件引擎仿真。
+    bool editingSubAsRoot = !m_currentCtxId.isEmpty() && !m_viewOnly;
+    if (editingSubAsRoot) {
+        auto it = m_subContexts.find(m_currentCtxId);
+        if (it != m_subContexts.end()) {
+            m_eventEngine->build(it.value().components, it.value().wires,
+                                 subComps, subWires);
+            m_engineDirty = false;
+            m_needFullApply = true;
+            m_ctxSubInstCache.clear();
+            return;
+        }
+    }
+
     m_eventEngine->build(m_root.components, m_root.wires, subComps, subWires);
     m_engineDirty = false;
     m_needFullApply = true;
@@ -201,44 +225,55 @@ static void updateOneComponent(QVariantMap& c,
 void Circuit::applyEngineOutputsToContexts() {
     if (!m_eventEngine) return;
 
+    // ★ 子电路编辑模式：引擎的根就是当前子电路，需要回填到 currentCtx 而非 m_root
+    bool editingSubAsRoot = !m_currentCtxId.isEmpty() && !m_viewOnly;
+    Context* targetPtr = editingSubAsRoot ? ctxById(m_currentCtxId) : &m_root;
+    if (!targetPtr) targetPtr = &m_root;
+    Context& targetCtx = *targetPtr;
+
     if (m_needFullApply) {
         m_needFullApply = false;
-        for (int i = 0; i < m_root.components.size(); ++i) {
-            QVariantMap c = m_root.components[i].toMap();
+        for (int i = 0; i < targetCtx.components.size(); ++i) {
+            QVariantMap c = targetCtx.components[i].toMap();
             updateOneComponent(c, m_eventEngine, m_subContexts);
-            m_root.components[i] = c;
+            targetCtx.components[i] = c;
         }
         m_eventEngine->clearDirtyQids();
-        refreshCurrentSubContext();
         return;
     }
 
     // 增量路径：只处理本次输出变化的节点
     QVector<QString> dirty = m_eventEngine->takeDirtyQids();
-    if (dirty.isEmpty()) {
-        refreshCurrentSubContext();
-        return;
-    }
+    if (dirty.isEmpty()) return;
 
     // 一次性建索引：O(C)
     QHash<QString, int> idToIdx;
-    idToIdx.reserve(m_root.components.size() * 2);
-    for (int i = 0; i < m_root.components.size(); ++i)
-        idToIdx.insert(m_root.components[i].toMap().value("id").toString(), i);
+    idToIdx.reserve(targetCtx.components.size() * 2);
+    for (int i = 0; i < targetCtx.components.size(); ++i)
+        idToIdx.insert(targetCtx.components[i].toMap().value("id").toString(), i);
 
     for (const QString& qid : dirty) {
-        if (qid.contains('/')) continue;  // 子电路内节点，不进 root
+        if (qid.contains('/')) continue;  // 子电路内节点，不进 target root
         int i = idToIdx.value(qid, -1);
         if (i < 0) continue;
-        QVariantMap c = m_root.components[i].toMap();
+        QVariantMap c = targetCtx.components[i].toMap();
         updateOneComponent(c, m_eventEngine, m_subContexts);
-        m_root.components[i] = c;
+        targetCtx.components[i] = c;
     }
 
-    refreshCurrentSubContext();
+    // ★ 只在浏览模式（viewOnly）下需要从父实例同步刷新；
+    //   editingSubAsRoot 已经直接写回 currentCtx，再用 IterEngine 覆盖会抹掉事件引擎结果。
+    if (m_viewOnly) {
+        refreshCurrentSubContext();
+    }
 }
 
 QStringList Circuit::engineQidsFor(const QString& ctxId, const QString& localCompId) const {
+    // ★ 子电路编辑模式：当前子电路就是引擎的根，localId 即是 qid，无前缀
+    if (!m_currentCtxId.isEmpty() && !m_viewOnly) {
+        return QStringList{ localCompId };
+    }
+
     if (ctxId.isEmpty()) return QStringList{ localCompId };
 
     // 惰性构建/复用：ctxId → 该子电路的所有实例 localId 列表
@@ -390,6 +425,7 @@ bool Circuit::fromJson(const QVariantMap& data) {
     emit clockChanged();
     emit engineChanged();
     emit engineSettingsChanged();
+    emit structureChanged();   // ★ 新增：加载存档后 QML 需重建端口/连线缓存
     emit changed();
     return true;
 }
@@ -470,7 +506,7 @@ bool Circuit::saveToFile(const QString& path) {
     qint64 n = f.write(bytes);
     if (n != bytes.size()) {
         qWarning() << "[saveToFile] short write:" << n << "/" << bytes.size()
-                   << "reason:" << f.errorString();
+        << "reason:" << f.errorString();
         f.close();
         return false;
     }
@@ -510,8 +546,8 @@ bool Circuit::loadFromFile(const QString& path) {
 
     if (err.error != QJsonParseError::NoError) {
         qWarning() << "[loadFromFile] parse error:" << err.errorString()
-                   << "at offset" << err.offset
-                   << "(file size" << data.size() << ")";
+        << "at offset" << err.offset
+        << "(file size" << data.size() << ")";
 
         // 尝试从垃圾里提取第一个完整 JSON 对象
         cleanData = extractFirstJsonObject(data);
@@ -561,7 +597,7 @@ bool Circuit::loadFromFile(const QString& path) {
     // 自愈：把干净内容写回原文件，删掉垃圾
     if (needsHeal) {
         qWarning() << "[loadFromFile] healing: writing" << cleanData.size()
-                   << "bytes back to" << path;
+        << "bytes back to" << path;
         QFile wf(path);
         bool openOk = false;
         if (path.startsWith("content://")) {
@@ -684,6 +720,12 @@ void Circuit::restoreSnapshot(const QVariantMap& snap, bool emitSignals) {
     m_currentCtxId = savedCtx;
     m_viewOnly = savedView;
 
+    // ★ 恢复 ctx 后按当前 ctx 重新求值/重建引擎。
+    //   fromJson 内部是按 m_currentCtxId="" （root）重建引擎的，
+    //   若撤销/重做发生在子电路编辑模式下，引擎状态会错成 root 的，
+    //   这里用 evaluateAll 统一处理，它会根据当前 ctx 与引擎类型正确求值/标记 dirty。
+    evaluateAll();
+
     if (!emitSignals) return;
 
     if (ctxChanged) emit contextChanged();
@@ -691,6 +733,7 @@ void Circuit::restoreSnapshot(const QVariantMap& snap, bool emitSignals) {
     emit editContextsChanged();
     emit errorsChanged();
     emit clockChanged();
+    emit structureChanged();   // ★ 修复：撤销/重做后 QML 必须重建端口/连线缓存
     emit changed();
 }
 

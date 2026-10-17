@@ -13,7 +13,6 @@ Flickable {
     contentHeight: propsColumn.height + 12
     boundsBehavior: Flickable.StopAtBounds
 
-    // 向外转发 3 个 alias（Main.qml 通过 leftPanel.xxx 访问）
     property alias inputValueField: inputValueField
     property alias splitterSplitsInput: splitterProps.splitterSplitsInput
     property alias textContentField: textProps.textContentField
@@ -38,7 +37,11 @@ Flickable {
         spacing: 5
         Item { width: 1; height: 6 }
 
+        // ★ 顶部标题：选择模式始终显示；编辑模式只有选中元件/子电路才显示
         Text {
+            visible: main.mode === "select"
+                     || main.selectedComp !== null
+                     || main.selectedSubId !== ""
             x: 8
             text: main.mode === "select"
                   ? ("已选中 " + main.selectedIds.length + " 个元件")
@@ -118,20 +121,6 @@ Flickable {
             visible: main.selectedSubId !== "" && main.mode !== "select"
             x: 6
             width: parent.width - 12
-        }
-
-        // ============ 未选中提示 ============
-        Text {
-            visible: main.selectedComp === null
-                     && main.selectedIds.length === 0
-                     && main.selectedSubId === ""
-            x: 8; width: parent.width - 16
-            text: main.mode === "select"
-                  ? "拖拽画布空白处框选，或点元件选中"
-                  : "未选中元件"
-            color: Theme.textMuted
-            font.pixelSize: Theme.fsSmall
-            wrapMode: Text.Wrap
         }
 
         // ============ 元件属性 ============

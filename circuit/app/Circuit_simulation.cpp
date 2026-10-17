@@ -27,6 +27,9 @@ void Circuit::tick() {
         }
     };
 
+    // ★ 子电路编辑模式：引擎根是当前子电路，触发 clock 时只需作用在 currentCtx
+    bool editingSubAsRoot = !m_currentCtxId.isEmpty() && !m_viewOnly;
+
     if (m_engineType == "event" && m_eventEngine) {
         if (!m_simulationRunning) {
             updateClockOutputs(m_root);
@@ -55,9 +58,16 @@ void Circuit::tick() {
                     m_eventEngine->triggerForceOutput(qid, 0, valStr);
             }
         };
-        applyToCtx(m_root, QString());
-        for (auto it = m_subContexts.begin(); it != m_subContexts.end(); ++it)
-            applyToCtx(it.value(), it.key());
+
+        // ★ 子电路编辑模式：引擎根是当前子电路，只需处理 currentCtx 的 clock，
+        //   强行遍历 m_root 等会命中引擎中不存在的 qid（root 的元件不在引擎里）。
+        if (editingSubAsRoot) {
+            applyToCtx(currentCtx(), QString());
+        } else {
+            applyToCtx(m_root, QString());
+            for (auto it = m_subContexts.begin(); it != m_subContexts.end(); ++it)
+                applyToCtx(it.value(), it.key());
+        }
 
         quint64 wd = m_eventEngine->wireDelay();
         quint64 gd = m_eventEngine->globalGateDelay();

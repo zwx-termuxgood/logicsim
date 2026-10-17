@@ -9,6 +9,7 @@ find_package(Qt6 6.5 REQUIRED COMPONENTS Quick QuickControls2 Qml)
 
 qt_standard_project_setup(REQUIRES 6.5)
 
+# ---------- C++ 源文件 ----------
 set(CIRCUIT_SOURCES
     circuit/Circuit.cpp
     circuit/core/CircuitContext.cpp
@@ -33,6 +34,25 @@ set(CIRCUIT_SOURCES
     circuit/app/Circuit_catalog.cpp
 )
 
+# ---------- C++ 头文件（显式列出，保证 moc 扫描 + IDE 显示） ----------
+set(CIRCUIT_HEADERS
+    circuit/Circuit.h
+    circuit/core/CircuitContext.h
+    circuit/core/Component.h
+    circuit/core/Wire.h
+    circuit/core/IdAllocator.h
+    circuit/core/UndoData.h
+    circuit/core/ValueCodec.h
+    circuit/io/JsonCodec.h
+    circuit/io/ClipboardCodec.h
+    circuit/io/RecentStore.h
+    circuit/logic/ComponentLogic.h
+    circuit/logic/SimEngine.h
+    circuit/logic/event/EventEngine.h
+    circuit/logic/iter/IterEngine.h
+)
+
+# ---------- QML 源文件 ----------
 set(QML_SOURCES
     qml/Main.qml
     qml/Theme.qml
@@ -61,7 +81,7 @@ set(QML_SOURCES
 set_source_files_properties(qml/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 
 # ★ target 名从 applogicsim 改成 LogicSim，和 URI 一致
-qt_add_executable(LogicSim main.cpp ${CIRCUIT_SOURCES})
+qt_add_executable(LogicSim main.cpp ${CIRCUIT_SOURCES} ${CIRCUIT_HEADERS})
 
 qt_add_qml_module(LogicSim
     URI LogicSim
@@ -72,7 +92,7 @@ qt_add_qml_module(LogicSim
         qml/views/canvas/Geometry.js
         qml/views/canvas/Painter.js
         qml/views/canvas/interactions/CanvasInteraction.js
-        SOURCES circuit/core/UndoData.h
+    SOURCES ${CIRCUIT_HEADERS}
 )
 
 target_include_directories(LogicSim PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/circuit)

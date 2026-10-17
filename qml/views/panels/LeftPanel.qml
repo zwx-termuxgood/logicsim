@@ -7,10 +7,15 @@ Rectangle {
     id: leftPanel
     property QtObject main: null
 
-    // 对外转发 PropertyPanel 的 3 个 alias（Main.qml 通过 leftPanel.xxx 访问）
+    // 对外转发 PropertyPanel 的 3 个 alias
     property alias inputValueField: propertyPanel.inputValueField
     property alias splitterSplitsInput: propertyPanel.splitterSplitsInput
     property alias textContentField: propertyPanel.textContentField
+
+    // 控件区（元件库）是否折叠
+    property bool paletteCollapsed: false
+    // 每个分类的折叠状态（缺省视为展开）
+    property var groupExpanded: ({})
 
     anchors.left: parent.left
     anchors.bottom: parent.bottom
@@ -19,11 +24,32 @@ Rectangle {
     border.color: Theme.border
     border.width: 1
 
+    readonly property bool showPalette: main.mode === "edit" && !main.circuitViewOnly
+
+    // ★ 属性面板是否有内容可显示
+    //   - select 模式：始终显示（多选操作）
+    //   - 其他模式：有选中元件/子电路才显示
+    readonly property bool hasPropsContent:
+        main.mode === "select"
+        || main.selectedComp !== null
+        || main.selectedSubId !== ""
+
     function findSubInfo(subId) {
         for (var i = 0; i < main.subList.length; ++i) {
             if (main.subList[i].id === subId) return main.subList[i]
         }
         return null
+    }
+
+    function isGroupExpanded(groupName) {
+        return groupExpanded[groupName] !== false
+    }
+
+    function toggleGroup(groupName) {
+        var g = {}
+        for (var k in groupExpanded) g[k] = groupExpanded[k]
+        g[groupName] = !isGroupExpanded(groupName)
+        groupExpanded = g
     }
 
     readonly property var elementGroups: [
@@ -63,6 +89,7 @@ Rectangle {
         anchors.fill: parent
         spacing: 0
 
+        // ---- 顶部条（收起左侧面板）----
         Rectangle {
             Layout.fillWidth: true
             Layout.preferredHeight: 24
@@ -87,12 +114,50 @@ Rectangle {
             }
         }
 
+        // ---- 元件库头部（含折叠按钮，仅 edit 模式显示）----
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.preferredHeight: 22
+            visible: leftPanel.showPalette
+            color: Theme.bgBar
+
+            Text {
+                anchors.left: parent.left; anchors.leftMargin: 8
+                anchors.verticalCenter: parent.verticalCenter
+                text: "元件库"
+                color: Theme.textWeak
+                font.pixelSize: Theme.fsSmall
+                font.bold: true
+            }
+
+            Rectangle {
+                anchors.right: parent.right; anchors.rightMargin: 4
+                anchors.verticalCenter: parent.verticalCenter
+                width: 52; height: 18
+                radius: Theme.smallRadius
+                color: paletteToggleMa.pressed ? Theme.bgButtonHover : Theme.bgButton
+                border.color: Theme.borderStrong; border.width: 1
+                Text {
+                    anchors.centerIn: parent
+                    text: leftPanel.paletteCollapsed ? "▸ 展开" : "▾ 收起"
+                    color: Theme.text; font.pixelSize: Theme.fsTiny
+                }
+                MouseArea {
+                    id: paletteToggleMa
+                    anchors.fill: parent
+                    onClicked: leftPanel.paletteCollapsed = !leftPanel.paletteCollapsed
+                }
+            }
+        }
+
+        // ---- 控件区 ----
+        // 无属性内容时独占剩余高度；有属性内容时与属性区按 fillHeight + preferredHeight:1 平分
         Flickable {
             id: paletteFlick
             Layout.fillWidth: true
-            Layout.preferredHeight: main.mode !== "control" && !main.circuitViewOnly
-                                  ? Math.round(main.windowHeight * 0.5) : 0
-            visible: main.mode !== "control" && !main.circuitViewOnly
+            Layout.fillHeight: true
+            Layout.preferredHeight: 1
+            visible: leftPanel.showPalette && !leftPanel.paletteCollapsed
             clip: true
             contentWidth: width
             contentHeight: paletteColumn.height + 12
@@ -107,22 +172,41 @@ Rectangle {
                 Repeater {
                     model: leftPanel.elementGroups
                     delegate: Column {
+                        id: groupColumn
                         width: paletteColumn.width
                         spacing: 2
+
+                        property string groupName: modelData.name
+                        property var    groupItems: modelData.items
+                        property bool   expanded: leftPanel.isGroupExpanded(groupName)
+
                         Rectangle {
-                            width: parent.width; height: 22; color: Theme.bgDialog
+                            width: groupColumn.width
+                            height: 22
+                            color: groupHeaderMa.pressed ? Theme.bgButtonHover : Theme.bgDialog
+
                             Text {
                                 anchors.left: parent.left; anchors.leftMargin: 8
                                 anchors.verticalCenter: parent.verticalCenter
-                                text: modelData.name
+                                text: (groupColumn.expanded ? "▾ " : "▸ ") + groupColumn.groupName
                                 color: Theme.textWeak
-                                font.pixelSize: Theme.fsSmall; font.bold: true
+                                font.pixelSize: Theme.fsSmall
+                                font.bold: true
+                            }
+
+                            MouseArea {
+                                id: groupHeaderMa
+                                anchors.fill: parent
+                                onClicked: leftPanel.toggleGroup(groupColumn.groupName)
                             }
                         }
+
                         Repeater {
-                            model: modelData.items
+                            model: groupColumn.expanded ? groupColumn.groupItems : []
                             delegate: Rectangle {
-                                width: parent.width - 10; x: 5; height: 28
+                                width: groupColumn.width - 10
+                                x: 5
+                                height: 28
                                 radius: Theme.smallRadius
                                 color: (main.placingType === modelData.type && main.placingSubId === "")
                                        ? Theme.bgButtonHover
@@ -153,17 +237,24 @@ Rectangle {
                     }
                 }
 
+                // ---- 子电路分类（可折叠）----
                 Rectangle {
                     width: parent.width; height: 22; color: Theme.bgDialog
                     Text {
                         anchors.left: parent.left; anchors.leftMargin: 8
                         anchors.verticalCenter: parent.verticalCenter
-                        text: "子电路 (" + main.subList.length + ")"
+                        text: (leftPanel.isGroupExpanded("__sub__") ? "▾ " : "▸ ")
+                              + "子电路 (" + main.subList.length + ")"
                         color: Theme.accentPurple
                         font.pixelSize: Theme.fsSmall; font.bold: true
                     }
+                    MouseArea {
+                        anchors.fill: parent
+                        onClicked: leftPanel.toggleGroup("__sub__")
+                    }
                 }
                 Rectangle {
+                    visible: leftPanel.isGroupExpanded("__sub__")
                     width: parent.width - 10; x: 5; height: 28; radius: Theme.smallRadius
                     color: newSubMa.pressed ? Theme.bgButtonHover : Theme.bgButton
                     border.color: Theme.borderSub; border.width: 1
@@ -176,7 +267,7 @@ Rectangle {
                 }
 
                 Repeater {
-                    model: main.subList
+                    model: leftPanel.isGroupExpanded("__sub__") ? main.subList : []
                     delegate: Rectangle {
                         width: parent.width - 10; x: 5; height: 32
                         radius: Theme.smallRadius
@@ -251,17 +342,25 @@ Rectangle {
             }
         }
 
+        // ---- 分割线（只在控件区可见 + 属性区有内容时显示）----
         Rectangle {
             Layout.fillWidth: true
             Layout.preferredHeight: 1
             color: Theme.border
+            visible: leftPanel.showPalette
+                     && !leftPanel.paletteCollapsed
+                     && leftPanel.hasPropsContent
         }
 
+        // ---- 属性面板 ----
+        // ★ 无内容时（编辑模式未选中元件）整体隐藏，把空间让给控件区
         PropertyPanel {
             id: propertyPanel
             main: leftPanel.main
             Layout.fillWidth: true
             Layout.fillHeight: true
+            Layout.preferredHeight: 1
+            visible: leftPanel.hasPropsContent
         }
     }
 
