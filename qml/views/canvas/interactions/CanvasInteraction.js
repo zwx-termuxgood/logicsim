@@ -52,6 +52,7 @@ function onPressed(main, cv, mouse) {
             main.statusText = "⚠ 无法放置"
         } else {
             main.selectedCompId = newId
+            main.selectedSubId = ""      // ★ 选中元件时清空子电路选中
             main.refreshSel()
         }
         main.placingType = ""
@@ -103,6 +104,7 @@ function onPressed(main, cv, mouse) {
         var size4 = cv.compSize(c4)
         if (Math.abs(wp.x - c4.x) < size4.w/2 && Math.abs(wp.y - c4.y) < size4.h/2) {
             main.selectedCompId = c4.id
+            main.selectedSubId = ""      // ★ 选中元件时清空子电路选中
             main.refreshSel()
             if (editable && main.mode === "control") {
                 if (c4.type === "input") {
@@ -124,7 +126,9 @@ function onPressed(main, cv, mouse) {
         }
     }
 
+    // ★ 点击空白区域：清空元件选中 + 子电路选中
     main.selectedCompId = ""
+    main.selectedSubId = ""
     main.refreshSel()
     cv.panning = true
 }
@@ -198,11 +202,9 @@ function onReleased(main, cv, mouse) {
                         && port.isOutput === startIsOut)
             if (!same) {
                 if (startIsOut) {
-                    // 起点是输出：作为 from
                     main.circuitRef.addWire(startComp, startPort,
                                             port.compId, port.portIdx)
                 } else {
-                    // 起点是输入：反转，终点作为 from
                     main.circuitRef.addWire(port.compId, port.portIdx,
                                             startComp, startPort)
                 }

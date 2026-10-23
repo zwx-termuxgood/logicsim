@@ -8,7 +8,6 @@ static const quint64 kSimRunBudget = 200000;
 // ============================================================
 
 void Circuit::tick() {
-    // ★ 保护：事件引擎下，非仿真状态不允许驱动时钟
     if (m_engineType == "event" && !m_simulationRunning) {
         if (m_clockRunning) stopClock();
         return;
@@ -36,7 +35,6 @@ void Circuit::tick() {
     bool editingSubAsRoot = !m_currentCtxId.isEmpty() && !m_viewOnly;
 
     if (m_engineType == "event" && m_eventEngine) {
-        // 走到这里说明 m_simulationRunning == true（开头已拦截非仿真）
         auto applyToCtx = [&](Context& ctx, const QString& ctxId) {
             for (int i = 0; i < ctx.components.size(); ++i) {
                 QVariantMap c = ctx.components[i].toMap();
@@ -67,10 +65,9 @@ void Circuit::tick() {
         quint64 wd = m_eventEngine->wireDelay();
         quint64 gd = m_eventEngine->globalGateDelay();
         quint64 advance = (wd + gd) * 8 + 20;
-        m_eventEngine->run(advance, 200000);
+        runEventEngineFully(advance, 200000);
         applyEngineOutputsToContexts();
     } else {
-        // 迭代引擎：时钟独立运行，非仿真也能 tick
         updateClockOutputs(m_root);
         for (auto it = m_subContexts.begin(); it != m_subContexts.end(); ++it)
             updateClockOutputs(it.value());
@@ -83,7 +80,6 @@ void Circuit::tick() {
 
 void Circuit::startClock() {
     if (!m_clockTimer) return;
-    // ★ 事件引擎下，非仿真状态禁止启动时钟
     if (m_engineType == "event" && !m_simulationRunning) return;
     m_clockRunning = true;
     int interval = qMax(1, 1000 / qMax(1, m_clockFrequency));
@@ -104,7 +100,7 @@ void Circuit::setClockFrequency(int hz) {
         int interval = qMax(1, 1000 / m_clockFrequency);
         m_clockTimer->start(interval);
     }
-    saveSettings();                       // ★ 新增：频率持久化
+    saveSettings();
     emit clockChanged();
 }
 
@@ -157,7 +153,7 @@ void Circuit::toggleClock(const QString& id) {
         quint64 wd = m_eventEngine->wireDelay();
         quint64 gd = m_eventEngine->globalGateDelay();
         quint64 advance = (wd + gd) * 8 + 20;
-        m_eventEngine->run(advance, 200000);
+        runEventEngineFully(advance, 200000);
         applyEngineOutputsToContexts();
         emit simulationTick();
     } else {
@@ -245,14 +241,14 @@ void Circuit::pauseSimulation() {
     if (!m_simulationRunning) return;
     m_simulationRunning = false;
     if (m_simTimer) m_simTimer->stop();
-    if (m_clockRunning) stopClock();      // ★ 关键：暂停仿真时停时钟
+    if (m_clockRunning) stopClock();
     emit simulationChanged();
     emit changed();
 }
 
 void Circuit::resetSimulation() {
     if (!m_eventEngine) return;
-    if (m_clockRunning) stopClock();      // ★ 关键：复位仿真时停时钟
+    if (m_clockRunning) stopClock();
     m_eventEngine->reset();
     applyEngineOutputsToContexts();
     emit simulationChanged();

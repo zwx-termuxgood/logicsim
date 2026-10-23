@@ -37,14 +37,12 @@ ApplicationWindow {
 
     property int visibleComponentCount: 0
 
-    // 缓存
     property var cachedComps: []
     property var cachedWires: []
     property var compById: ({})
     property var outPortsById: ({})
     property var inPortsById: ({})
 
-    // 结构检测缓存
     property var lastCompIds: []
     property var lastCompProps: ({})
 
@@ -76,7 +74,7 @@ ApplicationWindow {
     property var clipboardData: null
 
     property bool dirty: false
-    property var  pendingAfterSave: null   // 保存成功后要执行的挂起动作
+    property var  pendingAfterSave: null
     property string currentFilePath: ""
 
     property bool boxSelecting: false
@@ -101,6 +99,8 @@ ApplicationWindow {
     property alias contextPopupRef: contextPopup
     property alias saveDialogRef: saveDialog
     property alias openDialogRef: openDialog
+    property alias importDialogRef: importDialog
+    property alias importedFilesPopupRef: importedFilesPopup
     property alias menuPopupRef: menuPopup
 
     readonly property string engineType: circuit.engineType
@@ -175,7 +175,6 @@ ApplicationWindow {
         var wrs = circuit.wires
         cachedComps = comps
         cachedWires = wrs
-        // 性能：一次 C++ 调用返回所有端口信息，避免 2N 次跨语言调用
         var allPorts = circuit.allPortsInfo()
         var m = {}, op = {}, ip = {}
         var ids = []
@@ -239,16 +238,21 @@ ApplicationWindow {
         onActivated: root.doExit()
     }
 
+    // ★ 修复：正在输入的字段不被刷新覆盖
     function refreshSel() {
         selectedComp = (selectedCompId !== "") ? compById[selectedCompId] : null
-        if (selectedComp && (selectedComp.type === "splitter" || selectedComp.type === "hub"))
-            leftPanel.splitterSplitsInput.text = circuit.getSplitterSplitsStr(selectedCompId)
+
+        if (selectedComp && (selectedComp.type === "splitter" || selectedComp.type === "hub")) {
+            if (!leftPanel.splitterSplitsInput.activeFocus)
+                leftPanel.splitterSplitsInput.text = circuit.getSplitterSplitsStr(selectedCompId)
+        }
         if (selectedComp && (selectedComp.type === "input" || selectedComp.type === "const")) {
-            leftPanel.inputValueField.text = circuit.getInputAsString(selectedCompId)
-            inputError = ""
+            if (!leftPanel.inputValueField.activeFocus)
+                leftPanel.inputValueField.text = circuit.getInputAsString(selectedCompId)
         }
         if (selectedComp && selectedComp.type === "text") {
-            leftPanel.textContentField.text = selectedComp.content || ""
+            if (!leftPanel.textContentField.activeFocus)
+                leftPanel.textContentField.text = selectedComp.content || ""
         }
     }
 
@@ -273,7 +277,6 @@ ApplicationWindow {
         } else if (s.startsWith("file://")) {
             s = s.substring(7)
         }
-        // decodeURIComponent 遇到裸 % 会抛异常，中断整个 onAccepted 回调
         try {
             return decodeURIComponent(s)
         } catch (e) {
@@ -295,20 +298,12 @@ ApplicationWindow {
 
     function quitApp() { root.forceQuit = true; Qt.quit() }
 
-    // 统一的"打开文件"入口：
-    //   dirty → 先问是否保存（保存/不保存/取消），通过后才执行 action
-    //   否则直接执行 action
     function doOpenFile(action) {
-        console.log("[QMLTRACE] doOpenFile ENTER, dirty=", dirty,
-                    "currentFilePath=", currentFilePath)
         if (dirty) {
-            console.log("[QMLTRACE] doOpenFile: dirty=true, opening UnsavedDialog")
             unsavedDialog.pendingAction = action
             unsavedDialog.open()
         } else {
-            console.log("[QMLTRACE] doOpenFile: dirty=false, calling action directly")
             action()
-            console.log("[QMLTRACE] doOpenFile: action returned")
         }
     }
 
@@ -510,6 +505,11 @@ ApplicationWindow {
     ContextPopup { id: contextPopup; main: root; anchorItem: topBar.ctxBtn }
     MenuPopup { id: menuPopup; main: root; anchorItem: topBar.menuBtn }
 
+    ImportedFilesPopup {
+        id: importedFilesPopup
+        main: root
+    }
+
     SettingsPage {
         id: settingsPage
         main: root
@@ -528,7 +528,6 @@ ApplicationWindow {
             var path = root.fileUrlToLocal(selectedFile)
             if (circuit.saveToFile(path)) {
                 root.currentFilePath = path
-                console.log("[QMLTRACE] saveDialog: currentFilePath set to", root.currentFilePath)
                 root.dirty = false
                 root.statusText = "已保存：" + path
                 if (root.saveBeforeExit) { root.saveBeforeExit = false; root.quitApp() }
@@ -561,6 +560,22 @@ ApplicationWindow {
                 root.statusText = "已打开：" + path
             } else {
                 root.statusText = "打开失败：" + path
+            }
+        }
+    }
+
+    FileDialog {
+        id: importDialog
+        title: "导入电路"
+        fileMode: FileDialog.OpenFile
+        nameFilters: ["Logic JSON (*.json)"]
+        onAccepted: {
+            var path = root.fileUrlToLocal(selectedFile)
+            if (circuit.importFromFile(path)) {
+                root.dirty = true
+                root.statusText = "已导入：" + path
+            } else {
+                root.statusText = "导入失败：" + path
             }
         }
     }

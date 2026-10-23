@@ -52,7 +52,6 @@ public:
     explicit Circuit(QObject* parent = nullptr);
     ~Circuit() override;
 
-    // ---- Q_PROPERTY READ / WRITE ----
     QVariantList components() const;
     QVariantList wires() const;
     QString contextId() const { return m_currentCtxId; }
@@ -86,7 +85,6 @@ public:
     bool showSimTime() const { return m_showSimTime; }
     void setShowSimTime(bool b);
 
-    // ---- Q_INVOKABLE：仿真控制 ----
     Q_INVOKABLE void setGateTypeDelay(const QString& type, qulonglong d);
     Q_INVOKABLE qulonglong getGateTypeDelay(const QString& type) const;
     Q_INVOKABLE void clearGateTypeDelays();
@@ -96,7 +94,6 @@ public:
     Q_INVOKABLE void resetSimulation();
     Q_INVOKABLE void simulateStep();
 
-    // ---- Q_INVOKABLE：元件 ----
     Q_INVOKABLE QString addComponent(const QString& type, double x, double y,
                                      int bitWidth = 1, int inputCount = 2,
                                      const QString& subId = QString());
@@ -115,20 +112,17 @@ public:
     Q_INVOKABLE QString addText(double x, double y, const QString& text = QString("文本"));
     Q_INVOKABLE void setTextContent(const QString& id, const QString& content);
 
-    // ---- Q_INVOKABLE：值 / 进制 ----
     Q_INVOKABLE QString getInputBase(const QString& id) const;
     Q_INVOKABLE void setInputBase(const QString& id, const QString& base);
     Q_INVOKABLE QString getInputAsString(const QString& id) const;
     Q_INVOKABLE QString setInputFromString(const QString& id, const QString& text);
     Q_INVOKABLE QString formatValue(const QString& binStr, const QString& base, int bitWidth) const;
 
-    // ---- Q_INVOKABLE：连线 ----
     Q_INVOKABLE QString addWire(const QString& fromComp, int fromPort,
                                 const QString& toComp, int toPort);
     Q_INVOKABLE void removeWire(const QString& id);
     Q_INVOKABLE QString wireAtPoint(double x, double y, double tol) const;
 
-    // ---- Q_INVOKABLE：查询 ----
     Q_INVOKABLE QVariantMap getComponent(const QString& id) const;
     Q_INVOKABLE QVariantMap getWire(const QString& id) const;
     Q_INVOKABLE QVariantList outputPortsInfo(const QString& id) const;
@@ -136,7 +130,6 @@ public:
     Q_INVOKABLE QVariantMap allPortsInfo() const;
     Q_INVOKABLE QVariantMap statistics() const;
 
-    // ---- Q_INVOKABLE：子电路 ----
     Q_INVOKABLE QString addSubcircuit(const QString& name);
     Q_INVOKABLE void deleteSubcircuit(const QString& subId);
     Q_INVOKABLE void setSubcircuitName(const QString& subId, const QString& name);
@@ -147,32 +140,30 @@ public:
     Q_INVOKABLE void leaveSubcircuit();
     Q_INVOKABLE void switchEditContext(const QString& ctxId);
 
-    // ---- Q_INVOKABLE：选择 / 剪贴板 ----
     Q_INVOKABLE void refreshErrors();
     Q_INVOKABLE QVariantList copySelection(const QStringList& ids);
     Q_INVOKABLE QStringList pasteSelection(const QVariantList& data, double dx, double dy);
 
-    // ---- Q_INVOKABLE：最近文件 ----
     Q_INVOKABLE void addRecentFile(const QString& path);
     Q_INVOKABLE void removeRecentFile(const QString& path);
     Q_INVOKABLE void clearRecentFiles();
 
-    // ---- Q_INVOKABLE：文件 / 生命周期 ----
     Q_INVOKABLE void clear();
     Q_INVOKABLE void evaluate();
     Q_INVOKABLE QVariantMap toJson() const;
     Q_INVOKABLE bool fromJson(const QVariantMap& data);
     Q_INVOKABLE bool saveToFile(const QString& path);
     Q_INVOKABLE bool loadFromFile(const QString& path);
+    Q_INVOKABLE bool importFromFile(const QString& path);
+    Q_INVOKABLE bool removeImportedFile(const QString& path);       // ★ 新增
+    Q_INVOKABLE QVariantList importedFiles() const;                 // ★ 新增
 
-    // ---- Q_INVOKABLE：时钟 / 复位 ----
     Q_INVOKABLE void startClock();
     Q_INVOKABLE void stopClock();
     Q_INVOKABLE void setClockFrequency(int hz);
     Q_INVOKABLE void singleStep();
     Q_INVOKABLE void resetAllInputs();
 
-    // ---- Q_INVOKABLE：撤销重做 ----
     Q_INVOKABLE void undo();
     Q_INVOKABLE void redo();
     Q_INVOKABLE void breakUndoMerge();
@@ -214,8 +205,11 @@ private:
     QString m_currentCtxId;
     bool m_viewOnly = false;
     int m_subCounter = 0;
+    int m_importCounter = 0;
     QVariantList m_errors;
     QVariantList m_recentFiles;
+
+    QHash<QString, QVariantMap> m_importedFiles;   // path -> { path, prefix, baseName, subIds }
 
     QVector<BrowseFrame> m_browseStack;
     QString m_currentInstancePath;
@@ -260,10 +254,6 @@ private:
 
     bool hasSubCycle(const QString& fromCtx, const QString& targetId, QSet<QString>& visited) const;
 
-    // ★ 增量 undo：按作用域分三档
-    //   pushUndo      — 只保存当前上下文的快照（默认，覆盖 99% 操作）
-    //   pushUndoAll   — 保存全部上下文 + 子电路元数据 + clock 状态
-    //   pushUndoMeta  — 只保存子电路元数据（subNames + subCounter）
     void pushUndo(const QString& mergeKey = QString());
     void pushUndoAll(const QString& mergeKey = QString());
     void pushUndoMeta(const QString& mergeKey = QString());
@@ -279,6 +269,9 @@ private:
     void applyEngineOutputsToContexts();
     void onSimTimerTick();
 
+    // ★ 大电路推进到稳定：内部循环，每次 advance 翻倍直到队列空
+    void runEventEngineFully(quint64 advance, quint64 budget);
+
     QStringList engineQidsFor(const QString& ctxId, const QString& localCompId) const;
 
     void syncSubStateFromParent(const QString& subId);
@@ -290,6 +283,9 @@ private:
     static int inputPortBitWidth(const QVariantMap& comp, int portIdx);
 
     void dumpInternalState(const QString& where) const;
+
+    // ★ 移除指定前缀的所有子电路和引用它们的 sub 实例（内部辅助）
+    void removeSubContextsByPrefix(const QString& prefix);
 };
 
 #endif // CIRCUIT_H

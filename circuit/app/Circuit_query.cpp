@@ -5,10 +5,6 @@
 #include "../logic/event/EventEngine.h"
 #include <functional>
 
-// ============================================================
-// 元件 / 连线查询
-// ============================================================
-
 QVariantMap Circuit::getComponent(const QString& id) const {
     int idx = indexOfComponent(id);
     if (idx < 0) return {};
@@ -46,10 +42,6 @@ QVariantMap Circuit::allPortsInfo() const {
     }
     return out;
 }
-
-// ============================================================
-// 值 / 进制
-// ============================================================
 
 QString Circuit::getInputBase(const QString& id) const {
     int idx = indexOfComponent(id);
@@ -110,8 +102,12 @@ QString Circuit::setInputFromString(const QString& id, const QString& text) {
     c["inputBits"] = bits;
     ctx.components[idx] = c;
 
-    // ★ 只有仿真中才传播
     if (m_engineType == "event" && m_eventEngine && m_simulationRunning) {
+        // ★ 防御：若引擎落后，先重建，避免 triggerInputString 找不到 qid
+        if (m_engineDirty) {
+            rebuildEventEngine();
+            applyEngineOutputsToContexts();
+        }
         QString binStr = ValueCodec::bitsToString(bits, bw);
         QStringList qids = engineQidsFor(m_currentCtxId, id);
         for (const auto& qid : qids)
@@ -119,7 +115,7 @@ QString Circuit::setInputFromString(const QString& id, const QString& text) {
         quint64 wd = m_eventEngine->wireDelay();
         quint64 gd = m_eventEngine->globalGateDelay();
         quint64 advance = (wd + gd) * 8 + 20;
-        m_eventEngine->run(advance, 200000);
+        runEventEngineFully(advance, 200000);
         applyEngineOutputsToContexts();
         emit simulationTick();
     } else if (m_engineType == "event") {
@@ -130,10 +126,6 @@ QString Circuit::setInputFromString(const QString& id, const QString& text) {
     emit changed();
     return "";
 }
-
-// ============================================================
-// 统计
-// ============================================================
 
 QVariantMap Circuit::statistics() const {
     QVariantMap result;

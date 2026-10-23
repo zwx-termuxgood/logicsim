@@ -12,7 +12,7 @@ Popup {
     readonly property real screenH: main ? main.height : 640
 
     width: Math.min(260, screenW - 16)
-    height: Math.min(340, screenH - 40)
+    height: Math.min(430, screenH - 40)
 
     x: {
         if (!anchorItem) return 8
@@ -81,6 +81,14 @@ Popup {
             MenuRow {
                 label: "打开"
                 onTriggered: { menuPopup.close(); main.openDialogRef.open() }
+            }
+            MenuRow {
+                label: "导入…"
+                onTriggered: { menuPopup.close(); main.importDialogRef.open() }
+            }
+            MenuRow {
+                label: "已导入…"
+                onTriggered: { menuPopup.close(); main.importedFilesPopupRef.open() }
             }
             MenuRow {
                 label: "最近"

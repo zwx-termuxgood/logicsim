@@ -99,7 +99,7 @@ QString Circuit::addComponent(const QString& type, double x, double y,
     c["inputPortValues"] = inPorts;
 
     ctx.components.append(c);
-    m_ctxSubInstCache.clear();            // ★ 主电路实例集合可能变了
+    m_ctxSubInstCache.clear();
     if (type == "clock") m_clockStates[c["id"].toString()] = false;
 
     evaluateAll();
@@ -117,7 +117,7 @@ void Circuit::removeComponent(const QString& id) {
     QVariantMap c = ctx.components[idx].toMap();
     if (c.value("type").toString() == "clock") m_clockStates.remove(id);
     ctx.components.removeAt(idx);
-    m_ctxSubInstCache.clear();            // ★
+    m_ctxSubInstCache.clear();
     for (int i = ctx.wires.size() - 1; i >= 0; --i) {
         auto w = ctx.wires[i].toMap();
         if (w.value("fromComp").toString() == id || w.value("toComp").toString() == id)
@@ -148,7 +148,7 @@ void Circuit::removeComponents(const QStringList& ids) {
             ctx.components.removeAt(i);
         }
     }
-    m_ctxSubInstCache.clear();            // ★
+    m_ctxSubInstCache.clear();
     for (int i = ctx.wires.size() - 1; i >= 0; --i) {
         auto w = ctx.wires[i].toMap();
         if (idSet.contains(w.value("fromComp").toString()) ||
@@ -216,7 +216,6 @@ void Circuit::toggleInput(const QString& id) {
     c["inputBits"] = bits;
     ctx.components[idx] = c;
 
-    // ★ 事件引擎下，只有仿真中才传播
     if (m_engineType == "event" && m_eventEngine && m_simulationRunning) {
         QString binStr;
         binStr.reserve(bw);
@@ -227,11 +226,10 @@ void Circuit::toggleInput(const QString& id) {
         quint64 wd = m_eventEngine->wireDelay();
         quint64 gd = m_eventEngine->globalGateDelay();
         quint64 advance = (wd + gd) * 8 + 20;
-        m_eventEngine->run(advance, 200000);
+        runEventEngineFully(advance, 200000);
         applyEngineOutputsToContexts();
         emit simulationTick();
     } else if (m_engineType == "event") {
-        // 非仿真：只更新显示值，标记 dirty 让下次 startSimulation 重建
         m_engineDirty = true;
     } else {
         evaluateAll();
@@ -258,7 +256,6 @@ void Circuit::setBitValue(const QString& id, int bit, bool value) {
     c["inputBits"] = bits;
     ctx.components[idx] = c;
 
-    // ★ 只有仿真中才传播
     if (m_engineType == "event" && m_eventEngine && m_simulationRunning) {
         QStringList qids = engineQidsFor(m_currentCtxId, id);
         for (const auto& qid : qids)
@@ -266,7 +263,7 @@ void Circuit::setBitValue(const QString& id, int bit, bool value) {
         quint64 wd = m_eventEngine->wireDelay();
         quint64 gd = m_eventEngine->globalGateDelay();
         quint64 advance = (wd + gd) * 8 + 20;
-        m_eventEngine->run(advance, 200000);
+        runEventEngineFully(advance, 200000);
         applyEngineOutputsToContexts();
         emit simulationTick();
     } else if (m_engineType == "event") {

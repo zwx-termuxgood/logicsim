@@ -238,9 +238,21 @@ void Circuit::applyEngineOutputsToContexts() {
     for (int i = 0; i < targetCtx.components.size(); ++i)
         idToIdx.insert(targetCtx.components[i].toMap().value("id").toString(), i);
 
+    // ★ 关键修复（子电路级联的连线颜色不变）：
+    //   dirty 里可能包含子电路内部的 qid（如 "C1/C2"），过去只处理顶层 id，
+    //   导致 sub 元件的 inputPortValues/outputPorts 不刷新，从 sub 元件引出的
+    //   连线颜色永远不变。这里把每个 qid 的"最顶层实例 id"提取出来去重，
+    //   对所有涉及的 sub 实例统一 updateOneComponent。
+    QSet<QString> instanceIdsToUpdate;
     for (const QString& qid : dirty) {
-        if (qid.contains('/')) continue;
-        int i = idToIdx.value(qid, -1);
+        int slash = qid.indexOf('/');
+        QString topId = (slash < 0) ? qid : qid.left(slash);
+        if (idToIdx.contains(topId))
+            instanceIdsToUpdate.insert(topId);
+    }
+
+    for (const QString& id : instanceIdsToUpdate) {
+        int i = idToIdx.value(id, -1);
         if (i < 0) continue;
         QVariantMap c = targetCtx.components[i].toMap();
         updateOneComponent(c, m_eventEngine, m_subContexts);
@@ -280,6 +292,30 @@ QStringList Circuit::engineQidsFor(const QString& ctxId, const QString& localCom
     return result;
 }
 
+// ★★★ 关键修复（大电路子电路值不更新）：
+//   原实现是循环 run(advance) 直到 budget 未耗尽，但 advance 固定，
+//   大电路信号传播需要的时间超过 advance，就会停在中间状态。
+//   现在：每轮 run 之后如果队列还有事件（ok=true），就把 advance 翻倍，
+//   这样大电路几轮就能推进到稳定；振荡电路靠轮数上限收尾。
+void Circuit::runEventEngineFully(quint64 advance, quint64 budget) {
+    if (!m_eventEngine) return;
+    if (advance < 1) advance = 1;
+    if (budget < 1) budget = 200000;
+
+    quint64 a = advance;
+    for (int round = 0; round < 60; ++round) {
+        if (m_eventEngine->isIdle()) break;
+        bool ok = m_eventEngine->run(a, budget);
+        if (m_eventEngine->isIdle()) break;
+        if (ok) {
+            // 时间窗口不够 → 翻倍
+            if (a < 10000000ULL) a *= 2;
+            else                 a = 10000000ULL;
+        }
+        // ok=false 表示预算耗尽，继续用同一个 a 再推
+    }
+}
+
 void Circuit::clear() {
     qWarning() << "[FPTRACE] Circuit::clear() ENTER";
     if (m_viewOnly) return;
@@ -290,11 +326,13 @@ void Circuit::clear() {
     m_currentCtxId = "";
     m_viewOnly = false;
     m_subCounter = 0;
+    m_importCounter = 0;
     m_errors.clear();
     m_clockStates.clear();
     m_clockTickCount = 0;
     m_clipboardCache.clear();
     m_needFullApply = true;
+    m_importedFiles.clear();
     if (m_clockRunning) stopClock();
     if (m_simulationRunning) pauseSimulation();
     if (m_eventEngine) m_eventEngine->clear();
@@ -368,18 +406,9 @@ bool Circuit::fromJson(const QVariantMap& data) {
     m_subCounter = dec.subCounter;
     m_clockTickCount = dec.clockTickCount;
     m_needFullApply = true;
-
-    // ★ 全局设置不随电路文件恢复（保留 QSettings 中当前配置）
-    //   m_clockFrequency  = dec.clockFrequency;
-    //   m_engineType      = dec.engineType;
-    //   m_simulationSpeed = dec.simulationSpeed;
-    //   m_simulationSpeedExp = dec.simulationSpeedExp;
-    //   m_autoSpeed       = dec.autoSpeed;
+    m_importedFiles.clear();   // ★ 打开文件后导入列表清空（导入是临时的）
 
     if (m_eventEngine) {
-        // ★ 全局延迟不随电路恢复
-        //   m_eventEngine->setGlobalGateDelay(dec.globalGateDelay);
-        //   m_eventEngine->setWireDelay(dec.wireDelay);
         m_eventEngine->clearGateTypeDelays();
         for (auto it = dec.gateTypeDelays.begin(); it != dec.gateTypeDelays.end(); ++it)
             m_eventEngine->setGateTypeDelay(it.key(), it.value());
@@ -603,6 +632,256 @@ bool Circuit::loadFromFile(const QString& path) {
 }
 
 // ============================================================
+// 移除指定前缀的所有子电路和引用它们的 sub 实例（内部辅助）
+// ============================================================
+void Circuit::removeSubContextsByPrefix(const QString& prefix) {
+    if (prefix.isEmpty()) return;
+
+    QSet<QString> subIdSet;
+    for (auto it = m_subContexts.constBegin(); it != m_subContexts.constEnd(); ++it) {
+        if (it.key().startsWith(prefix))
+            subIdSet.insert(it.key());
+    }
+    if (subIdSet.isEmpty()) return;
+
+    for (const auto& sid : subIdSet) {
+        m_subContexts.remove(sid);
+        m_subNames.remove(sid);
+    }
+
+    auto removeInstances = [&](Context& ctx) {
+        for (int i = ctx.components.size() - 1; i >= 0; --i) {
+            auto c = ctx.components[i].toMap();
+            if (c.value("type").toString() != "sub") continue;
+            if (!subIdSet.contains(c.value("subId").toString())) continue;
+            QString id = c.value("id").toString();
+            for (int j = ctx.wires.size() - 1; j >= 0; --j) {
+                auto w = ctx.wires[j].toMap();
+                if (w.value("fromComp").toString() == id ||
+                    w.value("toComp").toString() == id)
+                    ctx.wires.removeAt(j);
+            }
+            ctx.components.removeAt(i);
+        }
+    };
+    removeInstances(m_root);
+    for (auto it = m_subContexts.begin(); it != m_subContexts.end(); ++it)
+        removeInstances(it.value());
+
+    if (subIdSet.contains(m_currentCtxId)) {
+        m_currentCtxId = "";
+        m_viewOnly = false;
+        m_currentInstancePath.clear();
+        m_browseStack.clear();
+        emit contextChanged();
+    }
+
+    m_ctxSubInstCache.clear();
+}
+
+// ============================================================
+// 导入其他文件的全部电路
+// ============================================================
+bool Circuit::importFromFile(const QString& path) {
+    if (path.isEmpty()) return false;
+    if (m_viewOnly) return false;
+
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        qWarning() << "[importFromFile] open failed:" << path << f.errorString();
+        return false;
+    }
+    QByteArray data = f.readAll();
+    f.close();
+    if (data.isEmpty()) return false;
+
+    QJsonParseError err;
+    QJsonDocument doc = QJsonDocument::fromJson(data, &err);
+    if (err.error != QJsonParseError::NoError) {
+        QByteArray clean = extractFirstJsonObject(data);
+        if (clean.isEmpty()) {
+            qWarning() << "[importFromFile] extract empty, cannot recover";
+            return false;
+        }
+        QJsonParseError err2;
+        QJsonDocument doc2 = QJsonDocument::fromJson(clean, &err2);
+        if (err2.error != QJsonParseError::NoError || !doc2.isObject()) {
+            qWarning() << "[importFromFile] extracted part invalid";
+            return false;
+        }
+        doc = doc2;
+    }
+    if (!doc.isObject()) return false;
+
+    JsonCodec::DecodedData dec = JsonCodec::decode(doc.object().toVariantMap());
+
+    QString baseName = QFileInfo(path).completeBaseName();
+    if (baseName.isEmpty()) baseName = "外部电路";
+
+    // ★ 去重：当前会话已导入过同一路径 → 先移除旧的
+    if (m_importedFiles.contains(path)) {
+        QString oldPrefix = m_importedFiles.value(path).value("prefix").toString();
+        removeSubContextsByPrefix(oldPrefix);
+        m_importedFiles.remove(path);
+    } else {
+        // ★ 处理"文件已被保存过，子电路名带'（文件名）'后缀"的重复导入：
+        //   扫描已有子电路名，看有没有以"（baseName）"结尾的，有的话移除旧的。
+        QString suffix = QString("（%1）").arg(baseName);
+        QStringList stale;
+        for (auto it = m_subNames.constBegin(); it != m_subNames.constEnd(); ++it) {
+            if (it.value().endsWith(suffix))
+                stale.append(it.key());
+        }
+        if (!stale.isEmpty()) {
+            // 从名字反推前缀（都是 "prefixXXX" 形式，取首个 id 的 prefix 部分）
+            // 我们按"删除这些子电路 + 引用它们的 sub 实例"来处理。
+            pushUndoAll();
+            QSet<QString> staleSet;
+            for (const auto& sid : stale) staleSet.insert(sid);
+            for (const auto& sid : stale) {
+                m_subContexts.remove(sid);
+                m_subNames.remove(sid);
+            }
+            auto removeInstances = [&](Context& ctx) {
+                for (int i = ctx.components.size() - 1; i >= 0; --i) {
+                    auto c = ctx.components[i].toMap();
+                    if (c.value("type").toString() != "sub") continue;
+                    if (!staleSet.contains(c.value("subId").toString())) continue;
+                    QString id = c.value("id").toString();
+                    for (int j = ctx.wires.size() - 1; j >= 0; --j) {
+                        auto w = ctx.wires[j].toMap();
+                        if (w.value("fromComp").toString() == id ||
+                            w.value("toComp").toString() == id)
+                            ctx.wires.removeAt(j);
+                    }
+                    ctx.components.removeAt(i);
+                }
+            };
+            removeInstances(m_root);
+            for (auto it = m_subContexts.begin(); it != m_subContexts.end(); ++it)
+                removeInstances(it.value());
+            m_ctxSubInstCache.clear();
+        } else {
+            pushUndoAll();
+        }
+    }
+
+    // 生成唯一前缀
+    QString prefix;
+    do {
+        prefix = QString("IMP%1_").arg(++m_importCounter);
+    } while (m_subContexts.contains(prefix + "ROOT"));
+
+    QHash<QString, QString> subIdMap;
+    subIdMap.insert(QString(), prefix + "ROOT");
+    for (auto it = dec.subContexts.constBegin(); it != dec.subContexts.constEnd(); ++it)
+        subIdMap.insert(it.key(), prefix + it.key());
+
+    auto processCtx = [&](CircuitContext ctx) -> CircuitContext {
+        for (int i = 0; i < ctx.components.size(); ++i) {
+            QVariantMap c = ctx.components[i].toMap();
+            QString oldId = c.value("id").toString();
+            c["id"] = prefix + oldId;
+            if (c.value("type").toString() == "sub") {
+                QString oldSubId = c.value("subId").toString();
+                if (subIdMap.contains(oldSubId))
+                    c["subId"] = subIdMap.value(oldSubId);
+            }
+            ctx.components[i] = c;
+        }
+        for (int i = 0; i < ctx.wires.size(); ++i) {
+            QVariantMap w = ctx.wires[i].toMap();
+            w["id"] = prefix + w.value("id").toString();
+            w["fromComp"] = prefix + w.value("fromComp").toString();
+            w["toComp"] = prefix + w.value("toComp").toString();
+            ctx.wires[i] = w;
+        }
+        ctx.compCounter = ctx.components.size();
+        ctx.wireCounter = ctx.wires.size();
+        return ctx;
+    };
+
+    QStringList newSubIds;
+
+    {
+        CircuitContext ctx = processCtx(dec.root);
+        QString newId = subIdMap.value(QString());
+        m_subContexts[newId] = ctx;
+        m_subNames[newId] = QString("主电路（%1）").arg(baseName);
+        newSubIds.append(newId);
+    }
+
+    for (auto it = dec.subContexts.constBegin(); it != dec.subContexts.constEnd(); ++it) {
+        CircuitContext ctx = processCtx(it.value());
+        QString newId = subIdMap.value(it.key());
+        m_subContexts[newId] = ctx;
+        QString oldName = dec.subNames.value(it.key(), it.key());
+        m_subNames[newId] = QString("%1（%2）").arg(oldName, baseName);
+        newSubIds.append(newId);
+    }
+
+    // 记录导入信息
+    QVariantMap info;
+    info["path"] = path;
+    info["prefix"] = prefix;
+    info["baseName"] = baseName;
+    info["subIds"] = newSubIds;
+    m_importedFiles[path] = info;
+
+    for (auto it = m_subContexts.constBegin(); it != m_subContexts.constEnd(); ++it) {
+        for (const auto& cv : it.value().components) {
+            QVariantMap c = cv.toMap();
+            if (c.value("type").toString() == "clock") {
+                if (!m_clockStates.contains(c.value("id").toString()))
+                    m_clockStates[c.value("id").toString()] = false;
+            }
+        }
+    }
+
+    m_ctxSubInstCache.clear();
+    evaluateAll();
+    emit subcircuitsChanged();
+    emit editContextsChanged();
+    emit changed();
+    emit structureChanged();
+    qWarning() << "[importFromFile] imported" << baseName
+               << "as prefix" << prefix;
+    return true;
+}
+
+bool Circuit::removeImportedFile(const QString& path) {
+    if (m_viewOnly) return false;
+    if (!m_importedFiles.contains(path)) return false;
+
+    pushUndoAll();
+
+    QString prefix = m_importedFiles.value(path).value("prefix").toString();
+    removeSubContextsByPrefix(prefix);
+    m_importedFiles.remove(path);
+
+    evaluateAll();
+    emit subcircuitsChanged();
+    emit editContextsChanged();
+    emit changed();
+    emit structureChanged();
+    qWarning() << "[removeImportedFile] removed" << path << "prefix" << prefix;
+    return true;
+}
+
+QVariantList Circuit::importedFiles() const {
+    QVariantList out;
+    for (auto it = m_importedFiles.constBegin(); it != m_importedFiles.constEnd(); ++it) {
+        QVariantMap m;
+        m["path"] = it.value().value("path");
+        m["prefix"] = it.value().value("prefix");
+        m["baseName"] = it.value().value("baseName");
+        m["subCount"] = it.value().value("subIds").toList().size();
+        out.append(m);
+    }
+    return out;
+}
+
+// ============================================================
 // 撤销 / 重做：基于 UndoEntry（增量）
 // ============================================================
 
@@ -630,6 +909,7 @@ UndoEntry Circuit::captureUndoEntry(UndoScope scope, const QString& ctxId,
         e.subNames = m_subNames;
         e.subCounter = m_subCounter;
         e.clockStates = m_clockStates;
+        e.importedFiles = m_importedFiles;   // ★
     } else { // MetaOnly
         e.subNames = m_subNames;
         e.subCounter = m_subCounter;
@@ -659,12 +939,12 @@ void Circuit::applyUndoEntry(const UndoEntry& e) {
         m_subNames = e.subNames;
         m_subCounter = e.subCounter;
         m_clockStates = e.clockStates;
+        m_importedFiles = e.importedFiles;   // ★
     } else { // MetaOnly
         m_subNames = e.subNames;
         m_subCounter = e.subCounter;
     }
 
-    // 恢复后当前上下文可能已不存在
     if (!savedCtx.isEmpty() && !m_subContexts.contains(savedCtx)) {
         savedCtx = "";
         savedView = false;

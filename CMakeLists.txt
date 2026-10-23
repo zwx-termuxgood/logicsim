@@ -93,6 +93,7 @@ qt_add_qml_module(LogicSim
         qml/views/canvas/Painter.js
         qml/views/canvas/interactions/CanvasInteraction.js
     SOURCES ${CIRCUIT_HEADERS}
+    QML_FILES qml/views/dialogs/ImportedFilesPopup.qml
 )
 
 target_include_directories(LogicSim PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/circuit)
