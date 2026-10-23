@@ -71,7 +71,13 @@ QString Circuit::addComponent(const QString& type, double x, double y,
             inPorts.append(QString(w, '0'));
         }
         outPorts.append(QString(bitWidth, '0'));
-    } else if (type == "tgate" || type == "ntran" || type == "ptran") {
+    } else if (type == "tgate") {
+        c["inputCount"] = 3;
+        outPorts.append(QString(bitWidth, '0'));
+        inPorts.append(QString(bitWidth, '0'));   // D
+        inPorts.append(QString(bitWidth, '0'));   // EN
+        inPorts.append(QString(bitWidth, '0'));   // /EN
+    } else if (type == "ntran" || type == "ptran") {
         c["inputCount"] = 2;
         outPorts.append(QString(bitWidth, '0'));
         inPorts.append(QString(bitWidth, '0'));
