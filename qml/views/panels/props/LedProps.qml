@@ -5,7 +5,10 @@ Column {
     id: ledProps
     property QtObject main: null
 
-    visible: main.selectedComp && main.selectedComp.type === "led"
+    visible: main !== null
+             && main.selectedComp !== null
+             && main.selectedComp !== undefined
+             && main.selectedComp.type === "led"
     spacing: 4
 
     readonly property var ledColorChoices: [
@@ -32,19 +35,20 @@ Column {
                 width: 24; height: 24; radius: 4
                 color: modelData.value
                 border.width: {
-                    if (!main.selectedComp) return 1
+                    if (!main || !main.selectedComp) return 1
                     var cur = main.selectedComp.color || "#ffd700"
                     return (cur === modelData.value) ? 2 : 1
                 }
                 border.color: {
-                    if (!main.selectedComp) return "#555555"
+                    if (!main || !main.selectedComp) return "#555555"
                     var cur = main.selectedComp.color || "#ffd700"
                     return (cur === modelData.value) ? "#ffffff" : "#555555"
                 }
                 MouseArea {
                     anchors.fill: parent
-                    enabled: !main.circuitViewOnly
+                    enabled: main ? !main.circuitViewOnly : false
                     onClicked: {
+                        if (!main) return
                         if (main.circuitViewOnly) return
                         if (main.selectedCompId === "") return
                         main.circuitRef.setComponentProp(

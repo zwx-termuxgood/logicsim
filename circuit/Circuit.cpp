@@ -36,10 +36,6 @@ Circuit::~Circuit() {
     if (m_eventEngine) { delete m_eventEngine; m_eventEngine = nullptr; }
 }
 
-// ============================================================
-// 全局设置持久化（QSettings）
-// ============================================================
-
 void Circuit::loadSettings() {
     QSettings s;
     QString et = s.value("sim/engineType", "event").toString();
@@ -63,6 +59,13 @@ void Circuit::loadSettings() {
     m_autoSpeed      = s.value("sim/autoSpeed", true).toBool();
     m_showSimTime    = s.value("sim/showSimTime", false).toBool();
     m_clockFrequency = qBound(1, s.value("sim/clockFrequency", 2).toInt(), 1000);
+
+    m_wireMode = s.value("sim/wireMode", "bezier").toString();
+    if (m_wireMode != "bezier" && m_wireMode != "ortho" && m_wireMode != "switchable")
+        m_wireMode = "bezier";
+    m_currentWireType = s.value("sim/currentWireType", "bezier").toString();
+    if (m_currentWireType != "bezier" && m_currentWireType != "ortho")
+        m_currentWireType = "bezier";
 }
 
 void Circuit::saveSettings() {
@@ -76,6 +79,8 @@ void Circuit::saveSettings() {
     s.setValue("sim/autoSpeed", m_autoSpeed);
     s.setValue("sim/showSimTime", m_showSimTime);
     s.setValue("sim/clockFrequency", m_clockFrequency);
+    s.setValue("sim/wireMode", m_wireMode);
+    s.setValue("sim/currentWireType", m_currentWireType);
 }
 
 void Circuit::setShowSimTime(bool b) {
@@ -85,9 +90,27 @@ void Circuit::setShowSimTime(bool b) {
     emit showSimTimeChanged();
 }
 
-// ============================================================
-// 以下为原 Circuit.cpp 内容（逐字保留）
-// ============================================================
+void Circuit::setWireMode(const QString& m) {
+    if (m_wireMode == m) return;
+    if (m != "bezier" && m != "ortho" && m != "switchable") return;
+    m_wireMode = m;
+    saveSettings();
+    emit wireModeChanged();
+}
+
+void Circuit::setCurrentWireType(const QString& t) {
+    if (m_currentWireType == t) return;
+    if (t != "bezier" && t != "ortho") return;
+    m_currentWireType = t;
+    saveSettings();
+    emit wireModeChanged();
+}
+
+QString Circuit::effectiveWireType() const {
+    if (m_wireMode == "ortho") return "ortho";
+    if (m_wireMode == "bezier") return "bezier";
+    return m_currentWireType;
+}
 
 CircuitUndoData* Circuit::und() const {
     return static_cast<CircuitUndoData*>(property(kUndoPropName).value<void*>());

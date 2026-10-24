@@ -12,14 +12,12 @@ Item {
     property real nearestAngle: 0
     property bool hasComponents: false
 
-    // ---- 鼠标交互跨事件保存的临时状态 ----
     property real lastMouseX: 0
     property real lastMouseY: 0
     property bool panning: false
     property bool draggingComp: false
     property string dragCompId: ""
 
-    // 缓存：元件 ID → 尺寸，签名匹配则复用
     property var _sizeCache: ({})
 
     function compSize(comp) {
@@ -50,9 +48,8 @@ Item {
         else if (t === "sub") {
             w0 = 110; h0 = Math.max(60, Math.max(subIn, subOut) * 24)
         }
-        else {
-            w0 = 80; h0 = Math.max(60, ic * 24)
-        }
+        else { w0 = 80; h0 = Math.max(60, ic * 24) }
+
         var result
         if (rot === 1 || rot === 3) result = { w: h0, h: w0, _sig: sig }
         else                        result = { w: w0, h: h0, _sig: sig }
@@ -60,7 +57,6 @@ Item {
         return result
     }
 
-    // 结构变化时清空缓存
     function clearSizeCache() { _sizeCache = ({}) }
 
     function worldToScreen(wx, wy) {
@@ -85,6 +81,120 @@ Item {
         if (i < 0) i = 0
         if (i >= bw) i = bw - 1
         return i
+    }
+
+    function resolveEffType() {
+        var wm = main.circuitRef.wireMode
+        if (wm === "ortho") return "ortho"
+        if (wm === "bezier") return "bezier"
+        var cwt = main.circuitRef.currentWireType
+        return (cwt === "ortho") ? "ortho" : "bezier"
+    }
+
+    // ★ 修复：颜色传播
+    //   递归追上游时不仅检查"U 的末端 == w 的起点"（端点对端点），
+    //   也检查"w 的起点落在 U 的任意段内部"（T 型接入）
+    function computeWireSources(wires, compById, outPortsById) {
+        var cache = {}
+
+        function pointOnSegInterior(px, py, x1, y1, x2, y2) {
+            if (Math.abs(y1 - y2) < 0.5) {
+                if (Math.abs(py - y1) > 0.5) return false
+                var lo = Math.min(x1, x2)
+                var hi = Math.max(x1, x2)
+                return px > lo + 0.5 && px < hi - 0.5
+            }
+            if (Math.abs(x1 - x2) < 0.5) {
+                if (Math.abs(px - x1) > 0.5) return false
+                var lo2 = Math.min(y1, y2)
+                var hi2 = Math.max(y1, y2)
+                return py > lo2 + 0.5 && py < hi2 - 0.5
+            }
+            return false
+        }
+
+        function pointOnWireInterior(px, py, path) {
+            for (var i = 0; i + 1 < path.length; i++) {
+                var p0 = path[i], p1 = path[i + 1]
+                if (pointOnSegInterior(px, py, p0.x, p0.y, p1.x, p1.y)) return true
+            }
+            return false
+        }
+
+        function getSource(w, depth) {
+            if (depth > 20) return "0"
+            if (cache[w.id] !== undefined) return cache[w.id]
+
+            var src = "0"
+
+            // 1) fromComp
+            if (w.fromComp && compById[w.fromComp]) {
+                var fromC = compById[w.fromComp]
+                var fp = w.fromPort || 0
+                if (fromC.outputPorts && fromC.outputPorts.length > fp) {
+                    var sv = fromC.outputPorts[fp]
+                    if (sv && sv.length > 0) src = sv
+                }
+                cache[w.id] = src
+                return src
+            }
+
+            // 2) 递归找上游 wire
+            if (w.path && w.path.length > 0) {
+                var startPt = w.path[0]
+                for (var i = 0; i < wires.length; i++) {
+                    var uw = wires[i]
+                    if (uw.id === w.id) continue
+                    if ((uw.wireType || "bezier") !== "ortho") continue
+                    if (!uw.path || uw.path.length < 2) continue
+
+                    var matched = false
+                    // (a) 端点对端点
+                    var uwLast = uw.path[uw.path.length - 1]
+                    if (Math.abs(uwLast.x - startPt.x) < 0.5 &&
+                        Math.abs(uwLast.y - startPt.y) < 0.5) {
+                        matched = true
+                    }
+                    // (b) T 型接入：w 起点落在 U 的任意段内部
+                    if (!matched && pointOnWireInterior(startPt.x, startPt.y, uw.path)) {
+                        matched = true
+                    }
+
+                    if (matched) {
+                        var s = getSource(uw, depth + 1)
+                        if (s !== "0") { src = s; break }
+                    }
+                }
+            }
+
+            // 3) 精确匹配输出端口
+            if (src === "0" && w.path && w.path.length > 0) {
+                var sp = w.path[0]
+                for (var cid in outPortsById) {
+                    var comp = compById[cid]
+                    if (!comp) continue
+                    var outs = outPortsById[cid] || []
+                    for (var k = 0; k < outs.length; k++) {
+                        var op = outs[k]
+                        var wx = comp.x + op.x
+                        var wy = comp.y + op.y
+                        if (Math.abs(wx - sp.x) < 0.5 && Math.abs(wy - sp.y) < 0.5) {
+                            var sv2 = comp.outputPorts ? comp.outputPorts[k] : ""
+                            if (sv2 && sv2.length > 0) { src = sv2; break }
+                        }
+                    }
+                    if (src !== "0") break
+                }
+            }
+
+            cache[w.id] = src
+            return src
+        }
+
+        for (var i = 0; i < wires.length; i++) {
+            getSource(wires[i], 0)
+        }
+        return cache
     }
 
     function computeNearestAngle() {
@@ -136,16 +246,27 @@ Item {
         var simplify = main.viewScale < 0.35
 
         var wires = main.cachedWires
+        var wireSources = computeWireSources(wires, main.compById, main.outPortsById)
+
         for (var i = 0; i < wires.length; i++) {
             Painter.drawWire(ctx, wires[i], main.compById, main.outPortsById, main.inPortsById,
-                             main.viewScale, main.viewX, main.viewY, W, H, simplify)
+                             main.viewScale, main.viewX, main.viewY, W, H, simplify,
+                             main.selectedWireId, wireSources)
         }
 
+        var dots = main.circuitRef.connectionDots()
+        Painter.drawConnectionDots(ctx, dots, main.viewScale, main.viewX, main.viewY)
+
         if (main.wiring) {
-            var p = portPos(main.wiringFromComp, main.wiringFromPort, main.wiringStartIsOutput)
-            var sp = worldToScreen(p.x, p.y)
-            Painter.drawPendingWire(ctx, sp, main.wiringStartIsOutput,
-                                    main.wireEndX, main.wireEndY)
+            var startScreen = worldToScreen(main.wiringStartX, main.wiringStartY)
+            var effType = resolveEffType()
+            if (effType === "bezier") {
+                Painter.drawPendingBezier(ctx, startScreen,
+                                          main.wireEndX, main.wireEndY, main.viewScale)
+            } else {
+                Painter.drawPendingOrtho(ctx, startScreen, main.wiringDirection,
+                                         main.wireEndX, main.wireEndY)
+            }
         }
 
         var comps = main.cachedComps

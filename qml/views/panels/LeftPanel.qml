@@ -7,14 +7,11 @@ Rectangle {
     id: leftPanel
     property QtObject main: null
 
-    // 对外转发 PropertyPanel 的 3 个 alias
     property alias inputValueField: propertyPanel.inputValueField
     property alias splitterSplitsInput: propertyPanel.splitterSplitsInput
     property alias textContentField: propertyPanel.textContentField
 
-    // 控件区（元件库）是否折叠
     property bool paletteCollapsed: false
-    // 每个分类的折叠状态（缺省视为展开）
     property var groupExpanded: ({})
 
     anchors.left: parent.left
@@ -26,13 +23,12 @@ Rectangle {
 
     readonly property bool showPalette: main.mode === "edit" && !main.circuitViewOnly
 
-    // ★ 属性面板是否有内容可显示
-    //   - select 模式：始终显示（多选操作）
-    //   - 其他模式：有选中元件/子电路才显示
+    // ★ 属性面板可见性：select 模式 / 选中元件 / 选中子电路 / 选中线 都显示
     readonly property bool hasPropsContent:
         main.mode === "select"
         || main.selectedComp !== null
         || main.selectedSubId !== ""
+        || main.selectedWireId !== ""
 
     function findSubInfo(subId) {
         for (var i = 0; i < main.subList.length; ++i) {
@@ -89,7 +85,6 @@ Rectangle {
         anchors.fill: parent
         spacing: 0
 
-        // ---- 顶部条（收起左侧面板）----
         Rectangle {
             Layout.fillWidth: true
             Layout.preferredHeight: 24
@@ -114,7 +109,6 @@ Rectangle {
             }
         }
 
-        // ---- 元件库头部（含折叠按钮，仅 edit 模式显示）----
         Rectangle {
             Layout.fillWidth: true
             Layout.preferredHeight: 22
@@ -150,8 +144,6 @@ Rectangle {
             }
         }
 
-        // ---- 控件区 ----
-        // 无属性内容时独占剩余高度；有属性内容时与属性区按 fillHeight + preferredHeight:1 平分
         Flickable {
             id: paletteFlick
             Layout.fillWidth: true
@@ -237,7 +229,6 @@ Rectangle {
                     }
                 }
 
-                // ---- 子电路分类（可折叠）----
                 Rectangle {
                     width: parent.width; height: 22; color: Theme.bgDialog
                     Text {
@@ -342,7 +333,6 @@ Rectangle {
             }
         }
 
-        // ---- 分割线（只在控件区可见 + 属性区有内容时显示）----
         Rectangle {
             Layout.fillWidth: true
             Layout.preferredHeight: 1
@@ -352,8 +342,6 @@ Rectangle {
                      && leftPanel.hasPropsContent
         }
 
-        // ---- 属性面板 ----
-        // ★ 无内容时（编辑模式未选中元件）整体隐藏，把空间让给控件区
         PropertyPanel {
             id: propertyPanel
             main: leftPanel.main
@@ -364,7 +352,6 @@ Rectangle {
         }
     }
 
-    // ---- 子电路右键菜单 ----
     Menu {
         id: subCtxMenu
         property string subId: ""

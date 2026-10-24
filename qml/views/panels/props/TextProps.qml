@@ -8,7 +8,10 @@ Column {
 
     property alias textContentField: textContentField
 
-    visible: main.selectedComp && main.selectedComp.type === "text"
+    visible: main !== null
+             && main.selectedComp !== null
+             && main.selectedComp !== undefined
+             && main.selectedComp.type === "text"
     spacing: 4
 
     Text {
@@ -27,8 +30,9 @@ Column {
             color: Theme.text
             font.pixelSize: Theme.fsSmall
             background: null; selectByMouse: true
-            readOnly: main.circuitViewOnly
+            readOnly: main ? main.circuitViewOnly : true
             onEditingFinished: {
+                if (!main) return
                 if (main.selectedCompId === "" || main.circuitViewOnly) return
                 main.circuitRef.setTextContent(main.selectedCompId, text)
             }

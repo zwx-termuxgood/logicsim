@@ -1,10 +1,70 @@
 #include "../Circuit.h"
 #include "../core/IdAllocator.h"
+#include "../logic/ComponentLogic.h"
 #include "../logic/event/EventEngine.h"
+#include "../logic/move/MoveGesture.h"
+#include "../logic/move/MoveResult.h"
 #include <QVariantMap>
 #include <QSet>
+#include <QString>
 #include <QtGlobal>
 #include <QDebug>
+#include <QPointF>
+#include <QList>
+#include <cmath>
+
+namespace {
+
+QString posKeyR(double x, double y) {
+    return QString("%1,%2").arg(int(std::round(x))).arg(int(std::round(y)));
+}
+
+void collectPortWorldPositions(const QVariantMap& c, QSet<QString>& out) {
+    double cx = c.value("x").toDouble();
+    double cy = c.value("y").toDouble();
+    QVariantList outs = ComponentLogic::outputPorts(c);
+    for (const auto& pv : outs) {
+        QVariantMap p = pv.toMap();
+        out.insert(posKeyR(cx + p.value("x").toDouble(),
+                           cy + p.value("y").toDouble()));
+    }
+    QVariantList ins = ComponentLogic::inputPorts(c);
+    for (const auto& pv : ins) {
+        QVariantMap p = pv.toMap();
+        out.insert(posKeyR(cx + p.value("x").toDouble(),
+                           cy + p.value("y").toDouble()));
+    }
+}
+
+bool wireTouchesPositions(const QVariantMap& w, const QSet<QString>& positions) {
+    QString wt = w.value("wireType").toString();
+    if (wt != "ortho") return false;
+    QVariantList path = w.value("path").toList();
+    if (path.isEmpty()) return false;
+
+    QList<QPointF> portPts;
+    portPts.reserve(positions.size());
+    for (const auto& key : positions) {
+        QStringList parts = key.split(',');
+        if (parts.size() != 2) continue;
+        portPts.append(QPointF(parts[0].toDouble(), parts[1].toDouble()));
+    }
+    if (portPts.isEmpty()) return false;
+
+    for (const auto& pv : path) {
+        QVariantMap p = pv.toMap();
+        double px = p.value("x").toDouble();
+        double py = p.value("y").toDouble();
+        for (const auto& pp : portPts) {
+            if (qAbs(px - pp.x()) < 15.0 && qAbs(py - pp.y()) < 15.0) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+} // namespace
 
 QString Circuit::addComponent(const QString& type, double x, double y,
                               int bitWidth, int inputCount, const QString& subId) {
@@ -13,13 +73,9 @@ QString Circuit::addComponent(const QString& type, double x, double y,
     if (bitWidth > 64) bitWidth = 64;
     if (inputCount < 2) inputCount = 2;
     if (inputCount > 64) inputCount = 64;
-
-    if (type == "sub") {
-        if (!canAddSubInstance(subId)) return QString();
-    }
+    if (type == "sub" && !canAddSubInstance(subId)) return QString();
 
     pushUndo();
-
     QVariantMap c;
     Context& ctx = currentCtx();
     c["id"] = IdAllocator::nextComponentId(ctx);
@@ -29,21 +85,15 @@ QString Circuit::addComponent(const QString& type, double x, double y,
     c["inputCount"] = inputCount;
     c["displayBase"] = "bin";
     c["name"] = "";
-
     QVariantList bits;
-    bits.reserve(bitWidth);
     for (int i = 0; i < bitWidth; ++i) bits.append(false);
     c["inputBits"] = bits;
 
     QVariantList outPorts, inPorts;
-
-    if (type == "text") {
-        c["content"] = "文本";
-    } else if (type == "clock") {
-        c["name"] = "CLK";
-    } else if (type == "const") {
-        c["name"] = "CONST";
-    } else if (type == "sub") {
+    if (type == "text") c["content"] = "文本";
+    else if (type == "clock") c["name"] = "CLK";
+    else if (type == "const") c["name"] = "CONST";
+    else if (type == "sub") {
         c["subId"] = subId;
         c["subInputNames"] = QVariantList();
         c["subOutputNames"] = QVariantList();
@@ -51,22 +101,18 @@ QString Circuit::addComponent(const QString& type, double x, double y,
         c["subOutputWidths"] = QVariantList();
     } else if (type == "splitter") {
         QVariantList splits;
-        splits.reserve(bitWidth);
         for (int i = 0; i < bitWidth; ++i) splits.append(1);
         c["outputSplits"] = splits;
-        int segN = splits.size();
         inPorts.append(QString(bitWidth, '0'));
-        for (int i = 0; i < segN; ++i) {
+        for (int i = 0; i < splits.size(); ++i) {
             int w = splits[i].toInt(); if (w < 1) w = 1;
             outPorts.append(QString(w, '0'));
         }
     } else if (type == "hub") {
         QVariantList splits;
-        splits.reserve(bitWidth);
         for (int i = 0; i < bitWidth; ++i) splits.append(1);
         c["outputSplits"] = splits;
-        int segN = splits.size();
-        for (int i = 0; i < segN; ++i) {
+        for (int i = 0; i < splits.size(); ++i) {
             int w = splits[i].toInt(); if (w < 1) w = 1;
             inPorts.append(QString(w, '0'));
         }
@@ -74,9 +120,9 @@ QString Circuit::addComponent(const QString& type, double x, double y,
     } else if (type == "tgate") {
         c["inputCount"] = 3;
         outPorts.append(QString(bitWidth, '0'));
-        inPorts.append(QString(bitWidth, '0'));   // D
-        inPorts.append(QString(bitWidth, '0'));   // EN
-        inPorts.append(QString(bitWidth, '0'));   // /EN
+        inPorts.append(QString(bitWidth, '0'));
+        inPorts.append(QString(bitWidth, '0'));
+        inPorts.append(QString(bitWidth, '0'));
     } else if (type == "ntran" || type == "ptran") {
         c["inputCount"] = 2;
         outPorts.append(QString(bitWidth, '0'));
@@ -94,7 +140,6 @@ QString Circuit::addComponent(const QString& type, double x, double y,
                  type == "nor" || type == "xor" || type == "xnor") ic = inputCount;
         for (int i = 0; i < ic; ++i) inPorts.append(QString(bitWidth, '0'));
     }
-
     c["outputPorts"] = outPorts;
     c["inputPortValues"] = inPorts;
 
@@ -115,14 +160,26 @@ void Circuit::removeComponent(const QString& id) {
     pushUndo();
     Context& ctx = currentCtx();
     QVariantMap c = ctx.components[idx].toMap();
+
+    QSet<QString> portPositions;
+    collectPortWorldPositions(c, portPositions);
+
     if (c.value("type").toString() == "clock") m_clockStates.remove(id);
     ctx.components.removeAt(idx);
     m_ctxSubInstCache.clear();
+
     for (int i = ctx.wires.size() - 1; i >= 0; --i) {
         auto w = ctx.wires[i].toMap();
-        if (w.value("fromComp").toString() == id || w.value("toComp").toString() == id)
-            ctx.wires.removeAt(i);
+        bool shouldRemove = false;
+        if (w.value("fromComp").toString() == id ||
+            w.value("toComp").toString() == id) {
+            shouldRemove = true;
+        } else if (wireTouchesPositions(w, portPositions)) {
+            shouldRemove = true;
+        }
+        if (shouldRemove) ctx.wires.removeAt(i);
     }
+
     evaluateAll();
     emit changed();
     emit structureChanged();
@@ -140,24 +197,102 @@ void Circuit::removeComponents(const QStringList& ids) {
     if (!any) return;
     pushUndo();
     Context& ctx = currentCtx();
+
+    QSet<QString> portPositions;
     for (int i = ctx.components.size() - 1; i >= 0; --i) {
-        auto c = ctx.components[i].toMap();
-        if (idSet.contains(c.value("id").toString())) {
-            if (c.value("type").toString() == "clock")
-                m_clockStates.remove(c.value("id").toString());
-            ctx.components.removeAt(i);
-        }
+        QVariantMap c = ctx.components[i].toMap();
+        if (!idSet.contains(c.value("id").toString())) continue;
+        collectPortWorldPositions(c, portPositions);
+        if (c.value("type").toString() == "clock")
+            m_clockStates.remove(c.value("id").toString());
+        ctx.components.removeAt(i);
     }
+
     m_ctxSubInstCache.clear();
+
     for (int i = ctx.wires.size() - 1; i >= 0; --i) {
         auto w = ctx.wires[i].toMap();
+        bool shouldRemove = false;
         if (idSet.contains(w.value("fromComp").toString()) ||
-            idSet.contains(w.value("toComp").toString()))
-            ctx.wires.removeAt(i);
+            idSet.contains(w.value("toComp").toString())) {
+            shouldRemove = true;
+        } else if (wireTouchesPositions(w, portPositions)) {
+            shouldRemove = true;
+        }
+        if (shouldRemove) ctx.wires.removeAt(i);
     }
+
     evaluateAll();
     emit changed();
     emit structureChanged();
+}
+
+void Circuit::updateWiresForMovedComponent(Context& ctx, const QString& movedId) {
+    for (int i = 0; i < ctx.wires.size(); ++i) {
+        QVariantMap w = ctx.wires[i].toMap();
+        if (w.value("wireType").toString() != "ortho") continue;
+        QString fromComp = w.value("fromComp").toString();
+        QString toComp = w.value("toComp").toString();
+        bool fromIsMoved = (fromComp == movedId);
+        bool toIsMoved = (toComp == movedId);
+        if (!fromIsMoved && !toIsMoved) continue;
+
+        QVariantList path = w.value("path").toList();
+        if (path.size() < 2) continue;
+
+        auto getNewPortPos = [&](const QString& compId, int port, bool isOut) -> QPointF {
+            int ci = ctx.indexOfComponent(compId);
+            if (ci < 0) return QPointF();
+            QVariantMap c = ctx.components[ci].toMap();
+            QVariantList ports = isOut ? ComponentLogic::outputPorts(c) : ComponentLogic::inputPorts(c);
+            if (port < 0 || port >= ports.size()) return QPointF();
+            QVariantMap p = ports[port].toMap();
+            return QPointF(c.value("x").toDouble() + p.value("x").toDouble(),
+                           c.value("y").toDouble() + p.value("y").toDouble());
+        };
+
+        if (fromIsMoved) {
+            int fp = w.value("fromPort").toInt();
+            QPointF np = getNewPortPos(movedId, fp, true);
+            QVariantMap oldP0 = path[0].toMap();
+            double oldX = oldP0.value("x").toDouble();
+            QVariantMap newP0;
+            newP0["x"] = np.x(); newP0["y"] = np.y();
+            path[0] = newP0;
+
+            if (path.size() >= 2) {
+                QVariantMap p1 = path[1].toMap();
+                double p1x = p1.value("x").toDouble();
+                bool wasVertical = (qAbs(p1x - oldX) < 0.5);
+                if (wasVertical) p1["x"] = np.x();
+                else p1["y"] = np.y();
+                path[1] = p1;
+            }
+        }
+
+        if (toIsMoved) {
+            int tp = w.value("toPort").toInt();
+            QPointF np = getNewPortPos(movedId, tp, false);
+            int n = path.size();
+            QVariantMap oldPn = path[n-1].toMap();
+            double oldX = oldPn.value("x").toDouble();
+            QVariantMap newPn;
+            newPn["x"] = np.x(); newPn["y"] = np.y();
+            path[n-1] = newPn;
+
+            if (n >= 2) {
+                QVariantMap pn1 = path[n-2].toMap();
+                double pn1x = pn1.value("x").toDouble();
+                bool wasVertical = (qAbs(pn1x - oldX) < 0.5);
+                if (wasVertical) pn1["x"] = np.x();
+                else pn1["y"] = np.y();
+                path[n-2] = pn1;
+            }
+        }
+
+        w["path"] = path;
+        ctx.wires[i] = w;
+    }
 }
 
 void Circuit::moveComponent(const QString& id, double x, double y) {
@@ -166,13 +301,16 @@ void Circuit::moveComponent(const QString& id, double x, double y) {
     if (idx < 0) return;
     Context& ctx = currentCtx();
     QVariantMap c = ctx.components[idx].toMap();
-    double ox = c.value("x").toDouble();
-    double oy = c.value("y").toDouble();
+    double ox = c.value("x").toDouble(), oy = c.value("y").toDouble();
     if (qAbs(ox - x) < 1e-9 && qAbs(oy - y) < 1e-9) return;
     pushUndo("move:" + id);
     c["x"] = x; c["y"] = y;
     ctx.components[idx] = c;
+    updateWiresForMovedComponent(ctx, id);
+    evaluateAll();
     emit geometryChanged();
+    emit changed();
+    emit structureChanged();
 }
 
 void Circuit::moveSelection(const QStringList& ids, double dx, double dy) {
@@ -196,9 +334,26 @@ void Circuit::moveSelection(const QStringList& ids, double dx, double dy) {
             ctx.components[i] = c;
         }
     }
+    for (const auto& id : ids) {
+        if (ctx.indexOfComponent(id) >= 0) {
+            updateWiresForMovedComponent(ctx, id);
+        }
+    }
+    evaluateAll();
     emit geometryChanged();
+    emit changed();
+    emit structureChanged();
 }
 
+void Circuit::moveComponentWithWires(const QString& id, double x, double y) {
+    moveComponent(id, x, y);
+}
+
+void Circuit::moveSelectionWithWires(const QStringList& ids, double dx, double dy) {
+    moveSelection(ids, dx, dy);
+}
+
+// ★ 修复：rebuild 之后必须先跑完初始 Recalc 事件，再 apply
 void Circuit::toggleInput(const QString& id) {
     if (m_viewOnly) return;
     int idx = indexOfComponent(id);
@@ -217,6 +372,13 @@ void Circuit::toggleInput(const QString& id) {
     ctx.components[idx] = c;
 
     if (m_engineType == "event" && m_eventEngine && m_simulationRunning) {
+        if (m_engineDirty) {
+            rebuildEventEngine();
+            quint64 wd0 = m_eventEngine->wireDelay();
+            quint64 gd0 = m_eventEngine->globalGateDelay();
+            runEventEngineFully((wd0 + gd0) * 64 + 200, 500000);
+            applyEngineOutputsToContexts();
+        }
         QString binStr;
         binStr.reserve(bw);
         for (int i = 0; i < bw; ++i) binStr += v ? '1' : '0';
@@ -225,8 +387,7 @@ void Circuit::toggleInput(const QString& id) {
             m_eventEngine->triggerInputString(qid, binStr);
         quint64 wd = m_eventEngine->wireDelay();
         quint64 gd = m_eventEngine->globalGateDelay();
-        quint64 advance = (wd + gd) * 8 + 20;
-        runEventEngineFully(advance, 200000);
+        runEventEngineFully((wd + gd) * 64 + 200, 500000);
         applyEngineOutputsToContexts();
         emit simulationTick();
     } else if (m_engineType == "event") {
@@ -235,6 +396,7 @@ void Circuit::toggleInput(const QString& id) {
         evaluateAll();
     }
     emit changed();
+    emit structureChanged();
 }
 
 void Circuit::setBitValue(const QString& id, int bit, bool value) {
@@ -257,13 +419,19 @@ void Circuit::setBitValue(const QString& id, int bit, bool value) {
     ctx.components[idx] = c;
 
     if (m_engineType == "event" && m_eventEngine && m_simulationRunning) {
+        if (m_engineDirty) {
+            rebuildEventEngine();
+            quint64 wd0 = m_eventEngine->wireDelay();
+            quint64 gd0 = m_eventEngine->globalGateDelay();
+            runEventEngineFully((wd0 + gd0) * 64 + 200, 500000);
+            applyEngineOutputsToContexts();
+        }
         QStringList qids = engineQidsFor(m_currentCtxId, id);
         for (const auto& qid : qids)
             m_eventEngine->triggerInputBit(qid, bit, value);
         quint64 wd = m_eventEngine->wireDelay();
         quint64 gd = m_eventEngine->globalGateDelay();
-        quint64 advance = (wd + gd) * 8 + 20;
-        runEventEngineFully(advance, 200000);
+        runEventEngineFully((wd + gd) * 64 + 200, 500000);
         applyEngineOutputsToContexts();
         emit simulationTick();
     } else if (m_engineType == "event") {
@@ -272,6 +440,7 @@ void Circuit::setBitValue(const QString& id, int bit, bool value) {
         evaluateAll();
     }
     emit changed();
+    emit structureChanged();
 }
 
 void Circuit::setComponentProp(const QString& id, const QString& key, const QVariant& value) {

@@ -48,8 +48,7 @@ Rectangle {
 
             Rectangle {
                 id: menuBtn
-                width: 52; height: 28
-                radius: Theme.buttonRadius
+                width: 52; height: 28; radius: Theme.buttonRadius
                 color: menuBtnMa.pressed ? Theme.bgButtonHover : Theme.bgButton
                 border.color: Theme.borderStrong; border.width: 1
                 anchors.verticalCenter: parent.verticalCenter
@@ -58,8 +57,7 @@ Rectangle {
                     color: Theme.text; font.pixelSize: Theme.fsSmall
                 }
                 MouseArea {
-                    id: menuBtnMa
-                    anchors.fill: parent
+                    id: menuBtnMa; anchors.fill: parent
                     onClicked: main.menuPopupRef.open()
                 }
             }
@@ -74,8 +72,7 @@ Rectangle {
                          { id: "control", name: "控制" },
                          { id: "select", name: "选择" } ]
                 delegate: Rectangle {
-                    width: 44; height: 28
-                    radius: Theme.buttonRadius
+                    width: 44; height: 28; radius: Theme.buttonRadius
                     anchors.verticalCenter: parent.verticalCenter
                     color: main.mode === modelData.id ? Theme.bgButtonActive : Theme.bgButton
                     border.color: main.mode === modelData.id ? Theme.borderBtnActive : Theme.borderWeak
@@ -101,21 +98,45 @@ Rectangle {
                 }
             }
 
+            // 可切换模式下的连线类型切换按钮
+            Rectangle {
+                width: 1; height: 22; color: Theme.borderStrong
+                anchors.verticalCenter: parent.verticalCenter
+                visible: main.circuitRef.wireMode === "switchable"
+            }
+            Rectangle {
+                id: wireTypeBtn
+                width: 78; height: 28; radius: Theme.buttonRadius
+                anchors.verticalCenter: parent.verticalCenter
+                visible: main.circuitRef.wireMode === "switchable"
+                color: wireTypeMa.pressed ? Theme.bgButtonHover : Theme.bgButton
+                border.color: Theme.borderStrong; border.width: 1
+                Text {
+                    anchors.centerIn: parent
+                    text: main.circuitRef.currentWireType === "ortho" ? "⚡ 正交" : "〜 贝塞尔"
+                    color: Theme.text; font.pixelSize: Theme.fsSmall
+                }
+                MouseArea {
+                    id: wireTypeMa; anchors.fill: parent
+                    onClicked: {
+                        var t = main.circuitRef.currentWireType
+                        main.circuitRef.currentWireType = (t === "ortho") ? "bezier" : "ortho"
+                    }
+                }
+            }
+
             Rectangle {
                 width: 1; height: 22; color: Theme.borderStrong
                 anchors.verticalCenter: parent.verticalCenter
             }
 
             Rectangle {
-                width: 28; height: 28
-                radius: Theme.buttonRadius
+                width: 28; height: 28; radius: Theme.buttonRadius
                 anchors.verticalCenter: parent.verticalCenter
-                color: undoBtn.pressed && main.circuitRef.canUndo
-                       ? Theme.bgButtonHover : Theme.bgButton
+                color: undoBtn.pressed && main.circuitRef.canUndo ? Theme.bgButtonHover : Theme.bgButton
                 border.color: Theme.borderStrong; border.width: 1
                 opacity: main.circuitRef.canUndo ? 1 : 0.4
-                Text { anchors.centerIn: parent; text: "↶"
-                    color: Theme.text; font.pixelSize: 15 }
+                Text { anchors.centerIn: parent; text: "↶"; color: Theme.text; font.pixelSize: 15 }
                 MouseArea {
                     id: undoBtn; anchors.fill: parent
                     enabled: main.circuitRef.canUndo && !main.circuitViewOnly
@@ -123,15 +144,12 @@ Rectangle {
                 }
             }
             Rectangle {
-                width: 28; height: 28
-                radius: Theme.buttonRadius
+                width: 28; height: 28; radius: Theme.buttonRadius
                 anchors.verticalCenter: parent.verticalCenter
-                color: redoBtn.pressed && main.circuitRef.canRedo
-                       ? Theme.bgButtonHover : Theme.bgButton
+                color: redoBtn.pressed && main.circuitRef.canRedo ? Theme.bgButtonHover : Theme.bgButton
                 border.color: Theme.borderStrong; border.width: 1
                 opacity: main.circuitRef.canRedo ? 1 : 0.4
-                Text { anchors.centerIn: parent; text: "↷"
-                    color: Theme.text; font.pixelSize: 15 }
+                Text { anchors.centerIn: parent; text: "↷"; color: Theme.text; font.pixelSize: 15 }
                 MouseArea {
                     id: redoBtn; anchors.fill: parent
                     enabled: main.circuitRef.canRedo && !main.circuitViewOnly
@@ -145,38 +163,32 @@ Rectangle {
             }
 
             Rectangle {
-                width: 28; height: 28
-                radius: Theme.buttonRadius
+                width: 28; height: 28; radius: Theme.buttonRadius
                 anchors.verticalCenter: parent.verticalCenter
                 color: zo.pressed ? Theme.bgButtonHover : Theme.bgButton
                 border.color: Theme.borderStrong; border.width: 1
-                Text { anchors.centerIn: parent; text: "−"
-                    color: Theme.text; font.pixelSize: 15 }
-                MouseArea { id: zo; anchors.fill: parent
-                    onClicked: main.zoomOut() }
+                Text { anchors.centerIn: parent; text: "−"; color: Theme.text; font.pixelSize: 15 }
+                MouseArea { id: zo; anchors.fill: parent; onClicked: main.zoomOut() }
             }
             Rectangle {
-                width: 46; height: 28
-                radius: Theme.buttonRadius
+                width: 46; height: 28; radius: Theme.buttonRadius
                 anchors.verticalCenter: parent.verticalCenter
                 color: rst.pressed ? Theme.bgButtonHover : Theme.bgButton
                 border.color: Theme.borderStrong; border.width: 1
-                Text { anchors.centerIn: parent
+                Text {
+                    anchors.centerIn: parent
                     text: Math.round(main.viewScale * 100) + "%"
-                    color: Theme.text; font.pixelSize: Theme.fsTiny }
-                MouseArea { id: rst; anchors.fill: parent
-                    onClicked: main.resetView() }
+                    color: Theme.text; font.pixelSize: Theme.fsTiny
+                }
+                MouseArea { id: rst; anchors.fill: parent; onClicked: main.resetView() }
             }
             Rectangle {
-                width: 28; height: 28
-                radius: Theme.buttonRadius
+                width: 28; height: 28; radius: Theme.buttonRadius
                 anchors.verticalCenter: parent.verticalCenter
                 color: zi.pressed ? Theme.bgButtonHover : Theme.bgButton
                 border.color: Theme.borderStrong; border.width: 1
-                Text { anchors.centerIn: parent; text: "+"
-                    color: Theme.text; font.pixelSize: 15 }
-                MouseArea { id: zi; anchors.fill: parent
-                    onClicked: main.zoomIn() }
+                Text { anchors.centerIn: parent; text: "+"; color: Theme.text; font.pixelSize: 15 }
+                MouseArea { id: zi; anchors.fill: parent; onClicked: main.zoomIn() }
             }
 
             Rectangle {
@@ -186,8 +198,7 @@ Rectangle {
 
             Rectangle {
                 id: ctxBtn
-                width: 150; height: 28
-                radius: Theme.buttonRadius
+                width: 150; height: 28; radius: Theme.buttonRadius
                 anchors.verticalCenter: parent.verticalCenter
                 color: ctxBtnMouse.pressed ? Theme.bgButtonHover : Theme.bgButton
                 border.color: Theme.borderDialog; border.width: 1
@@ -202,8 +213,10 @@ Rectangle {
                     }
                     Text { text: "▼"; color: Theme.textWeak; font.pixelSize: 9 }
                 }
-                MouseArea { id: ctxBtnMouse; anchors.fill: parent
-                    onClicked: main.contextPopupRef.open() }
+                MouseArea {
+                    id: ctxBtnMouse; anchors.fill: parent
+                    onClicked: main.contextPopupRef.open()
+                }
             }
 
             Text {
@@ -215,16 +228,13 @@ Rectangle {
             }
 
             Rectangle {
-                width: 28; height: 28
-                radius: Theme.buttonRadius
+                width: 28; height: 28; radius: Theme.buttonRadius
                 anchors.verticalCenter: parent.verticalCenter
                 color: collapseMa.pressed ? Theme.bgButtonHover : Theme.bgButton
                 border.color: Theme.borderStrong; border.width: 1
-                Text { anchors.centerIn: parent; text: "▲"
-                    color: Theme.text; font.pixelSize: 13 }
+                Text { anchors.centerIn: parent; text: "▲"; color: Theme.text; font.pixelSize: 13 }
                 MouseArea {
-                    id: collapseMa
-                    anchors.fill: parent
+                    id: collapseMa; anchors.fill: parent
                     onClicked: main.topCollapsed = true
                 }
             }

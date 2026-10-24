@@ -11,6 +11,7 @@ Rectangle {
     z: 2000
 
     property int engineIndex: 0
+    property int wireModeIndex: 0
     property string gateDelayText: "1"
     property string wireDelayText: "1"
     property int speedExp: 3
@@ -25,6 +26,9 @@ Rectangle {
         autoSpeed = main.circuitRef.autoSpeed
         speedExp = main.circuitRef.simulationSpeedExp
         showSimTime = main.circuitRef.showSimTime
+
+        var wm = main.circuitRef.wireMode
+        wireModeIndex = (wm === "ortho") ? 1 : (wm === "switchable" ? 2 : 0)
         errorText = ""
     }
 
@@ -33,19 +37,14 @@ Rectangle {
 
     Rectangle {
         id: titleBar
-        anchors.top: parent.top
-        anchors.left: parent.left
-        anchors.right: parent.right
-        height: 50
-        color: Theme.bgPanel
-        border.color: Theme.border
-        border.width: 1
+        anchors.top: parent.top; anchors.left: parent.left; anchors.right: parent.right
+        height: 50; color: Theme.bgPanel
+        border.color: Theme.border; border.width: 1
 
         RowLayout {
             anchors.fill: parent
             anchors.leftMargin: 12; anchors.rightMargin: 12
             spacing: 8
-
             Text {
                 text: "⚙ 设置"
                 color: Theme.textStrong
@@ -89,15 +88,9 @@ Rectangle {
             Rectangle {
                 width: parent.width; height: 130
                 color: Theme.bgPanel
-                border.color: Theme.border
-                border.width: 1
-                radius: 8
-
+                border.color: Theme.border; border.width: 1; radius: 8
                 Column {
-                    x: 16; y: 12
-                    spacing: 10
-                    width: parent.width - 32
-
+                    x: 16; y: 12; spacing: 10; width: parent.width - 32
                     Text {
                         text: "仿真引擎"
                         color: Theme.textStrong
@@ -111,7 +104,6 @@ Rectangle {
                         width: parent.width
                         wrapMode: Text.Wrap
                     }
-
                     Row {
                         spacing: 16
                         RadioButton {
@@ -145,19 +137,74 @@ Rectangle {
             }
 
             Rectangle {
+                width: parent.width; height: 170
+                color: Theme.bgPanel
+                border.color: Theme.border; border.width: 1; radius: 8
+                Column {
+                    x: 16; y: 12; spacing: 10; width: parent.width - 32
+                    Text {
+                        text: "连线模式"
+                        color: Theme.textStrong
+                        font.pixelSize: Theme.fsLarge
+                        font.bold: true
+                    }
+                    Text {
+                        text: "贝塞尔：平滑曲线（默认）；正交：直角折线（拖拽方向决定拐角）；可切换：主界面顶部切换按钮控制。\n旧存档默认贝塞尔，正交线作为独立元件可编辑删除。"
+                        color: Theme.textGray
+                        font.pixelSize: Theme.fsSmall
+                        width: parent.width
+                        wrapMode: Text.Wrap
+                    }
+                    Row {
+                        spacing: 16
+                        RadioButton {
+                            id: rbBezier
+                            text: "贝塞尔"
+                            checked: settingsPage.wireModeIndex === 0
+                            onToggled: if (checked) settingsPage.wireModeIndex = 0
+                            contentItem: Text {
+                                text: rbBezier.text; color: Theme.text
+                                font.pixelSize: Theme.fsNormal
+                                leftPadding: rbBezier.indicator.width + 6
+                                verticalAlignment: Text.AlignVCenter
+                            }
+                        }
+                        RadioButton {
+                            id: rbOrtho
+                            text: "正交"
+                            checked: settingsPage.wireModeIndex === 1
+                            onToggled: if (checked) settingsPage.wireModeIndex = 1
+                            contentItem: Text {
+                                text: rbOrtho.text; color: Theme.text
+                                font.pixelSize: Theme.fsNormal
+                                leftPadding: rbOrtho.indicator.width + 6
+                                verticalAlignment: Text.AlignVCenter
+                            }
+                        }
+                        RadioButton {
+                            id: rbSwitchable
+                            text: "可切换"
+                            checked: settingsPage.wireModeIndex === 2
+                            onToggled: if (checked) settingsPage.wireModeIndex = 2
+                            contentItem: Text {
+                                text: rbSwitchable.text; color: Theme.text
+                                font.pixelSize: Theme.fsNormal
+                                leftPadding: rbSwitchable.indicator.width + 6
+                                verticalAlignment: Text.AlignVCenter
+                            }
+                        }
+                    }
+                }
+            }
+
+            Rectangle {
                 width: parent.width
                 height: settingsPage.engineIndex === 0 ? 210 : 0
                 visible: settingsPage.engineIndex === 0
                 color: Theme.bgPanel
-                border.color: Theme.border
-                border.width: 1
-                radius: 8
-
+                border.color: Theme.border; border.width: 1; radius: 8
                 Column {
-                    x: 16; y: 12
-                    spacing: 10
-                    width: parent.width - 32
-
+                    x: 16; y: 12; spacing: 10; width: parent.width - 32
                     Text {
                         text: "传播延迟"
                         color: Theme.textStrong
@@ -171,7 +218,6 @@ Rectangle {
                         width: parent.width
                         wrapMode: Text.Wrap
                     }
-
                     Row {
                         spacing: 8
                         Text {
@@ -206,7 +252,6 @@ Rectangle {
                             anchors.verticalCenter: parent.verticalCenter
                         }
                     }
-
                     Row {
                         spacing: 8
                         Text {
@@ -249,15 +294,9 @@ Rectangle {
                 height: settingsPage.engineIndex === 0 ? 250 : 0
                 visible: settingsPage.engineIndex === 0
                 color: Theme.bgPanel
-                border.color: Theme.border
-                border.width: 1
-                radius: 8
-
+                border.color: Theme.border; border.width: 1; radius: 8
                 Column {
-                    x: 16; y: 12
-                    spacing: 10
-                    width: parent.width - 32
-
+                    x: 16; y: 12; spacing: 10; width: parent.width - 32
                     Text {
                         text: "仿真速度"
                         color: Theme.textStrong
@@ -271,7 +310,6 @@ Rectangle {
                         width: parent.width
                         wrapMode: Text.Wrap
                     }
-
                     CheckBox {
                         id: autoSpeedBox
                         text: "自动"
@@ -285,12 +323,10 @@ Rectangle {
                             verticalAlignment: Text.AlignVCenter
                         }
                     }
-
                     Row {
                         spacing: 8
                         enabled: !settingsPage.autoSpeed
                         opacity: settingsPage.autoSpeed ? 0.5 : 1
-
                         Text {
                             text: "速度 = 1 × 10^"
                             color: Theme.text
@@ -325,8 +361,6 @@ Rectangle {
                             anchors.verticalCenter: parent.verticalCenter
                         }
                     }
-
-                    // ★ 新增：显示仿真时间开关
                     CheckBox {
                         id: showSimTimeBox
                         text: "显示仿真时间"
@@ -354,10 +388,8 @@ Rectangle {
 
             Row {
                 spacing: 12
-
                 Rectangle {
-                    width: 120; height: 36
-                    radius: Theme.buttonRadius
+                    width: 120; height: 36; radius: Theme.buttonRadius
                     color: saveSettingsMa.pressed ? Theme.bgButtonSuccessHi : Theme.bgButtonSuccess
                     border.color: Theme.borderSuccess; border.width: 1
                     Text {
@@ -369,10 +401,8 @@ Rectangle {
                         onClicked: { settingsPage.apply(); main.settingsOpen = false }
                     }
                 }
-
                 Rectangle {
-                    width: 120; height: 36
-                    radius: Theme.buttonRadius
+                    width: 120; height: 36; radius: Theme.buttonRadius
                     color: resetSettingsMa.pressed ? Theme.bgButtonHover : Theme.bgButton
                     border.color: Theme.borderStrong; border.width: 1
                     Text {
@@ -411,8 +441,13 @@ Rectangle {
             }
         }
 
-        // ★ 显示仿真时间开关
         main.circuitRef.showSimTime = showSimTime
+
+        var wm = (wireModeIndex === 1) ? "ortho"
+               : (wireModeIndex === 2 ? "switchable" : "bezier")
+        if (wm !== main.circuitRef.wireMode) {
+            main.circuitRef.wireMode = wm
+        }
 
         main.statusText = "设置已应用"
     }
@@ -423,5 +458,6 @@ Rectangle {
         speedExp = 3
         autoSpeed = true
         showSimTime = false
+        wireModeIndex = 0
     }
 }

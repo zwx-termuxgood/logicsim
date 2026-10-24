@@ -61,11 +61,17 @@ ApplicationWindow {
     property bool wiringStartIsOutput: true
     property real wireEndX: 0
     property real wireEndY: 0
+    property real wiringStartX: 0
+    property real wiringStartY: 0
+    property int  wiringDirection: 0
+    // ★ 新增：起点处命中的 wire 端点（缩短候选）
+    property var shortenWireCandidates: []
 
     property string selectedCompId: ""
     property var selectedComp: null
     property var selectedIds: []
     property string selectedSubId: ""
+    property string selectedWireId: ""
 
     property string statusText: "编辑模式"
     property string inputError: ""
@@ -99,8 +105,6 @@ ApplicationWindow {
     property alias contextPopupRef: contextPopup
     property alias saveDialogRef: saveDialog
     property alias openDialogRef: openDialog
-    property alias importDialogRef: importDialog
-    property alias importedFilesPopupRef: importedFilesPopup
     property alias menuPopupRef: menuPopup
 
     readonly property string engineType: circuit.engineType
@@ -133,6 +137,9 @@ ApplicationWindow {
             root.placingSubId = ""
             root.selectedIds = []
             root.selectedSubId = ""
+            root.selectedWireId = ""
+            root.wiringDirection = 0
+            root.shortenWireCandidates = []
             root.rebuildCachesFull()
         }
         onSubcircuitsChanged: { root.subList = circuit.subcircuits }
@@ -144,6 +151,7 @@ ApplicationWindow {
         onSimulationChanged: { canvasView.requestPaint() }
         onEngineChanged: { canvasView.requestPaint() }
         onEngineSettingsChanged: { canvasView.requestPaint() }
+        onWireModeChanged: { canvasView.requestPaint() }
         onUndoRedoChanged: { }
     }
 
@@ -237,22 +245,71 @@ ApplicationWindow {
         enabled: !root.forceQuit
         onActivated: root.doExit()
     }
-
-    // ★ 修复：正在输入的字段不被刷新覆盖
-    function refreshSel() {
-        selectedComp = (selectedCompId !== "") ? compById[selectedCompId] : null
-
-        if (selectedComp && (selectedComp.type === "splitter" || selectedComp.type === "hub")) {
-            if (!leftPanel.splitterSplitsInput.activeFocus)
-                leftPanel.splitterSplitsInput.text = circuit.getSplitterSplitsStr(selectedCompId)
+    Shortcut {
+        sequences: [StandardKey.Delete]
+        context: Qt.WindowShortcut
+        enabled: !circuit.isViewOnly
+        onActivated: {
+            if (selectedWireId !== "") {
+                circuit.removeWire(selectedWireId)
+                selectedWireId = ""
+            } else if (selectedCompId !== "") {
+                confirmDelete(selectedCompId)
+            }
         }
+    }
+    Shortcut {
+        sequences: [StandardKey.Copy]
+        context: Qt.WindowShortcut
+        enabled: !circuit.isViewOnly
+        onActivated: {
+            var ids = []
+            if (selectedIds.length > 0) {
+                for (var i = 0; i < selectedIds.length; i++) ids.push(selectedIds[i])
+            } else if (selectedCompId !== "") {
+                ids.push(selectedCompId)
+            } else if (selectedWireId !== "") {
+                ids.push(selectedWireId)
+            }
+            if (ids.length > 0) {
+                clipboardData = circuit.copySelection(ids)
+                statusText = "已复制 " + ids.length + " 项"
+            }
+        }
+    }
+    Shortcut {
+        sequences: [StandardKey.Paste]
+        context: Qt.WindowShortcut
+        enabled: !circuit.isViewOnly && clipboardData !== null
+        onActivated: {
+            if (clipboardData === null) return
+            var newIds = circuit.pasteSelection(clipboardData, 30, 30)
+            selectedIds = newIds
+            statusText = "已粘贴 " + newIds.length + " 项"
+        }
+    }
+
+    function refreshSel() {
+        if (selectedCompId !== "" && !compById[selectedCompId]) {
+            selectedCompId = ""
+        }
+        selectedComp = (selectedCompId !== "") ? (compById[selectedCompId] || null) : null
+
+        if (selectedComp && (selectedComp.type === "splitter" || selectedComp.type === "hub"))
+            leftPanel.splitterSplitsInput.text = circuit.getSplitterSplitsStr(selectedCompId)
         if (selectedComp && (selectedComp.type === "input" || selectedComp.type === "const")) {
-            if (!leftPanel.inputValueField.activeFocus)
-                leftPanel.inputValueField.text = circuit.getInputAsString(selectedCompId)
+            leftPanel.inputValueField.text = circuit.getInputAsString(selectedCompId)
+            inputError = ""
         }
         if (selectedComp && selectedComp.type === "text") {
-            if (!leftPanel.textContentField.activeFocus)
-                leftPanel.textContentField.text = selectedComp.content || ""
+            leftPanel.textContentField.text = selectedComp.content || ""
+        }
+
+        if (selectedWireId !== "") {
+            var w = circuit.getWire(selectedWireId)
+            if (!w || !w.id) {
+                selectedWireId = ""
+            }
         }
     }
 
@@ -505,11 +562,6 @@ ApplicationWindow {
     ContextPopup { id: contextPopup; main: root; anchorItem: topBar.ctxBtn }
     MenuPopup { id: menuPopup; main: root; anchorItem: topBar.menuBtn }
 
-    ImportedFilesPopup {
-        id: importedFilesPopup
-        main: root
-    }
-
     SettingsPage {
         id: settingsPage
         main: root
@@ -556,26 +608,11 @@ ApplicationWindow {
                 root.selectedComp = null
                 root.selectedIds = []
                 root.selectedSubId = ""
+                root.selectedWireId = ""
                 root.resetView()
                 root.statusText = "已打开：" + path
             } else {
                 root.statusText = "打开失败：" + path
-            }
-        }
-    }
-
-    FileDialog {
-        id: importDialog
-        title: "导入电路"
-        fileMode: FileDialog.OpenFile
-        nameFilters: ["Logic JSON (*.json)"]
-        onAccepted: {
-            var path = root.fileUrlToLocal(selectedFile)
-            if (circuit.importFromFile(path)) {
-                root.dirty = true
-                root.statusText = "已导入：" + path
-            } else {
-                root.statusText = "导入失败：" + path
             }
         }
     }

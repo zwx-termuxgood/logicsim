@@ -37,7 +37,6 @@ class Circuit : public QObject
     Q_PROPERTY(int clockTickCount READ clockTickCount NOTIFY clockChanged)
     Q_PROPERTY(bool canUndo READ canUndo NOTIFY undoRedoChanged)
     Q_PROPERTY(bool canRedo READ canRedo NOTIFY undoRedoChanged)
-
     Q_PROPERTY(QString engineType READ engineType WRITE setEngineType NOTIFY engineChanged)
     Q_PROPERTY(bool simulationRunning READ simulationRunning NOTIFY simulationChanged)
     Q_PROPERTY(qulonglong simTime READ simTime NOTIFY simulationTick)
@@ -47,6 +46,9 @@ class Circuit : public QObject
     Q_PROPERTY(int simulationSpeedExp READ simulationSpeedExp WRITE setSimulationSpeedExp NOTIFY engineSettingsChanged)
     Q_PROPERTY(bool autoSpeed READ autoSpeed WRITE setAutoSpeed NOTIFY engineSettingsChanged)
     Q_PROPERTY(bool showSimTime READ showSimTime WRITE setShowSimTime NOTIFY showSimTimeChanged)
+    Q_PROPERTY(QString wireMode READ wireMode WRITE setWireMode NOTIFY wireModeChanged)
+    Q_PROPERTY(QString currentWireType READ currentWireType WRITE setCurrentWireType NOTIFY wireModeChanged)
+    Q_PROPERTY(QString effectiveWireType READ effectiveWireType NOTIFY wireModeChanged)
 
 public:
     explicit Circuit(QObject* parent = nullptr);
@@ -85,10 +87,15 @@ public:
     bool showSimTime() const { return m_showSimTime; }
     void setShowSimTime(bool b);
 
+    QString wireMode() const { return m_wireMode; }
+    void setWireMode(const QString& m);
+    QString currentWireType() const { return m_currentWireType; }
+    void setCurrentWireType(const QString& t);
+    Q_INVOKABLE QString effectiveWireType() const;
+
     Q_INVOKABLE void setGateTypeDelay(const QString& type, qulonglong d);
     Q_INVOKABLE qulonglong getGateTypeDelay(const QString& type) const;
     Q_INVOKABLE void clearGateTypeDelays();
-
     Q_INVOKABLE void startSimulation();
     Q_INVOKABLE void pauseSimulation();
     Q_INVOKABLE void resetSimulation();
@@ -101,6 +108,8 @@ public:
     Q_INVOKABLE void removeComponents(const QStringList& ids);
     Q_INVOKABLE void moveComponent(const QString& id, double x, double y);
     Q_INVOKABLE void moveSelection(const QStringList& ids, double dx, double dy);
+    Q_INVOKABLE void moveComponentWithWires(const QString& id, double x, double y);
+    Q_INVOKABLE void moveSelectionWithWires(const QStringList& ids, double dx, double dy);
     Q_INVOKABLE void toggleInput(const QString& id);
     Q_INVOKABLE void setBitValue(const QString& id, int bit, bool value);
     Q_INVOKABLE void setComponentProp(const QString& id, const QString& key, const QVariant& value);
@@ -120,8 +129,19 @@ public:
 
     Q_INVOKABLE QString addWire(const QString& fromComp, int fromPort,
                                 const QString& toComp, int toPort);
+    Q_INVOKABLE QString addOrthoWire(double fromX, double fromY,
+                                     double toX, double toY,
+                                     int direction);
+    Q_INVOKABLE bool shortenWireEnd(const QString& wireId, double newX, double newY);
     Q_INVOKABLE void removeWire(const QString& id);
     Q_INVOKABLE QString wireAtPoint(double x, double y, double tol) const;
+    Q_INVOKABLE bool setWirePathPoint(const QString& id, int index, double x, double y);
+    Q_INVOKABLE QVariantList getWirePath(const QString& id) const;
+    Q_INVOKABLE QString getWireType(const QString& id) const;
+
+    Q_INVOKABLE QVariantMap findPortAt(double x, double y, double tol) const;
+    Q_INVOKABLE QVariantList allWireSegments() const;
+    Q_INVOKABLE QVariantList connectionDots() const;
 
     Q_INVOKABLE QVariantMap getComponent(const QString& id) const;
     Q_INVOKABLE QVariantMap getWire(const QString& id) const;
@@ -143,27 +163,23 @@ public:
     Q_INVOKABLE void refreshErrors();
     Q_INVOKABLE QVariantList copySelection(const QStringList& ids);
     Q_INVOKABLE QStringList pasteSelection(const QVariantList& data, double dx, double dy);
-
     Q_INVOKABLE void addRecentFile(const QString& path);
     Q_INVOKABLE void removeRecentFile(const QString& path);
     Q_INVOKABLE void clearRecentFiles();
-
+    Q_INVOKABLE bool importFromFile(const QString& path);
+    Q_INVOKABLE bool removeImportedFile(const QString& path);
+    Q_INVOKABLE QVariantList importedFiles() const;
     Q_INVOKABLE void clear();
     Q_INVOKABLE void evaluate();
     Q_INVOKABLE QVariantMap toJson() const;
     Q_INVOKABLE bool fromJson(const QVariantMap& data);
     Q_INVOKABLE bool saveToFile(const QString& path);
     Q_INVOKABLE bool loadFromFile(const QString& path);
-    Q_INVOKABLE bool importFromFile(const QString& path);
-    Q_INVOKABLE bool removeImportedFile(const QString& path);       // ★ 新增
-    Q_INVOKABLE QVariantList importedFiles() const;                 // ★ 新增
-
     Q_INVOKABLE void startClock();
     Q_INVOKABLE void stopClock();
     Q_INVOKABLE void setClockFrequency(int hz);
     Q_INVOKABLE void singleStep();
     Q_INVOKABLE void resetAllInputs();
-
     Q_INVOKABLE void undo();
     Q_INVOKABLE void redo();
     Q_INVOKABLE void breakUndoMerge();
@@ -178,14 +194,13 @@ signals:
     void recentFilesChanged();
     void clockChanged();
     void undoRedoChanged();
-
     void engineChanged();
     void simulationChanged();
     void simulationTick();
     void engineSettingsChanged();
     void showSimTimeChanged();
-
     void structureChanged();
+    void wireModeChanged();
 
 private slots:
     void tick();
@@ -208,8 +223,7 @@ private:
     int m_importCounter = 0;
     QVariantList m_errors;
     QVariantList m_recentFiles;
-
-    QHash<QString, QVariantMap> m_importedFiles;   // path -> { path, prefix, baseName, subIds }
+    QHash<QString, QVariantMap> m_importedFiles;
 
     QVector<BrowseFrame> m_browseStack;
     QString m_currentInstancePath;
@@ -234,58 +248,49 @@ private:
     bool m_autoSpeed = true;
     bool m_showSimTime = false;
 
-    CircuitUndoData* und() const;
+    QString m_wireMode = "bezier";
+    QString m_currentWireType = "bezier";
 
+    CircuitUndoData* und() const;
     Context& currentCtx();
     const Context& currentCtx() const;
     Context* ctxById(const QString& id);
     const Context* ctxById(const QString& id) const;
-
     int indexOfComponent(const QString& id) const;
     int indexOfWire(const QString& id) const;
 
     void evaluateAll();
-
     void loadRecentFiles();
     void saveRecentFiles();
-
     void loadSettings();
     void saveSettings();
-
     bool hasSubCycle(const QString& fromCtx, const QString& targetId, QSet<QString>& visited) const;
 
     void pushUndo(const QString& mergeKey = QString());
     void pushUndoAll(const QString& mergeKey = QString());
     void pushUndoMeta(const QString& mergeKey = QString());
-
     void pushUndoInternal(UndoScope scope, const QString& ctxId, const QString& mergeKey);
-
-    UndoEntry captureUndoEntry(UndoScope scope, const QString& ctxId,
-                               const QString& mergeKey) const;
+    UndoEntry captureUndoEntry(UndoScope scope, const QString& ctxId, const QString& mergeKey) const;
     UndoEntry captureSameScopeAs(const UndoEntry& ref) const;
     void applyUndoEntry(const UndoEntry& e);
 
     void rebuildEventEngine();
     void applyEngineOutputsToContexts();
     void onSimTimerTick();
-
-    // ★ 大电路推进到稳定：内部循环，每次 advance 翻倍直到队列空
     void runEventEngineFully(quint64 advance, quint64 budget);
-
     QStringList engineQidsFor(const QString& ctxId, const QString& localCompId) const;
-
     void syncSubStateFromParent(const QString& subId);
     void refreshCurrentSubContext();
+    void removeSubContextsByPrefix(const QString& prefix);
+
+    // ★ 新增：移动元件时更新连接到该元件的 ortho wire path
+    void updateWiresForMovedComponent(Context& ctx, const QString& movedId);
 
     static int componentInputCount(const QVariantMap& comp);
     static int componentOutputCount(const QVariantMap& comp);
     static int outputPortBitWidth(const QVariantMap& comp, int portIdx);
     static int inputPortBitWidth(const QVariantMap& comp, int portIdx);
-
     void dumpInternalState(const QString& where) const;
-
-    // ★ 移除指定前缀的所有子电路和引用它们的 sub 实例（内部辅助）
-    void removeSubContextsByPrefix(const QString& prefix);
 };
 
-#endif // CIRCUIT_H
+#endif

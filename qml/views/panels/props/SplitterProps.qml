@@ -8,9 +8,11 @@ Column {
 
     property alias splitterSplitsInput: splitterSplitsInput
 
-    visible: main.selectedComp &&
-             (main.selectedComp.type === "splitter" ||
-              main.selectedComp.type === "hub")
+    visible: main !== null
+             && main.selectedComp !== null
+             && main.selectedComp !== undefined
+             && (main.selectedComp.type === "splitter"
+                 || main.selectedComp.type === "hub")
     spacing: 4
 
     Text {
@@ -29,15 +31,16 @@ Column {
             color: Theme.text
             font.pixelSize: Theme.fsSmall; font.family: "monospace"
             background: null; selectByMouse: true
-            readOnly: main.circuitViewOnly
+            readOnly: main ? main.circuitViewOnly : true
             onEditingFinished: {
+                if (!main) return
                 if (main.selectedCompId === "" || main.circuitViewOnly) return
                 main.circuitRef.setSplitterSplits(main.selectedCompId, text)
             }
         }
     }
     Text {
-        text: main.selectedComp && main.selectedComp.type === "splitter"
+        text: (main && main.selectedComp && main.selectedComp.type === "splitter")
               ? "分线器：1 输入 → N 输出"
               : "集线器：N 输入 → 1 输出"
         color: Theme.textFaint

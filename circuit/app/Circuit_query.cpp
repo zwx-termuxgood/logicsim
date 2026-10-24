@@ -103,9 +103,11 @@ QString Circuit::setInputFromString(const QString& id, const QString& text) {
     ctx.components[idx] = c;
 
     if (m_engineType == "event" && m_eventEngine && m_simulationRunning) {
-        // ★ 防御：若引擎落后，先重建，避免 triggerInputString 找不到 qid
         if (m_engineDirty) {
             rebuildEventEngine();
+            quint64 wd0 = m_eventEngine->wireDelay();
+            quint64 gd0 = m_eventEngine->globalGateDelay();
+            runEventEngineFully((wd0 + gd0) * 64 + 200, 500000);
             applyEngineOutputsToContexts();
         }
         QString binStr = ValueCodec::bitsToString(bits, bw);
@@ -114,8 +116,7 @@ QString Circuit::setInputFromString(const QString& id, const QString& text) {
             m_eventEngine->triggerInputString(qid, binStr);
         quint64 wd = m_eventEngine->wireDelay();
         quint64 gd = m_eventEngine->globalGateDelay();
-        quint64 advance = (wd + gd) * 8 + 20;
-        runEventEngineFully(advance, 200000);
+        runEventEngineFully((wd + gd) * 64 + 200, 500000);
         applyEngineOutputsToContexts();
         emit simulationTick();
     } else if (m_engineType == "event") {

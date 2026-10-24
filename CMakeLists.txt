@@ -6,21 +6,25 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 
 find_package(Qt6 6.5 REQUIRED COMPONENTS Quick QuickControls2 Qml)
-
 qt_standard_project_setup(REQUIRES 6.5)
 
-# ---------- C++ 源文件 ----------
 set(CIRCUIT_SOURCES
     circuit/Circuit.cpp
     circuit/core/CircuitContext.cpp
     circuit/core/ValueCodec.cpp
     circuit/core/IdAllocator.cpp
     circuit/logic/ComponentLogic.cpp
+    circuit/logic/WireNetworkSolver.cpp
     circuit/logic/event/EventEngine.cpp
     circuit/logic/event/EventEngine_build.cpp
     circuit/logic/event/EventEngine_run.cpp
     circuit/logic/event/EventEngine_trigger.cpp
     circuit/logic/iter/IterEngine.cpp
+    circuit/logic/move/MoveGesture.cpp
+    circuit/logic/move/Connector.cpp
+    circuit/logic/move/ConnectorThread.cpp
+    circuit/logic/move/AvoidanceMap.cpp
+    circuit/logic/move/SearchNode.cpp
     circuit/io/JsonCodec.cpp
     circuit/io/ClipboardCodec.cpp
     circuit/io/RecentStore.cpp
@@ -34,7 +38,6 @@ set(CIRCUIT_SOURCES
     circuit/app/Circuit_catalog.cpp
 )
 
-# ---------- C++ 头文件（显式列出，保证 moc 扫描 + IDE 显示） ----------
 set(CIRCUIT_HEADERS
     circuit/Circuit.h
     circuit/core/CircuitContext.h
@@ -47,12 +50,20 @@ set(CIRCUIT_HEADERS
     circuit/io/ClipboardCodec.h
     circuit/io/RecentStore.h
     circuit/logic/ComponentLogic.h
+    circuit/logic/WireNetworkSolver.h
     circuit/logic/SimEngine.h
     circuit/logic/event/EventEngine.h
     circuit/logic/iter/IterEngine.h
+    circuit/logic/move/MoveGesture.h
+    circuit/logic/move/Connector.h
+    circuit/logic/move/ConnectorThread.h
+    circuit/logic/move/AvoidanceMap.h
+    circuit/logic/move/SearchNode.h
+    circuit/logic/move/ConnectionData.h
+    circuit/logic/move/MoveResult.h
+    circuit/logic/move/MoveRequest.h
 )
 
-# ---------- QML 源文件 ----------
 set(QML_SOURCES
     qml/Main.qml
     qml/Theme.qml
@@ -76,31 +87,27 @@ set(QML_SOURCES
     qml/views/dialogs/RecentPopup.qml
     qml/views/dialogs/StatsPopup.qml
     qml/views/dialogs/UnsavedDialog.qml
+    qml/views/dialogs/ImportedFilesPopup.qml
 )
 
 set_source_files_properties(qml/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 
-# ★ target 名从 applogicsim 改成 LogicSim，和 URI 一致
 qt_add_executable(LogicSim main.cpp ${CIRCUIT_SOURCES} ${CIRCUIT_HEADERS})
 
 qt_add_qml_module(LogicSim
     URI LogicSim
     VERSION 1.0
-    OUTPUT_DIRECTORY LogicSimQml       # ★ 关键：QML 元数据换到 LogicSimQml/，避免和可执行文件同名冲突
+    OUTPUT_DIRECTORY LogicSimQml
     QML_FILES ${QML_SOURCES}
     RESOURCES
         qml/views/canvas/Geometry.js
         qml/views/canvas/Painter.js
         qml/views/canvas/interactions/CanvasInteraction.js
     SOURCES ${CIRCUIT_HEADERS}
-    QML_FILES qml/views/dialogs/ImportedFilesPopup.qml
 )
 
 target_include_directories(LogicSim PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/circuit)
-
-target_link_libraries(LogicSim PRIVATE
-    Qt6::Quick Qt6::QuickControls2 Qt6::Qml
-)
+target_link_libraries(LogicSim PRIVATE Qt6::Quick Qt6::QuickControls2 Qt6::Qml)
 
 if(ANDROID)
     set_property(TARGET LogicSim PROPERTY

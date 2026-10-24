@@ -10,6 +10,18 @@ Column {
     spacing: 5
     width: parent ? parent.width : 200
 
+    function findSubInfo(subId) {
+        if (!main) return null
+        if (!main.subList) return null
+        for (var i = 0; i < main.subList.length; ++i) {
+            if (main.subList[i].id === subId) return main.subList[i]
+        }
+        return null
+    }
+
+    readonly property string selSubId: main ? (main.selectedSubId || "") : ""
+    readonly property bool viewOnly: main ? main.circuitViewOnly : false
+
     Rectangle {
         width: parent.width; height: 24; radius: Theme.smallRadius
         color: Theme.bgDialogHeader
@@ -41,15 +53,16 @@ Column {
                 color: Theme.text; font.pixelSize: Theme.fsSmall
                 background: null
                 selectByMouse: true
-                readOnly: main.circuitViewOnly
+                readOnly: subcircuitPanel.viewOnly
                 text: {
-                    var info = findSubInfo(main.selectedSubId)
+                    var info = subcircuitPanel.findSubInfo(subcircuitPanel.selSubId)
                     return info ? info.name : ""
                 }
                 onEditingFinished: {
-                    if (main.selectedSubId === "" || main.circuitViewOnly) return
+                    if (!main) return
+                    if (subcircuitPanel.selSubId === "" || subcircuitPanel.viewOnly) return
                     if (text.trim().length === 0) return
-                    main.circuitRef.setSubcircuitName(main.selectedSubId, text.trim())
+                    main.circuitRef.setSubcircuitName(subcircuitPanel.selSubId, text.trim())
                 }
             }
         }
@@ -57,7 +70,7 @@ Column {
 
     Text {
         text: {
-            var info = findSubInfo(main.selectedSubId)
+            var info = subcircuitPanel.findSubInfo(subcircuitPanel.selSubId)
             if (!info) return ""
             return "ID：" + info.id + "\n输入端口：" + info.inCount
                  + "    输出端口：" + info.outCount
@@ -70,7 +83,7 @@ Column {
 
     Rectangle {
         width: parent.width; height: 30; radius: Theme.smallRadius
-        visible: !main.circuitViewOnly
+        visible: !subcircuitPanel.viewOnly
         color: renameBtn.pressed ? Theme.bgButtonHover : Theme.bgButton
         border.color: Theme.borderStrong; border.width: 1
         Text {
@@ -80,15 +93,16 @@ Column {
         MouseArea {
             id: renameBtn; anchors.fill: parent
             onClicked: {
-                var info = findSubInfo(main.selectedSubId)
-                main.openRenameSubDialog(main.selectedSubId, info ? info.name : "")
+                if (!main) return
+                var info = subcircuitPanel.findSubInfo(subcircuitPanel.selSubId)
+                main.openRenameSubDialog(subcircuitPanel.selSubId, info ? info.name : "")
             }
         }
     }
 
     Rectangle {
         width: parent.width; height: 30; radius: Theme.smallRadius
-        visible: !main.circuitViewOnly
+        visible: !subcircuitPanel.viewOnly
         color: setRootBtn.pressed ? Theme.bgButtonHover : Theme.bgButton
         border.color: Theme.borderStrong; border.width: 1
         Text {
@@ -98,11 +112,13 @@ Column {
         MouseArea {
             id: setRootBtn; anchors.fill: parent
             onClicked: {
+                if (!main) return
                 main.confirmDialogRef.title = "设为主电路"
                 main.confirmDialogRef.message =
                     "确定把该子电路设为主电路？\n当前主电路内容将被移动到原位置。"
                 main.confirmDialogRef.action = function() {
-                    main.circuitRef.setSubcircuitAsRoot(main.selectedSubId)
+                    if (!main) return
+                    main.circuitRef.setSubcircuitAsRoot(subcircuitPanel.selSubId)
                     main.selectedSubId = ""
                 }
                 main.confirmDialogRef.open()
@@ -120,13 +136,16 @@ Column {
         }
         MouseArea {
             id: enterBtn; anchors.fill: parent
-            onClicked: main.circuitRef.enterSubcircuit(main.selectedSubId)
+            onClicked: {
+                if (!main) return
+                main.circuitRef.enterSubcircuit(subcircuitPanel.selSubId)
+            }
         }
     }
 
     Rectangle {
         width: parent.width; height: 30; radius: Theme.smallRadius
-        visible: !main.circuitViewOnly
+        visible: !subcircuitPanel.viewOnly
         color: delSubBtn.pressed ? "#6e2020" : Theme.bgButtonDanger
         border.color: Theme.borderDanger; border.width: 1
         Text {
@@ -136,10 +155,12 @@ Column {
         MouseArea {
             id: delSubBtn; anchors.fill: parent
             onClicked: {
-                var sid = main.selectedSubId
+                if (!main) return
+                var sid = subcircuitPanel.selSubId
                 main.confirmDialogRef.title = "删除子电路"
                 main.confirmDialogRef.message = "确定删除该子电路及其所有实例？"
                 main.confirmDialogRef.action = function() {
+                    if (!main) return
                     main.circuitRef.deleteSubcircuit(sid)
                     main.selectedSubId = ""
                 }
@@ -149,11 +170,4 @@ Column {
     }
 
     Rectangle { width: parent.width; height: 1; color: Theme.border }
-
-    function findSubInfo(subId) {
-        for (var i = 0; i < main.subList.length; ++i) {
-            if (main.subList[i].id === subId) return main.subList[i]
-        }
-        return null
-    }
 }
