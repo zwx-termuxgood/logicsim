@@ -682,6 +682,9 @@ app/
 │         saveSettings();
 │         if (m_engineType == "event") {
 │             rebuildEventEngine();
+│             quint64 wd0 = m_eventEngine ? m_eventEngine->wireDelay() : 1;
+│             quint64 gd0 = m_eventEngine ? m_eventEngine->globalGateDelay() : 1;
+│             runEventEngineFully((wd0 + gd0) * 64 + 200, 500000);
 │             applyEngineOutputsToContexts();
 │         } else {
 │             applyEngineOutputsToContexts();
@@ -704,8 +707,6 @@ app/
 │         if (m_engineType == "event") {
 │             if (m_simulationRunning && m_eventEngine) {
 │                 rebuildEventEngine();
-│                 // ★ 修复：rebuild 后必须先处理初始 Recalc 事件，否则 apply 全量读到的是初始 0
-│                 //   大子电路初始事件多，需要预算足够
 │                 {
 │                     quint64 wd = m_eventEngine->wireDelay();
 │                     quint64 gd = m_eventEngine->globalGateDelay();
@@ -772,7 +773,6 @@ app/
 │         m_ctxSubInstCache.clear();
 │     }
 │     
-│     // ★ input/const 的 inputBits 同步回 ctx（与 engine 输出一致）
 │     static void updateOneComponent(QVariantMap& c,
 │                                    EventEngine* eng,
 │                                    const QHash<QString, CircuitContext>& subContexts)
@@ -826,7 +826,6 @@ app/
 │             for (const auto& s : outs) ops.append(s);
 │             c["outputPorts"] = ops;
 │     
-│             // ★ input/const 同步 inputBits（前提：调用方已保证 engine 已 run 收敛）
 │             if (type == "input" || type == "const") {
 │                 int bw = c.value("bitWidth").toInt();
 │                 if (bw < 1) bw = 1;
@@ -926,12 +925,12 @@ app/
 │         return result;
 │     }
 │     
+│     // ★ 修复：起始 advance 至少 10000（原值 ~200 会导致大电路需要一路翻倍，
+│     //   每次翻倍都受 budget=50万 上限约束，最终跑不完）
 │     void Circuit::runEventEngineFully(quint64 advance, quint64 budget) {
 │         if (!m_eventEngine) return;
-│         if (advance < 1) advance = 1;
 │         if (budget < 1) budget = 200000;
-│         quint64 a = advance;
-│         // ★ 轮次上限从 100 提升到 200，大子电路初始事件多，需要更多轮次收敛
+│         quint64 a = qMax<quint64>(advance, 10000ULL);
 │         for (int round = 0; round < 200; ++round) {
 │             if (m_eventEngine->isIdle()) break;
 │             bool ok = m_eventEngine->run(a, budget);
@@ -1441,6 +1440,9 @@ app/
 │         m_engineDirty = true;
 │         if (m_engineType == "event") {
 │             rebuildEventEngine();
+│             quint64 wd0 = m_eventEngine ? m_eventEngine->wireDelay() : 1;
+│             quint64 gd0 = m_eventEngine ? m_eventEngine->globalGateDelay() : 1;
+│             runEventEngineFully((wd0 + gd0) * 64 + 200, 500000);
 │             applyEngineOutputsToContexts();
 │         } else {
 │             evaluateAll();
@@ -1890,10 +1892,14 @@ app/
 │         emit clockChanged();
 │     }
 │     
+│     // ★ 修复：rebuild 后必须先跑完初始事件再 apply，否则用初始 0 覆盖 ctx 输出
 │     void Circuit::singleStep() {
 │         if (m_engineType == "event") {
 │             if (m_engineDirty) {
 │                 rebuildEventEngine();
+│                 quint64 wd0 = m_eventEngine->wireDelay();
+│                 quint64 gd0 = m_eventEngine->globalGateDelay();
+│                 runEventEngineFully((wd0 + gd0) * 64 + 200, 500000);
 │                 applyEngineOutputsToContexts();
 │             }
 │             if (m_eventEngine) {
@@ -1965,6 +1971,9 @@ app/
 │         if (m_engineType == "event" && m_eventEngine) {
 │             rebuildEventEngine();
 │             m_eventEngine->reset();
+│             quint64 wd0 = m_eventEngine->wireDelay();
+│             quint64 gd0 = m_eventEngine->globalGateDelay();
+│             runEventEngineFully((wd0 + gd0) * 64 + 200, 500000);
 │             applyEngineOutputsToContexts();
 │         } else {
 │             evaluateAll();
@@ -1990,7 +1999,6 @@ app/
 │         emit changed();
 │     }
 │     
-│     // ★ 修复：startSimulation 后先跑一遍初始事件，再全量 apply
 │     void Circuit::startSimulation() {
 │         if (m_engineType != "event") return;
 │         if (m_simulationRunning) return;
@@ -2020,16 +2028,24 @@ app/
 │         if (!m_eventEngine) return;
 │         if (m_clockRunning) stopClock();
 │         m_eventEngine->reset();
+│         // ★ 修复：reset 后队列里是初始 Recalc 事件，必须先跑完再 apply
+│         quint64 wd0 = m_eventEngine->wireDelay();
+│         quint64 gd0 = m_eventEngine->globalGateDelay();
+│         runEventEngineFully((wd0 + gd0) * 64 + 200, 500000);
 │         applyEngineOutputsToContexts();
 │         emit simulationChanged();
 │         emit simulationTick();
 │         emit changed();
 │     }
 │     
+│     // ★ 修复：rebuild 后必须先跑完初始事件再 apply
 │     void Circuit::simulateStep() {
 │         if (m_engineType != "event" || !m_eventEngine) return;
 │         if (m_engineDirty) {
 │             rebuildEventEngine();
+│             quint64 wd0 = m_eventEngine->wireDelay();
+│             quint64 gd0 = m_eventEngine->globalGateDelay();
+│             runEventEngineFully((wd0 + gd0) * 64 + 200, 500000);
 │             applyEngineOutputsToContexts();
 │         }
 │         m_eventEngine->step();
@@ -2038,9 +2054,16 @@ app/
 │         emit changed();
 │     }
 │     
+│     // ★ 修复：rebuild 后必须先跑完初始事件再 apply（大电路 units 小，一次 run 收敛不了）
 │     void Circuit::onSimTimerTick() {
 │         if (!m_eventEngine || !m_simulationRunning) return;
-│         if (m_engineDirty) rebuildEventEngine();
+│         if (m_engineDirty) {
+│             rebuildEventEngine();
+│             quint64 wd0 = m_eventEngine->wireDelay();
+│             quint64 gd0 = m_eventEngine->globalGateDelay();
+│             runEventEngineFully((wd0 + gd0) * 64 + 200, 500000);
+│             applyEngineOutputsToContexts();
+│         }
 │         quint64 units = m_autoSpeed ? 1000 : (m_simulationSpeed / 60);
 │         if (units < 1) units = 1;
 │         m_eventEngine->run(units, kSimRunBudget);
@@ -3215,14 +3238,14 @@ io/
 │         QSet<QString> selectedWireIds;
 │     
 │         if (!hasComponentsSelected) {
-│             // ★ 只选线：只复制明确选中的线
+│             // 只选线：只复制明确选中的线
 │             for (auto& wv : ctx.wires) {
 │                 auto w = wv.toMap();
 │                 if (idSet.contains(w.value("id").toString()))
 │                     selectedWireIds.insert(w.value("id").toString());
 │             }
 │         } else {
-│             // ★ 选元件：第一轮直接相连
+│             // 选元件：第一轮直接相连
 │             for (auto& wv : ctx.wires) {
 │                 auto w = wv.toMap();
 │                 QString wid = w.value("id").toString();
@@ -3235,11 +3258,7 @@ io/
 │                 }
 │             }
 │     
-│             // ★ 第二轮：传播（端点对端点 + T 型接入），支持多段拼接
-│             //   端点对端点：未选中 wire 的端点 == 已选中 wire 的某个顶点
-│             //   正向 T：未选中 wire 的端点落在已选中 wire 的中间段
-│             //   反向 T：已选中 wire 的端点落在未选中 wire 的中间段
-│             //   十字交叉（中间对中间）不算
+│             // 第二轮：端点对端点 + 正反 T 型接入
 │             bool changed = true;
 │             int guard = 0;
 │             while (changed && guard++ < 200) {
@@ -3266,13 +3285,11 @@ io/
 │     
 │                     bool matched = false;
 │     
-│                     // (a) 端点对端点
 │                     if (selVertexKeys.contains(posKeyOf(path.first().toMap())) ||
 │                         selVertexKeys.contains(posKeyOf(path.last().toMap()))) {
 │                         matched = true;
 │                     }
 │     
-│                     // (b) 未选中 wire 的端点落在已选中 wire 的中间段（正向 T）
 │                     if (!matched) {
 │                         QVariantMap p0 = path.first().toMap();
 │                         QVariantMap pn = path.last().toMap();
@@ -3287,7 +3304,6 @@ io/
 │                         }
 │                     }
 │     
-│                     // (c) 已选中 wire 的端点落在未选中 wire 的中间段（反向 T）
 │                     if (!matched) {
 │                         for (const auto& selPath : selPaths) {
 │                             QVariantMap a = selPath.first().toMap();
@@ -3358,14 +3374,18 @@ io/
 │             QString from = idMap.value(oldFrom, "");
 │             QString to = idMap.value(oldTo, "");
 │     
-│             if (!oldFrom.isEmpty() && from.isEmpty()) continue;
-│             if (!oldTo.isEmpty() && to.isEmpty()) continue;
+│             QString wt = w.value("wireType").toString();
+│             if (wt.isEmpty()) wt = "bezier";
+│     
+│             // ★ 修复：ortho 线只要一端映射成功就创建（另一端自然悬空，path 已被平移）
+│             //   bezier 线两端都必须映射成功（贝塞尔依赖两端元件坐标计算曲线）
+│             if (wt != "ortho") {
+│                 if (!oldFrom.isEmpty() && from.isEmpty()) continue;
+│                 if (!oldTo.isEmpty() && to.isEmpty()) continue;
+│             }
 │     
 │             QVariantMap nw;
 │             nw["id"] = IdAllocator::nextWireId(ctx);
-│     
-│             QString wt = w.value("wireType").toString();
-│             if (wt.isEmpty()) wt = "bezier";
 │             nw["wireType"] = wt;
 │     
 │             if (!from.isEmpty()) {
