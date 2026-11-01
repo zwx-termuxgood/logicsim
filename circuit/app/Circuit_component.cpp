@@ -623,248 +623,438 @@ void Circuit::moveSelection(const QStringList& ids, double dx, double dy) {
     emit structureChanged();
 }
 
-// 语义化接口：带线移动单个元件
+/// 语义化接口：带线移动单个元件
 void Circuit::moveComponentWithWires(const QString& id, double x, double y) {
     // 当前 ortho 线随动已内置在 moveComponent 里，直接转调即可；保留此接口是为了 QML 语义清晰
     moveComponent(id, x, y);
 }
+// 语义化接口：带线批量相对移动选中元件
 void Circuit::moveSelectionWithWires(const QStringList& ids, double dx, double dy) {
+    // 当前 ortho 线随动已内置在 moveSelection 里，直接转调即可；保留此接口是为了 QML 语义清晰
     moveSelection(ids, dx, dy);
 }
 
-// ★ 修复：rebuild 之后必须先跑完初始 Recalc 事件，再 apply
+// 定义"切换输入元件值"接口：input 元件被点击时把所有位取反
 void Circuit::toggleInput(const QString& id) {
+    // 只读浏览模式禁止修改输入
     if (m_viewOnly) return;
+    // 在当前上下文查元件索引
     int idx = indexOfComponent(id);
+    // 元件不存在则什么都不做
     if (idx < 0) return;
+    // 取当前上下文
     Context& ctx = currentCtx();
+    // 取出元件 map
     QVariantMap c = ctx.components[idx].toMap();
+    // 只有 input 类型元件支持点击切换，其它类型直接返回
     if (c.value("type").toString() != "input") return;
+    // 取出输入位列表
     QVariantList bits = c.value("inputBits").toList();
+    // 取出位宽，下限钳到 1
     int bw = c.value("bitWidth").toInt();
     if (bw < 1) bw = 1;
+    // 补齐位列表长度到位宽（防御历史数据不一致）
     while (bits.size() < bw) bits.append(false);
+    // 超出位宽的多余位裁掉
     while (bits.size() > bw) bits.removeLast();
+    // 取反第一位得到新值
     bool v = !bits[0].toBool();
+    // 所有位统一设为新值（整字一起翻转）
     for (int i = 0; i < bits.size(); ++i) bits[i] = v;
+    // 写回位列表
     c["inputBits"] = bits;
+    // 写回上下文
     ctx.components[idx] = c;
 
+    // 事件引擎运行中：走增量触发路径
     if (m_engineType == "event" && m_eventEngine && m_simulationRunning) {
+        // 若引擎脏（结构已变）需先重建
         if (m_engineDirty) {
+            // 重建事件引擎
             rebuildEventEngine();
+            // 取重建后的线延迟
             quint64 wd0 = m_eventEngine->wireDelay();
+            // 取重建后的门延迟
             quint64 gd0 = m_eventEngine->globalGateDelay();
+            // 跑完初始 Recalc 事件让状态收敛
             runEventEngineFully((wd0 + gd0) * 64 + 200, 500000);
+            // 把引擎输出回写到上下文
             applyEngineOutputsToContexts();
         }
+        // 准备二进制串
         QString binStr;
+        // 预分配位宽容量
         binStr.reserve(bw);
+        // 按新值逐位拼 '1'/'0'
         for (int i = 0; i < bw; ++i) binStr += v ? '1' : '0';
+        // 取该元件在引擎里对应的所有 qid（可能因层级展开有多个）
         QStringList qids = engineQidsFor(m_currentCtxId, id);
+        // 对每个 qid 触发输入串
         for (const auto& qid : qids)
             m_eventEngine->triggerInputString(qid, binStr);
+        // 取线延迟
         quint64 wd = m_eventEngine->wireDelay();
+        // 取门延迟
         quint64 gd = m_eventEngine->globalGateDelay();
+        // 跑够事件直到稳定
         runEventEngineFully((wd + gd) * 64 + 200, 500000);
+        // 把引擎输出回写到上下文
         applyEngineOutputsToContexts();
+        // 通知 QML 仿真推进
         emit simulationTick();
+        // 事件引擎模式下但未运行：只标记脏，下次运行时重建
     } else if (m_engineType == "event") {
         m_engineDirty = true;
+        // 非事件引擎：直接全量求值
     } else {
         evaluateAll();
     }
+    // 通知 QML 数据变化
     emit changed();
+    // 通知结构变化（端口值/网络刷新）
     emit structureChanged();
 }
 
+// 定义"设置输入/常量元件某一位的值"接口
 void Circuit::setBitValue(const QString& id, int bit, bool value) {
+    // 只读模式禁止修改
     if (m_viewOnly) return;
+    // 查元件索引
     int idx = indexOfComponent(id);
+    // 不存在则返回
     if (idx < 0) return;
+    // 取当前上下文
     Context& ctx = currentCtx();
+    // 取出元件 map
     QVariantMap c = ctx.components[idx].toMap();
+    // 取类型
     QString t = c.value("type").toString();
+    // 只有 input/const 有可编辑的位值，其它类型返回
     if (t != "input" && t != "const") return;
+    // 取出位列表
     QVariantList bits = c.value("inputBits").toList();
+    // 位宽下限钳到 1
     int bw = c.value("bitWidth").toInt();
     if (bw < 1) bw = 1;
+    // 补齐位列表长度
     while (bits.size() < bw) bits.append(false);
+    // 裁掉多余位
     while (bits.size() > bw) bits.removeLast();
+    // 位索引越界返回
     if (bit < 0 || bit >= bits.size()) return;
+    // 值没变则直接返回，避免无意义操作
     if (bits[bit].toBool() == value) return;
+    // 写入新位值
     bits[bit] = value;
+    // 写回位列表
     c["inputBits"] = bits;
+    // 写回上下文
     ctx.components[idx] = c;
 
+    // 事件引擎运行中：走增量触发路径
     if (m_engineType == "event" && m_eventEngine && m_simulationRunning) {
+        // 引擎脏则先重建并跑初始收敛
         if (m_engineDirty) {
+            // 重建事件引擎
             rebuildEventEngine();
+            // 取重建后的线延迟
             quint64 wd0 = m_eventEngine->wireDelay();
+            // 取重建后的门延迟
             quint64 gd0 = m_eventEngine->globalGateDelay();
+            // 跑完初始事件收敛
             runEventEngineFully((wd0 + gd0) * 64 + 200, 500000);
+            // 回写输出到上下文
             applyEngineOutputsToContexts();
         }
+        // 取该元件对应的所有引擎 qid
         QStringList qids = engineQidsFor(m_currentCtxId, id);
+        // 对每个 qid 触发单个位的值变化
         for (const auto& qid : qids)
             m_eventEngine->triggerInputBit(qid, bit, value);
+        // 取线延迟
         quint64 wd = m_eventEngine->wireDelay();
+        // 取门延迟
         quint64 gd = m_eventEngine->globalGateDelay();
+        // 跑够事件直到稳定
         runEventEngineFully((wd + gd) * 64 + 200, 500000);
+        // 回写输出到上下文
         applyEngineOutputsToContexts();
+        // 通知 QML 仿真推进
         emit simulationTick();
+        // 事件引擎模式但未运行：只标记脏
     } else if (m_engineType == "event") {
         m_engineDirty = true;
+        // 非事件引擎：全量求值
     } else {
         evaluateAll();
     }
+    // 通知数据变化
     emit changed();
+    // 通知结构变化
     emit structureChanged();
 }
 
+// 定义"设置元件任意属性"接口：统一处理位宽/输入数/旋转等结构属性与普通属性
 void Circuit::setComponentProp(const QString& id, const QString& key, const QVariant& value) {
+    // 只读模式禁止修改
     if (m_viewOnly) return;
+    // 查元件索引
     int idx = indexOfComponent(id);
+    // 不存在则返回
     if (idx < 0) return;
+    // 取当前上下文
     Context& ctx = currentCtx();
+    // 取出元件 map
     QVariantMap c = ctx.components[idx].toMap();
+    // 结构属性按 int 比较：值相同则无需改动
     if (key == "bitWidth" || key == "inputCount" || key == "rotation") {
         if (c.value(key).toInt() == value.toInt()) return;
+        // 普通属性按 QVariant 直接比较
     } else {
         if (c.value(key) == value) return;
     }
+    // 压撤销快照，合并键 "prop:id:key"，同一属性连续修改 500ms 内合并
     pushUndo("prop:" + id + ":" + key);
+    // 标记本次修改是否属于结构变化（需发 structureChanged）
     bool structural = false;
+    // 位宽修改分支
     if (key == "bitWidth") {
+        // 取下限 1、上限 64 钳位后的位宽
         int bw = value.toInt();
         if (bw < 1) bw = 1;
         if (bw > 64) bw = 64;
+        // 写回位宽
         c["bitWidth"] = bw;
+        // 取出位列表
         QVariantList bits = c.value("inputBits").toList();
+        // 位宽变大：在最高位侧补 0（prepend 保持低位对齐）
         while (bits.size() < bw) bits.prepend(false);
+        // 位宽变小：从最高位侧裁掉
         while (bits.size() > bw) bits.removeFirst();
+        // 写回位列表
         c["inputBits"] = bits;
+        // 取类型
         QString t = c.value("type").toString();
+        // 分线器/汇线器还需检查分段总和是否仍等于位宽
         if (t == "splitter" || t == "hub") {
+            // 取出分段列表
             QVariantList splits = c.value("outputSplits").toList();
+            // 求分段总和
             int sum = 0;
             for (auto& sv : splits) sum += sv.toInt();
+            // 总和不等于新位宽：重置为每段 1 位的默认分段
             if (sum != bw) {
+                // 准备新分段列表
                 QVariantList ns;
+                // 预分配容量
                 ns.reserve(bw);
+                // 每段 1 位，共 bw 段
                 for (int i = 0; i < bw; ++i) ns.append(1);
+                // 写回分段
                 c["outputSplits"] = ns;
             }
         }
+        // 位宽变化属于结构变化
         structural = true;
+        // 输入端口数修改分支
     } else if (key == "inputCount") {
+        // 取钳位后的输入数（下限 2、上限 64）
         int v = value.toInt();
         if (v < 2) v = 2;
         if (v > 64) v = 64;
+        // 写回输入数
         c[key] = v;
+        // 端口数变化属于结构变化
         structural = true;
+        // 旋转修改分支
     } else if (key == "rotation") {
+        // 取旋转值并归一化到 0..3
         int v = value.toInt();
         v = ((v % 4) + 4) % 4;
+        // 写回旋转值
         c["rotation"] = v;
+        // 旋转影响端口几何，属于结构变化
         structural = true;
+        // 普通属性：直接写入
     } else {
         c[key] = value;
     }
+    // 写回上下文
     ctx.components[idx] = c;
+    // 全量求值让逻辑/几何保持一致
     evaluateAll();
+    // 通知数据变化
     emit changed();
+    // 结构属性变化时额外通知结构变化
     if (structural) emit structureChanged();
 }
 
+// 定义"旋转元件"接口：按 delta 步（每步 90°）旋转
 void Circuit::rotateComponent(const QString& id, int delta) {
+    // 只读模式禁止旋转
     if (m_viewOnly) return;
+    // 查元件索引
     int idx = indexOfComponent(id);
+    // 不存在则返回
     if (idx < 0) return;
+    // 取当前上下文
     Context& ctx = currentCtx();
+    // 取出元件 map
     QVariantMap c = ctx.components[idx].toMap();
+    // 取当前旋转值
     int cur = c.value("rotation").toInt();
+    // 计算归一化后的新旋转值
     int nw = ((cur + delta) % 4 + 4) % 4;
+    // 旋转值没变则直接返回
     if (nw == cur) return;
+    // 压撤销快照，合并键 "rot:id"
     pushUndo("rot:" + id);
+    // 写回新旋转值
     c["rotation"] = nw;
+    // 写回上下文
     ctx.components[idx] = c;
+    // 通知数据变化
     emit changed();
+    // 旋转改变端口几何，通知结构变化
     emit structureChanged();
 }
 
+// 定义"重命名元件"接口
 void Circuit::renameComponent(const QString& id, const QString& name) {
+    // 只读模式禁止重命名
     if (m_viewOnly) return;
+    // 查元件索引
     int idx = indexOfComponent(id);
+    // 不存在则返回
     if (idx < 0) return;
+    // 取当前上下文
     Context& ctx = currentCtx();
+    // 取出元件 map
     QVariantMap c = ctx.components[idx].toMap();
+    // 名称未变则直接返回
     if (c.value("name").toString() == name) return;
+    // 压撤销快照，合并键 "rename:id"
     pushUndo("rename:" + id);
+    // 写入新名称
     c["name"] = name;
+    // 写回上下文
     ctx.components[idx] = c;
+    // 通知数据变化
     emit changed();
 }
 
+// 定义"设置分线器/汇线器分段方案"接口：输入形如 "1,2,3" 的分段字符串
 void Circuit::setSplitterSplits(const QString& id, const QString& splitsStr) {
+    // 只读模式禁止修改
     if (m_viewOnly) return;
+    // 查元件索引
     int idx = indexOfComponent(id);
+    // 不存在则返回
     if (idx < 0) return;
+    // 取当前上下文
     Context& ctx = currentCtx();
+    // 取出元件 map
     QVariantMap c = ctx.components[idx].toMap();
+    // 取类型
     QString t = c.value("type").toString();
+    // 只有分线器/汇线器支持分段设置
     if (t != "splitter" && t != "hub") return;
+    // 取位宽，下限钳到 1
     int bw = c.value("bitWidth").toInt();
     if (bw < 1) bw = 1;
+    // 复制输入字符串，便于统一分隔符
     QString s = splitsStr;
+    // 逗号统一替换成空格
     s.replace(',', ' ');
+    // 按空白切分成各段
     QStringList parts = s.split(' ', Qt::SkipEmptyParts);
+    // 准备解析后的分段列表
     QVariantList splits;
+    // 记录分段总和
     int sum = 0;
+    // 逐个解析分段
     for (auto& p : parts) {
+        // 转换结果标记
         bool ok = false;
+        // 转成整数
         int v = p.toInt(&ok);
+        // 非法或小于 1 的段直接跳过
         if (!ok || v < 1) continue;
+        // 加入分段列表
         splits.append(v); sum += v;
     }
+    // 总和必须等于位宽且至少一段，否则视为非法输入不生效
     if (sum != bw || splits.isEmpty()) return;
+    // 分段方案未变则直接返回
     if (c.value("outputSplits").toList() == splits) return;
+    // 压撤销快照，合并键 "splits:id"
     pushUndo("splits:" + id);
+    // 写回分段列表
     c["outputSplits"] = splits;
+    // 写回上下文
     ctx.components[idx] = c;
+    // 全量求值让端口值按新分段重算
     evaluateAll();
+    // 通知数据变化
     emit changed();
+    // 分段方案改变端口结构，通知结构变化
     emit structureChanged();
 }
 
+// 定义"读取分线器/汇线器分段方案字符串"接口
 QString Circuit::getSplitterSplitsStr(const QString& id) const {
+    // 查元件索引
     int idx = indexOfComponent(id);
+    // 不存在返回空串
     if (idx < 0) return {};
+    // 取出元件 map
     QVariantMap c = currentCtx().components[idx].toMap();
+    // 取类型
     QString t = c.value("type").toString();
+    // 非分线器/汇线器返回空串
     if (t != "splitter" && t != "hub") return {};
+    // 取出分段列表
     QVariantList splits = c.value("outputSplits").toList();
+    // 准备字符串片段列表
     QStringList parts;
+    // 逐段转成数字字符串
     for (auto& v : splits) parts.append(QString::number(v.toInt()));
+    // 用逗号拼接返回
     return parts.join(",");
 }
 
+// 定义"添加文本元件"接口：先建 text 元件再设置内容
 QString Circuit::addText(double x, double y, const QString& text) {
+    // 通过通用添加接口创建 text 元件
     QString id = addComponent("text", x, y, 1, 2, "");
+    // 创建成功则立刻写入文本内容
     if (!id.isEmpty()) setTextContent(id, text);
+    // 返回新元件 id（失败为空串）
     return id;
 }
 
+// 定义"设置文本元件内容"接口
 void Circuit::setTextContent(const QString& id, const QString& content) {
+    // 只读模式禁止修改
     if (m_viewOnly) return;
+    // 查元件索引
     int idx = indexOfComponent(id);
+    // 不存在则返回
     if (idx < 0) return;
+    // 取当前上下文
     Context& ctx = currentCtx();
+    // 取出元件 map
     QVariantMap c = ctx.components[idx].toMap();
+    // 只有 text 类型支持设置内容
     if (c.value("type").toString() != "text") return;
+    // 内容未变则直接返回
     if (c.value("content").toString() == content) return;
+    // 压撤销快照，合并键 "text:id"
     pushUndo("text:" + id);
+    // 写入新内容
     c["content"] = content;
+    // 写回上下文
     ctx.components[idx] = c;
+    // 通知数据变化
     emit changed();
 }
