@@ -361,8 +361,27 @@ void EventEngine::initDriverValues() {
         for (int i = 0; i < m_nodes.size(); ++i) {
             // 取节点引用
             Node& n = m_nodes[i];
-            // 数据源与时钟由其自身状态决定，不参与组合求值
-            if (n.isInput || n.isClock) continue;
+
+            // ★ 关键修复：本行原本是 `if (n.isInput || n.isClock) continue;`，
+            //   把 input/const 也一起跳过了，导致 build 完成后：
+            //     · 子电路内部被父层实例端口驱动的 input 节点，
+            //       inVals 已在第二遍被父级驱动值覆盖（正确），
+            //       但 outVals 仍停留在 initValues() 从 inputBits 读出的陈旧初值；
+            //     · 下游全部以 outVals 为准的节点（子电路内部的门、output、led）
+            //       因此拿到的是旧值，构建出的引擎一上来就处在错误状态。
+            //   现象表现：hex/udec 等非二进制显示下，父层调用输入后子电路输出
+            //   不更新；而"进入子电路再退出"会走 syncSubStateFromParent()，
+            //   它把引擎里正确的 inVals 反写回 inputBits，下一次 rebuild 时
+            //   initValues() 读到的就是新鲜值，于是被"修好"——这正是 bug 的
+            //   触发器，不是修法。
+            //   正确语义：
+            //     · input/const 的 computeOutputs 分支是"输出 = inputs[0]"，
+            //       即 outVals 跟随 inVals，必须参与预传播才能把父级驱动值
+            //       落到 outVals 上；
+            //     · clock 的 outVals 由 triggerClockToggle/triggerForceOutput
+            //       直接写入，computeOutputs 只是原样回读 outVals，不存在
+            //       需要预传播修正的"陈旧初值"，继续跳过。
+            if (n.isClock) continue;
 
             // 按当前输入计算新输出
             QVector<QString> newOuts = computeOutputs(n, n.inVals);
