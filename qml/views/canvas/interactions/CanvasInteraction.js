@@ -317,6 +317,86 @@ function startWiringFromWire(main, cv, snapPt) {
     main.selectedWireId = ""
 }
 
+// 定义"控制模式下非二进制输入框递增"辅助函数
+// 语义：点一下即 +1；到达该进制可表示的最大值后再点归 0；
+//      十六进制/无符号十进制/有符号十进制/浮点全部按"递增→溢出归零"处理。
+// 与原来的 toggleInput() 区别：
+//   原实现是整字翻转，0 点一下直接跳到全 1（最大值），再点又跳回 0，
+//   中间没有任何过渡，用户感受就是"0 ↔ 最大值"两个状态。
+//   这里改为连续递增，符合操作直觉。
+function incrementNonBinaryInput(main, comp, base) {
+    // 元件 id
+    var id = comp.id
+    // 位宽，钳位到 [1,64]
+    var bw = comp.bitWidth || 1
+    if (bw < 1) bw = 1
+    if (bw > 64) bw = 64
+
+    // 取当前按进制格式化后的字符串（getInputAsString 会按 displayBase 转换）
+    var curStr = main.circuitRef.getInputAsString(id)
+    if (curStr === undefined || curStr === null) curStr = ""
+
+    // 解析当前值
+    var cur = 0
+    if (base === "hex") {
+        // hex 是无符号；空串按 0 处理
+        if (curStr.length === 0) curStr = "0"
+        cur = parseInt(curStr, 16)
+        if (isNaN(cur)) cur = 0
+    } else if (base === "udec" || base === "sdec") {
+        // 十进制：直接按 10 进制解析
+        cur = parseInt(curStr, 10)
+        if (isNaN(cur)) cur = 0
+    } else if (base === "f32" || base === "f64") {
+        // 浮点：按 10 进制浮点解析
+        cur = parseFloat(curStr)
+        if (isNaN(cur)) cur = 0
+    } else {
+        // 未知进制，不做处理
+        return
+    }
+
+    // 按进制计算下一个值
+    var next
+    if (base === "hex" || base === "udec") {
+        // 无符号整数：最大 2^bw - 1（大位宽用安全整数上限兜底）
+        var maxU = (bw <= 52) ? (Math.pow(2, bw) - 1) : Number.MAX_SAFE_INTEGER
+        next = Math.floor(cur) + 1
+        if (next > maxU) next = 0
+    } else if (base === "sdec") {
+        // 有符号整数：最大 2^(bw-1) - 1；
+        // 用户明确要求"到最大值再点是归零"，所以溢出直接归 0（不跳到负最小值）
+        var maxS = (bw <= 52) ? (Math.pow(2, bw - 1) - 1) : Number.MAX_SAFE_INTEGER
+        next = Math.floor(cur) + 1
+        if (next > maxS) next = 0
+    } else {
+        // 浮点：+1.0；上限用 2^(bw-1) - 1（大位宽用 1e15 兜底，避免 JS 精度问题）
+        var maxF = (bw <= 52) ? (Math.pow(2, bw - 1) - 1) : 1e15
+        next = cur + 1.0
+        if (!isFinite(next) || next > maxF) next = 0
+    }
+
+    // 格式化为目标进制的字符串
+    var nextStr
+    if (base === "hex") {
+        // 十六进制：大写，无前导 0；setInputFromString 内部会按 bw 低位对齐
+        nextStr = Math.floor(next).toString(16).toUpperCase()
+    } else if (base === "udec" || base === "sdec") {
+        // 十进制整数
+        nextStr = String(Math.floor(next))
+    } else {
+        // 浮点：整数就不带小数点，非整数正常 tostring
+        nextStr = String(next)
+    }
+
+    // 写回（setInputFromString 内部会按组件当前 displayBase 解析 nextStr）
+    var err = main.circuitRef.setInputFromString(id, nextStr)
+    if (err && err.length > 0) {
+        // 写入失败（解析错误 / 越界等），在状态栏提示用户
+        main.statusText = "递增失败：" + err
+    }
+}
+
 // 定义"鼠标按下"处理函数
 function onPressed(main, cv, mouse) {
     // 记录鼠标 x，供平移使用
@@ -327,6 +407,17 @@ function onPressed(main, cv, mouse) {
     var wp = cv.screenToWorld(mouse.x, mouse.y)
     // 是否可编辑
     var editable = !main.circuitViewOnly
+
+    // ★ 修复：在画布上按下任意位置，都意味着用户离开了左面板的
+    //   "子电路选择"状态。若不清空 selectedSubId：
+    //     · SubcircuitPanel.visible = (selSubId !== "" && mode !== "select")
+    //       会一直为 true，子电路属性面板"粘住"不消失；
+    //     · 元件属性组 visible 的判定里有 selSubId === ""，被它挡住，
+    //       点击元件后元件属性也显示不出来。
+    //   因此在 onPressed 最开始统一清空，覆盖 select 命中元件、select
+    //   命中空白框选、edit 命中端口/连线/元件、空白平移、放置元件等
+    //   所有"用户在画布上按下"的路径，无需逐分支重复。
+    main.selectedSubId = ""
 
     // 正在放置元件：在点击处放置并退出放置态
     if (editable && main.mode === "edit" && main.placingType !== "") {
@@ -509,6 +600,13 @@ function onPressed(main, cv, mouse) {
                         var bits = c4.inputBits || []
                         // 翻转该位
                         main.circuitRef.setBitValue(c4.id, bitIdx, !(bits[bitIdx] || false))
+                    } else {
+                        // ★ 非二进制显示下，改为"递增 +1"语义：
+                        //   hex/udec/sdec 一次加 1，f32/f64 一次加 1.0，
+                        //   到达该进制最大值后再点归 0。
+                        //   原实现是 toggleInput() 整字翻转，0 → 最大值 → 0，
+                        //   没有任何中间过程，与"递增"直觉不符，故替换。
+                        incrementNonBinaryInput(main, c4, base)
                     }
                 // 时钟元件：手动翻转
                 } else if (c4.type === "clock") {

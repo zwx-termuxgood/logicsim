@@ -269,12 +269,40 @@ Rectangle {
                     // 控件 id
                     from: 1; to: 1000; editable: true
                     // 取值 1..1000，可手动输入
-                    width: 100
+                    // ★ 宽度 100 → 150：原来 Basic 样式的 contentItem 内边距 + 上下
+                    //   指示器会挤占文本区，显示 "1000" 这类 4 位数字时被裁掉。
+                    //   加宽到 150 后文本区 ≥ 90px，可以完整显示 1~1000。
+                    width: 150
                     // 宽度
+                    font.pixelSize: Theme.fsSmall
+                    // 统一字号，与工具条其它文字一致
                     value: main.clockFrequency
                     // 初始绑定当前时钟频率
                     anchors.verticalCenter: parent.verticalCenter
                     // 垂直居中
+                    // ★ 自定义 contentItem：显式设置字体、颜色、左右内边距与居中，
+                    //   摆脱 Basic 样式默认 padding 造成数字被裁剪的问题。
+                    contentItem: TextInput {
+                        // 显示 SpinBox 当前值的编辑框
+                        text: parent.textFromValue(parent.value, parent.locale)
+                        // 由 SpinBox 把 value 转成显示文本
+                        font: parent.font
+                        // 使用 SpinBox 自己的字体
+                        color: Theme.text
+                        // 使用主题常规文字色，避免深色背景上看不清
+                        horizontalAlignment: Qt.AlignHCenter
+                        // 水平居中
+                        verticalAlignment: Qt.AlignVCenter
+                        // 垂直居中
+                        leftPadding: 6; rightPadding: 6
+                        // 左右内边距
+                        selectByMouse: true
+                        // 支持鼠标选择
+                        readOnly: !parent.editable
+                        // 不可编辑时只读
+                        validator: parent.validator
+                        // 继承 SpinBox 的校验器
+                    }
                     onValueChanged: main.circuitRef.setClockFrequency(value)
                     // 值变化时同步到电路
                 }

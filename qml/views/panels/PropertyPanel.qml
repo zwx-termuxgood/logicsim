@@ -476,12 +476,43 @@ Flickable {
                 }
                 SpinBox {
                     // 位宽数值输入
-                    from: 1; to: 64; editable: true; width: 90
-                    // 取值 1..64，可输入，宽度固定
+                    from: 1; to: 64; editable: true
+                    // 取值 1..64，可输入
+                    // ★ 宽度 90 → 130：原来 Basic 样式的 contentItem 内边距 + 上下指示器
+                    //   会挤占文本区，导致只能显示 1 位甚至显示不上。加宽到 130 后
+                    //   文本区 ≥ 70px，可以完整显示 "64" 这类数值。
+                    width: 130
+                    // 宽度
+                    font.pixelSize: Theme.fsSmall
+                    // 统一字号，与属性面板其它控件一致
                     enabled: !propertyPanel.viewOnly
                     // 只读模式禁用
                     value: propertyPanel.bitWidth
                     // 绑定当前位宽
+                    // ★ 自定义 contentItem：显式设置字体、颜色、左右内边距与对齐方式，
+                    //   摆脱 Basic 样式默认 contentItem 的 padding / 颜色不确定问题，
+                    //   保证数字始终居中可见。
+                    contentItem: TextInput {
+                        // 显示 SpinBox 当前值的编辑框
+                        text: parent.textFromValue(parent.value, parent.locale)
+                        // 由 SpinBox 把 value 转成显示文本
+                        font: parent.font
+                        // 使用 SpinBox 自己的字体
+                        color: Theme.text
+                        // 使用主题常规文字色，避免深色背景上看不见
+                        horizontalAlignment: Qt.AlignHCenter
+                        // 水平居中
+                        verticalAlignment: Qt.AlignVCenter
+                        // 垂直居中
+                        leftPadding: 6; rightPadding: 6
+                        // 左右内边距，防止文字贴边
+                        selectByMouse: true
+                        // 支持鼠标选择
+                        readOnly: !parent.editable
+                        // 不可编辑时只读
+                        validator: parent.validator
+                        // 继承 SpinBox 的校验器
+                    }
                     onValueChanged: {
                         // 值变化处理
                         if (!main) return
@@ -515,12 +546,39 @@ Flickable {
                 }
                 SpinBox {
                     // 输入端口数数值输入
-                    from: 2; to: 64; editable: true; width: 90
-                    // 取值 2..64，可输入，宽度固定
+                    from: 2; to: 64; editable: true
+                    // 取值 2..64，可输入
+                    // ★ 宽度 90 → 130：同"位宽"SpinBox，避免显示不全。
+                    width: 130
+                    // 宽度
+                    font.pixelSize: Theme.fsSmall
+                    // 统一字号
                     enabled: !propertyPanel.viewOnly
                     // 只读模式禁用
                     value: propertyPanel.inputCount
                     // 绑定当前输入端口数
+                    // ★ 自定义 contentItem：同"位宽"SpinBox。
+                    contentItem: TextInput {
+                        // 显示 SpinBox 当前值的编辑框
+                        text: parent.textFromValue(parent.value, parent.locale)
+                        // 由 SpinBox 把 value 转成显示文本
+                        font: parent.font
+                        // 使用 SpinBox 自己的字体
+                        color: Theme.text
+                        // 使用主题常规文字色
+                        horizontalAlignment: Qt.AlignHCenter
+                        // 水平居中
+                        verticalAlignment: Qt.AlignVCenter
+                        // 垂直居中
+                        leftPadding: 6; rightPadding: 6
+                        // 左右内边距
+                        selectByMouse: true
+                        // 支持鼠标选择
+                        readOnly: !parent.editable
+                        // 不可编辑时只读
+                        validator: parent.validator
+                        // 继承 SpinBox 的校验器
+                    }
                     onValueChanged: {
                         // 值变化处理
                         if (!main) return
@@ -670,6 +728,9 @@ Flickable {
                 // 控件 id，供 Connections 引用
                 width: parent.width
                 // 宽度铺满
+                // ★ 显式设置字号，避免 Basic 样式默认字号过大导致文本被截断
+                font.pixelSize: Theme.fsSmall
+                // 统一字号
                 visible: propertyPanel.selComp !== null
                          && (propertyPanel.isInputLike(propertyPanel.selCompType)
                              || propertyPanel.selCompType === "output"
@@ -677,6 +738,25 @@ Flickable {
                 // 输入类/输出/LED 时可见
                 enabled: !propertyPanel.viewOnly
                 // 只读模式禁用
+                // ★ 自定义 contentItem：显式控制左/右内边距和文本颜色，
+                //   确保 "无符号十进制" 等较长选项在深色背景上能完整显示。
+                contentItem: Text {
+                    // 显示当前选中项的文本
+                    leftPadding: 8
+                    // 左侧内边距
+                    rightPadding: baseCombo.indicator ? baseCombo.indicator.width + 8 : 24
+                    // 右侧给下拉指示箭头留出空间
+                    text: baseCombo.displayText
+                    // 使用 ComboBox 的显示文本
+                    font: baseCombo.font
+                    // 继承 ComboBox 字体
+                    color: Theme.text
+                    // 主题常规文字色
+                    verticalAlignment: Text.AlignVCenter
+                    // 垂直居中
+                    elide: Text.ElideRight
+                    // 过长时右侧省略（正常情况下不应该触发）
+                }
                 model: {
                     // 按位宽生成可用进制选项
                     var bw = propertyPanel.bitWidth

@@ -519,19 +519,42 @@ ApplicationWindow {
         selectedComp = (selectedCompId !== "") ? (compById[selectedCompId] || null) : null
 
         // 分线器/集线器：同步分段输入框
-        if (selectedComp && (selectedComp.type === "splitter" || selectedComp.type === "hub"))
-            leftPanel.splitterSplitsInput.text = circuit.getSplitterSplitsStr(selectedCompId)
+        if (selectedComp && (selectedComp.type === "splitter" || selectedComp.type === "hub")) {
+            // ★ 只在分段输入框没有编辑焦点时才同步：
+            //   事件引擎运行时 onSimTimerTick 每 16ms 发一次 changed，
+            //   本函数会被反复调用；若无条件覆盖 text，会把用户正在
+            //   键入的分段字符串冲掉，表现为属性面板里改分段改不动。
+            if (!leftPanel.splitterSplitsInput.activeFocus) {
+                leftPanel.splitterSplitsInput.text = circuit.getSplitterSplitsStr(selectedCompId)
+                // 同步分段方案字符串
+            }
+        }
         // 输入/常量：同步值输入框并清空错误
         if (selectedComp && (selectedComp.type === "input" || selectedComp.type === "const")) {
-            leftPanel.inputValueField.text = circuit.getInputAsString(selectedCompId)
-            // 同步格式化后的值
-            inputError = ""
-            // 清空错误
+            // ★ 只在值输入框没有编辑焦点时才同步：
+            //   仿真每帧 emit changed → refreshSel 被反复调用 → 无条件
+            //   覆盖 inputValueField.text 会在 16ms 内把用户键入的字符
+            //   冲掉，onEditingFinished 提交的永远是"被还原后的旧值"，
+            //   这就是"event 引擎运行时非二进制显示下属性面板改不了值"
+            //   的根因。加上 activeFocus 判断后，编辑期间不再打断，
+            //   用户回车/失焦提交成功后，下一帧再同步为规范化后的值。
+            //   inputError 也挪进本分支：编辑期间保留错误提示（否则
+            //   每帧清空让错误来不及显示），待用户失焦后再清空。
+            if (!leftPanel.inputValueField.activeFocus) {
+                leftPanel.inputValueField.text = circuit.getInputAsString(selectedCompId)
+                // 同步格式化后的值
+                inputError = ""
+                // 清空错误
+            }
         }
         // 文本元件：同步内容输入框
         if (selectedComp && selectedComp.type === "text") {
-            leftPanel.textContentField.text = selectedComp.content || ""
-            // 同步文本内容
+            // ★ 同上：只在内容输入框没有编辑焦点时同步，
+            //   避免每帧 emit changed 冲掉用户正在编辑的文本。
+            if (!leftPanel.textContentField.activeFocus) {
+                leftPanel.textContentField.text = selectedComp.content || ""
+                // 同步文本内容
+            }
         }
 
         // 选中连线已被删除则清空
