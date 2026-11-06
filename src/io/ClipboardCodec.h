@@ -41,8 +41,14 @@ struct PasteResult {
     // 粘贴操作的返回结果：调用者需要知道新生成的 ID 与时钟初始状态
 
     QStringList newIds;
-    // 新生成的元件 ID 列表：按粘贴顺序排列，
-    // 供 Circuit 侧选中新元件或后续操作使用
+    // ★ 本次粘贴产生的所有新 ID 列表（元件 + 连线）：
+    //   · 先按 comps 顺序追加每个元件的新 ID；
+    //   · 再按 wires 顺序追加每条新线的 ID。
+    //   之所以把线也放进来：调用方 / 单元测试需要"本次粘贴实际产生了
+    //   多少个对象"的完整快照，只看元件数会漏掉线（原实现在这里只
+    //   追加元件，导致测试里 newIds.size() 偏小）。
+    //   调用方若只关心元件，可按"前 N 个 = 元件数"或自行过滤 ID 前缀
+    //   （C 系列为元件、W 系列为连线，与 IdAllocator 的命名约定一致）。
 
     QHash<QString, bool> newClockStates;   // 新增 clock 元件的初始状态
     // 新增 clock 元件的初始状态映射：
@@ -57,8 +63,9 @@ PasteResult paste(CircuitContext& ctx,
 //   - 为每个元件分配新 ID（IdAllocator），建立旧→新 ID 映射
 //   - 元件坐标整体平移 (dx, dy)
 //   - 连线按映射重写 fromComp/toComp；ortho 线的 path 顶点同样平移
-//   - ortho 线允许一端映射失败（自然悬空），bezier 线要求两端都成功
-// 返回新 ID 与新增时钟状态；不修改撤销栈、不发信号，由调用者统一处理
+//   - 有绑定的端点必须映射成功，否则整条线丢弃（避免脱钩死线）；
+//     原本就悬空的端点（T 型接入）照常保留，path 平移后成为合理悬空
+// 返回新 ID（元件 + 连线）与新增时钟状态；不修改撤销栈、不发信号，由调用者统一处理
 
 } // namespace ClipboardCodec
 // 结束 ClipboardCodec 命名空间

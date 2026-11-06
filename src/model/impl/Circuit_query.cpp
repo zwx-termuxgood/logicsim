@@ -7,6 +7,7 @@
 #include "logic/ComponentLogic.h"
 // 引入元件逻辑库：查询端口几何（outputPorts/inputPorts）的唯一来源
 #include "engine/event/EventEngine.h"
+#include "engine/iter/IterEngine.h"
 // 引入事件引擎：getGateTypeDelay 等接口需要完整类型才能调用
 #include <functional>
 // 引入 std::function：statistics() 中用递归 lambda 遍历上下文与子电路
@@ -180,6 +181,20 @@ QString Circuit::setInputFromString(const QString& id, const QString& text) {
     if (c.value("inputBits").toList() == bits) return "";
     // 写入新位列表
     c["inputBits"] = bits;
+
+    // 同步 outputPorts 与 inputPortValues：无论是否在仿真中，
+    // input/const 元件自身的显示立即响应；未开始仿真时下游不传播。
+    // 同时提前把 binStr 算好，供后面 event 已运行分支直接复用。
+    QString binStr = ValueCodec::bitsToString(bits, bw);
+    // 输出端口值同步
+    QVariantList outPorts;
+    outPorts.append(binStr);
+    c["outputPorts"] = outPorts;
+    // 输入端口值同步
+    QVariantList inPortVals;
+    inPortVals.append(binStr);
+    c["inputPortValues"] = inPortVals;
+
     // 写回上下文
     ctx.components[idx] = c;
 
@@ -198,11 +213,9 @@ QString Circuit::setInputFromString(const QString& id, const QString& text) {
             // 回写输出到上下文
             applyEngineOutputsToContexts();
         }
-        // 位列表转二进制串
-        QString binStr = ValueCodec::bitsToString(bits, bw);
         // 取该元件对应的所有引擎 qid
         QStringList qids = engineQidsFor(m_currentCtxId, id);
-        // 对每个 qid 触发输入串
+        // 对每个 qid 触发输入串（binStr 已在上方算好）
         for (const auto& qid : qids)
             m_eventEngine->triggerInputString(qid, binStr);
         // 取线延迟
@@ -215,9 +228,13 @@ QString Circuit::setInputFromString(const QString& id, const QString& text) {
         applyEngineOutputsToContexts();
         // 通知 QML 仿真推进
         emit simulationTick();
-        // 事件引擎模式但未运行：只标记脏
+        // 事件引擎模式但未运行：只标记脏，不传播
     } else if (m_engineType == "event") {
         m_engineDirty = true;
+        // 关键修复：删除 IterEngine::evaluateAll(m_root, m_subContexts);
+        // 用户明确要求 event 引擎未开始仿真不能传播：input 自身
+        // outputPorts 已在上面同步为最新值，下游 output/LED/门
+        // 保持原值，直到 startSimulation 后由事件引擎统一推进。
         // 非事件引擎：全量求值
     } else {
         evaluateAll();

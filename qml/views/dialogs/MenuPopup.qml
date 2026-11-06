@@ -194,6 +194,16 @@ Popup {
                     })
                 }
             }
+            MenuRow {
+                // ★ 菜单项：全选
+                //   与 Shortcut 里的 StandardKey.SelectAll 是同一个动作，
+                //   二者都转调 main.doSelectAll()，行为完全一致；
+                //   菜单项只是给不习惯快捷键的用户一个显式入口。
+                label: "全选"
+                // 显示文字
+                onTriggered: { menuPopup.close(); main.doSelectAll() }
+                // 点击：关闭弹窗并执行全选
+            }
 
             Rectangle {
                 // 分组分隔线

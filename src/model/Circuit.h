@@ -16,7 +16,7 @@
 #include <QHash>
 // 引入 QHash：用于 m_subContexts、m_subNames、m_clockStates 等键值容器
 #include <QSet>
-// 引入 QSet：用于 hasSubCycle 的已访问集合、去重判断
+// 引入 QSet：用于 hasSubCycle 的已访问集合、去重判断、updateWiresForMovedComponent 的移动集合
 #include <QVector>
 // 引入 QVector：用于 m_browseStack 浏览栈
 #include <QTimer>
@@ -41,17 +41,17 @@ class Circuit : public QObject
     // 禁用拷贝构造、拷贝赋值、移动构造、移动赋值：Circuit 持有大量资源与定时器，拷贝没有语义
 
 
-    /*```cpp
-Q_PROPERTY(QVariantList components READ components NOTIFY changed)
-```
+    /*
+    Q_PROPERTY(QVariantList components READ components NOTIFY changed)
 
-逐 token 看：
+    逐 token 看：
 
-· Q_PROPERTY —— 宏名，固定。
-· QVariantList —— 属性的 C++ 类型。必须是 moc 能识别的类型（Qt 内置类型或已用 Q_DECLARE_METATYPE 注册的类型）。
-· components —— 属性的 名字，字符串层面就是这个。QML 里写 obj.components 用的就是它，和 property("components") 的 key 一致。
-· READ components —— 指定读取函数名为 components。注意：这里写的是函数名，不是调用。moc 会去你的类里找 QVariantList components() const 这个函数。这个函数是真实存在的普通 C++ 函数，QML 读属性时引擎通过元表找到它并调用。
-· NOTIFY changed —— 指定通知信号名为 changed。同理，moc 找类里的 void changed() 信号，把"属性变化 → 发这个信号"登记进元表。*/
+    · Q_PROPERTY —— 宏名，固定。
+    · QVariantList —— 属性的 C++ 类型。必须是 moc 能识别的类型（Qt 内置类型或已用 Q_DECLARE_METATYPE 注册的类型）。
+    · components —— 属性的 名字，字符串层面就是这个。QML 里写 obj.components 用的就是它，和 property("components") 的 key 一致。
+    · READ components —— 指定读取函数名为 components。注意：这里写的是函数名，不是调用。moc 会去你的类里找 QVariantList components() const 这个函数。这个函数是真实存在的普通 C++ 函数，QML 读属性时引擎通过元表找到它并调用。
+    · NOTIFY changed —— 指定通知信号名为 changed。同理，moc 找类里的 void changed() 信号，把"属性变化 → 发这个信号"登记进元表。
+    */
 
 
     Q_PROPERTY(QVariantList components READ components NOTIFY changed)
@@ -189,7 +189,7 @@ public:
     // 返回 switchable 模式下的当前线型
     void setCurrentWireType(const QString& t);
     // 设置当前线型：仅接受 bezier/ortho
-    
+
     /*
     Q_INVOKABLE 是 Qt 的宏，写在成员函数声明前，作用是把普通成员函数注册进元对象系统
     */
@@ -551,9 +551,18 @@ private:
     void removeSubContextsByPrefix(const QString& prefix);
     // 按前缀批量删除子电路上下文及其在所有上下文中的实例
 
-    //移动元件时更新连接到该元件的 ortho wire path
-    void updateWiresForMovedComponent(Context& ctx, const QString& movedId);
-    // 移动元件后修正其连接的 ortho 线首/尾点及相邻拐点，保持正交
+    // 移动元件/元件组后修正相连 ortho 线的 path
+    // 修复点：签名由"单个 movedId"改为"移动元件集合 + 本次整体位移"。
+    //   · movedIds：本次移动涉及的所有元件 ID；一条 ortho 线两端都在
+    //     集合内时，整条 path 逐顶点平移 (dx, dy) 保持形状不变，修复
+    //     多段折线拖动时"只有两头跟随、中间拐点全不动"的脱节问题；
+    //   · 只有一端在集合内时，仍走原逻辑（调整该端首/末顶点与其相邻
+    //     拐点以保持直角，另一端形状不变）。
+    //   · dx / dy 是本次移动的相对位移；单端移动时被忽略，双端移动时
+    //     用于整条平移。moveComponent 传 (新坐标 - 旧坐标)，moveSelection
+    //     传 (dx, dy)。
+    void updateWiresForMovedComponent(Context& ctx, const QSet<QString>& movedIds,
+                                      double dx = 0, double dy = 0);
 
     static int componentInputCount(const QVariantMap& comp);
     // 静态转发：ComponentLogic::inputCount

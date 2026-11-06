@@ -508,6 +508,51 @@ ApplicationWindow {
             // 状态栏提示
         }
     }
+    Shortcut {
+        // ★ 全选快捷键：Ctrl+A / Cmd+A，按 StandardKey.SelectAll 匹配各平台习惯
+        sequences: [StandardKey.SelectAll]
+        // 标准全选键
+        context: Qt.WindowShortcut
+        // 窗口级快捷键
+        enabled: !circuit.isViewOnly
+        // 非只读时启用；只读浏览模式下不允许批量操作
+        onActivated: root.doSelectAll()
+        // 触发全选
+    }
+
+    // 定义"全选当前上下文所有元件"函数
+    // 说明：
+    //   · 只选择元件（含子电路实例），不选连线——连线的多选在现有 UI 里
+    //     没有独立的集合，用 selectedWireId 单条操作更简单；
+    //   · 同时清空 selectedCompId / selectedWireId / selectedSubId，
+    //     保证"全选"这一动作不会与单选/连线/子电路的属性面板互相打架；
+    //   · 走 selectedIds 这条路，是与框选多选（onReleased 里 boxSelecting
+    //     分支）完全一致的机制，右键菜单/复制/删除等都已按 selectedIds
+    //     处理，无需新增分支。
+    function doSelectAll() {
+        // 只读模式忽略
+        if (circuit.isViewOnly) return
+        // 收集当前上下文所有元件 id
+        var ids = []
+        // 取当前上下文元件列表
+        var comps = circuit.components
+        // 逐个收集
+        for (var i = 0; i < comps.length; i++) ids.push(comps[i].id)
+        // 写回多选集合
+        selectedIds = ids
+        // 清空单选元件
+        selectedCompId = ""
+        // 清空单选元件引用
+        selectedComp = null
+        // 清空选中连线
+        selectedWireId = ""
+        // 清空选中子电路
+        selectedSubId = ""
+        // 状态栏提示
+        statusText = "已全选 " + ids.length + " 个元件"
+        // 请求重绘（让画布上的选中高亮刷新）
+        canvasView.requestPaint()
+    }
 
     // 定义"刷新选中信息"函数：清理失效选中并同步属性面板
     function refreshSel() {

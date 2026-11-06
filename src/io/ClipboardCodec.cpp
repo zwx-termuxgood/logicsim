@@ -295,7 +295,7 @@ PasteResult paste(CircuitContext& ctx,
             result.newClockStates[newId] = false;
         // 追加到目标上下文
         ctx.components.append(c);
-        // 记录新 id 到返回列表
+        // 记录新元件 id 到返回列表
         result.newIds.append(newId);
     }
 
@@ -316,18 +316,31 @@ PasteResult paste(CircuitContext& ctx,
         QString wt = w.value("wireType").toString();
         if (wt.isEmpty()) wt = "bezier";
 
-        // ★ 修复：ortho 线只要一端映射成功就创建（另一端自然悬空，path 已被平移）
-        //   bezier 线两端都必须映射成功（贝塞尔依赖两端元件坐标计算曲线）
-        // 非 ortho 线：两端若原本有绑定但映射失败，则丢弃该线
-        if (wt != "ortho") {
-            if (!oldFrom.isEmpty() && from.isEmpty()) continue;
-            if (!oldTo.isEmpty() && to.isEmpty()) continue;
-        }
+        // ★ 修复 Bug 2：把"有绑定端必须映射成功"的检查统一到所有线型。
+        //   原代码仅对非 ortho 线做该检查，ortho 线走"一端映射成功即创建"
+        //   （另一端留空自然悬空）——这原本是想保留 T 型接入的悬空端点，
+        //   但 encode 的扩散收集会带出"一端连选中元件、另一端连未复制
+        //   元件"的线，这些线在 paste 后成为"半脱钩"：一端指向新元件、
+        //   另一端（原本有绑定）因为映射失败被清空，nw 里没有 toComp
+        //   /fromComp。移动被复制元件时，Circuit::updateWiresForMovedComponent
+        //   通过 Wire::connects() 靠 fromComp/toComp 找这条线，找不到就
+        //   不动，于是出现"元件走了线留在原地"的脱钩死线。
+        //   修复后：
+        //     · 原本两端都有绑定（oldFrom/oldTo 均非空）→ 两端都必须映射
+        //       成功，否则整条线丢弃（不再带出半条外部线）；
+        //     · 原本就悬空的端点（T 型接入，oldFrom/oldTo 为空）→ 照常
+        //       创建，另一端 path 已平移，视觉上是合理悬空。
+        //   这与非 ortho 线原本的语义一致，逻辑统一。
+        if (!oldFrom.isEmpty() && from.isEmpty()) continue;
+        if (!oldTo.isEmpty() && to.isEmpty()) continue;
 
         // 准备新连线 map
         QVariantMap nw;
+        // ★ 先取新 id 存入局部变量：Bug 1 修复需要把它追加进 newIds，
+        //   不能只在 nw 里写，否则调用方 / 测试拿不到线 ID。
+        QString newWireId = IdAllocator::nextWireId(ctx);
         // 分配新连线 id
-        nw["id"] = IdAllocator::nextWireId(ctx);
+        nw["id"] = newWireId;
         // 记录线型
         nw["wireType"] = wt;
 
@@ -368,6 +381,14 @@ PasteResult paste(CircuitContext& ctx,
 
         // 追加新连线到目标上下文
         ctx.wires.append(nw);
+        // ★ 修复 Bug 1：把新线的 ID 也追加进 newIds。
+        //   原代码只把元件的 newId 放进 newIds，新连线的 id 完全丢失，
+        //   导致调用方 / 单元测试拿到 newIds.size() 等于元件数（比如 2），
+        //   而不等于本次粘贴实际产生的对象数（元件 + 连线，比如 3）。
+        //   追加后 newIds 的语义变为"本次粘贴产生的所有新 ID 列表"，
+        //   顺序为：先元件（按 comps 顺序）、后连线（按 wires 顺序），
+        //   与对象创建顺序一致，便于调用方按需筛选。
+        result.newIds.append(newWireId);
     }
 
     // 返回粘贴结果

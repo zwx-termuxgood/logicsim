@@ -1,4 +1,3 @@
-
 // 引入 Circuit 类声明：本文件要定义它的成员函数，必须看到完整类定义（成员、私有函数、Context 别名等）
 #include "model/Circuit.h"
 // 引入 ID 分配器：addComponent 里给新元件分配唯一 id、addOrthoWire 等给连线分配 id 都要用它
@@ -7,13 +6,15 @@
 #include "logic/ComponentLogic.h"
 // 引入事件引擎：仿真运行时需要 rebuildEventEngine、triggerInputString/Bit、run 等接口
 #include "engine/event/EventEngine.h"
+#include "engine/iter/IterEngine.h"
 // 引入移动手势类型：本文件包含移动相关接口，可能间接使用该头里的类型/常量
 #include "move/MoveGesture.h"
 // 引入移动结果结构：移动操作可能返回/使用该结构描述位移结果
 #include "move/MoveResult.h"
 // 引入 QVariantMap：每个元件/连线都以 map 表示，用字符串 key 存取字段
 #include <QVariantMap>
-// 引入 QSet：用于去重集合，如删除元件时收集端口位置、批量删除时收集 id
+// 引入 QSet：用于去重集合，如删除元件时收集端口位置、批量删除时收集 id、
+// 移动时收集"本次移动的元件集合"
 #include <QSet>
 // 引入 QString：元件 id、类型、名称、二进制串等都用它
 #include <QString>
@@ -28,95 +29,7 @@
 // 引入 C 数学库：std::round 用于端口位置取整做键、比较坐标是否相等
 #include <cmath>
 
-// 匿名命名空间：内部辅助函数只在本编译单元可见，避免符号污染和链接冲突
-namespace {
-
-// 定义"把浮点坐标取整后拼成字符串键"的辅助函数，供"同一端口位置"比较使用
-QString posKeyR(double x, double y) {
-    // 先对 x、y 四舍五入取整再拼成 "x,y"；取整是为了容忍浮点误差，让同一端口位置得到同一个键
-    return QString("%1,%2").arg(int(std::round(x))).arg(int(std::round(y)));
-}
-
-// 定义"收集某元件所有端口的世界坐标到集合"的辅助函数；世界坐标 = 元件坐标 + 端口偏移
-void collectPortWorldPositions(const QVariantMap& c, QSet<QString>& out) {
-    // 取出元件自身 x 坐标，作为世界坐标的基准
-    double cx = c.value("x").toDouble();
-    // 取出元件自身 y 坐标，作为世界坐标的基准
-    double cy = c.value("y").toDouble();
-    // 向 ComponentLogic 查询该元件的所有输出端口（含相对偏移 x/y），保证端口规则唯一来源
-    QVariantList outs = ComponentLogic::outputPorts(c);
-    // 遍历每个输出端口
-    for (const auto& pv : outs) {
-        // 端口以 QVariantMap 表示，转成 map 便于按 key 取字段
-        QVariantMap p = pv.toMap();
-        // 端口世界 x = 元件 x + 端口相对 x，取整拼键后插入集合；世界 y 同理，与 x 一起构成唯一位置键
-        out.insert(posKeyR(cx + p.value("x").toDouble(),
-                           cy + p.value("y").toDouble()));
-    }
-    // 向 ComponentLogic 查询该元件的所有输入端口
-    QVariantList ins = ComponentLogic::inputPorts(c);
-    // 遍历每个输入端口
-    for (const auto& pv : ins) {
-        // 端口转 map
-        QVariantMap p = pv.toMap();
-        // 输入端口世界 x 同样由元件坐标加偏移得到；世界 y 同理
-        out.insert(posKeyR(cx + p.value("x").toDouble(),
-                           cy + p.value("y").toDouble()));
-    }
-}
-
-// 定义"判断一条 ortho 线的 path 顶点是否与给定端口位置集合重合（容差 15px）"的辅助函数
-bool wireTouchesPositions(const QVariantMap& w, const QSet<QString>& positions) {
-    // 取出线型字段
-    QString wt = w.value("wireType").toString();
-    // 只有 ortho 线才有显式 path 顶点可比较；bezier 线几何由两端实时算出，这里不处理，直接返回不命中
-    if (wt != "ortho") return false;
-    // 取出 ortho 线的顶点列表
-    QVariantList path = w.value("path").toList();
-    // 没有 path 就不可能碰到端口，直接返回 false
-    if (path.isEmpty()) return false;
-    //
-    // 准备一个浮点二维点列表，把 positions 里的字符串键还原成坐标点
-    QList<QPointF> portPts;
-    // 预分配容量，避免循环中反复扩容
-    portPts.reserve(positions.size());
-    // 遍历所有端口位置键
-    for (const auto& key : positions) {
-        // 键格式是 "x,y"，用逗号切成两段
-        QStringList parts = key.split(',');
-        // 格式不对（理论上不会）则跳过，防御性编程
-        if (parts.size() != 2) continue;
-        // 把两段转成 double 组成 QPointF 加入列表
-        portPts.append(QPointF(parts[0].toDouble(), parts[1].toDouble()));
-    }
-    // 没有有效端口点则不可能命中
-    if (portPts.isEmpty()) return false;
-    //
-    // 遍历 ortho 线的每个顶点
-    for (const auto& pv : path) {
-        // 顶点转 map
-        QVariantMap p = pv.toMap();
-        // 取出顶点 x
-        double px = p.value("x").toDouble();
-        // 取出顶点 y
-        double py = p.value("y").toDouble();
-        // 对每个端口点做比较
-        for (const auto& pp : portPts) {
-            // 横纵坐标都在 15px 容差内就认为"线顶到了端口"（T 型接入/端点重合）
-            if (qAbs(px - pp.x()) < 15.0 && qAbs(py - pp.y()) < 15.0) {
-                // 命中任意一个端口即返回 true
-                return true;
-            }
-        }
-    }
-    // 所有顶点都没碰到端口，返回 false
-    return false;
-}
-
-// 匿名命名空间结束：以上辅助函数仅本文件可用
-}
-
-// 定义"添加元件"接口：类型、位置、位宽、输入数、子电路 id（仅 sub 类型用）；参数续行：位宽、输入端口数、子电路 id
+// 定义"添加元件"接口：类型、位置、位宽、输入数、子电路 id（仅 sub 类型用）
 QString Circuit::addComponent(const QString& type, double x, double y,
                               int bitWidth, int inputCount, const QString& subId) {
     // 浏览子电路（只读）模式下禁止编辑，直接返回空 id 表示失败
@@ -294,13 +207,8 @@ void Circuit::removeComponent(const QString& id) {
     pushUndo();
     // 取当前上下文
     Context& ctx = currentCtx();
-    // 取出待删元件 map，后面要用它的端口位置判断相关连线
+    // 取出待删元件 map，后面要用它的类型判断是否需要清时钟状态
     QVariantMap c = ctx.components[idx].toMap();
-    //
-    // 准备集合：收集该元件所有端口的世界坐标键
-    QSet<QString> portPositions;
-    // 填充集合，用于判断哪些 ortho 线的顶点顶在这些端口上（T 型接入）
-    collectPortWorldPositions(c, portPositions);
     //
     // 如果删的是时钟元件，同步清掉它的输出状态记录，避免残留
     if (c.value("type").toString() == "clock") m_clockStates.remove(id);
@@ -309,25 +217,50 @@ void Circuit::removeComponent(const QString& id) {
     // 子电路实例列表可能变化（删的可能是 sub 实例），缓存失效
     m_ctxSubInstCache.clear();
     //
+    // 正交线不随元件删除而删除，只清掉它指向被删元件的绑定；
+    // 只有贝塞尔线才随端点匹配删除。
+    // 处理策略：
+    //   · ortho：fromComp/toComp 若指向被删元件，就把该端绑定字段
+    //     （fromComp/fromPort 或 toComp/toPort）移除，path 顶点原位保留，
+    //     视觉上变成一条"悬空但仍在"的正交线，用户可继续拖动/重连；
+    //   · bezier：fromComp/toComp 若指向被删元件，整条线删除。
+    // 对 ortho 的 T 型接入不删除：T 型接入的路径点本来就位于被删元件
+    // 的端口坐标，随元件消失自然悬空，符合"正交线保留"的需求。
+    //
     // 倒序遍历连线：倒序删除不会打乱未遍历索引
     for (int i = ctx.wires.size() - 1; i >= 0; --i) {
         // 取出连线 map
-        auto w = ctx.wires[i].toMap();
-        // 标记这条线是否要删
-        bool shouldRemove = false;
-        // 连线起点就是被删元件
-        if (w.value("fromComp").toString() == id ||
-            // 或者连线终点就是被删元件
-            w.value("toComp").toString() == id) {
-            // 两端任一是被删元件，这条线必须删
-            shouldRemove = true;
-            // 否则检查 ortho 线顶点是否顶在被删元件的端口上（T 型接入）
-        } else if (wireTouchesPositions(w, portPositions)) {
-            // 是则也删，避免留下悬空 T 型线头
-            shouldRemove = true;
+        QVariantMap w = ctx.wires[i].toMap();
+        // 取线型，缺省回退 bezier（与全项目一致）
+        QString wt = w.value("wireType").toString();
+        if (wt.isEmpty()) wt = "bezier";
+        // 起点是否指向被删元件
+        bool fromHits = (w.value("fromComp").toString() == id);
+        // 终点是否指向被删元件
+        bool toHits   = (w.value("toComp").toString() == id);
+        // 两端都不指向被删元件：无关，直接跳过
+        if (!fromHits && !toHits) continue;
+
+        // 【分支】正交线：不删除，只清除对已删元件的绑定
+        if (wt == "ortho") {
+            // 起点绑定被删元件：清除起点绑定字段
+            if (fromHits) {
+                w.remove("fromComp");
+                w.remove("fromPort");
+            }
+            // 终点绑定被删元件：清除终点绑定字段
+            if (toHits) {
+                w.remove("toComp");
+                w.remove("toPort");
+            }
+            // 写回修改后的连线（path 顶点保留原位，保持"线还在"的视觉）
+            ctx.wires[i] = w;
+            // 继续检查下一条
+            continue;
         }
-        // 满足条件就从连线列表移除
-        if (shouldRemove) ctx.wires.removeAt(i);
+
+        // 【分支】贝塞尔线（或 wireType 缺失）：端点指向被删元件则删除
+        ctx.wires.removeAt(i);
     }
     //
     // 结构变了，重新全量求值让剩余电路收敛
@@ -362,16 +295,12 @@ void Circuit::removeComponents(const QStringList& ids) {
     // 取当前上下文
     Context& ctx = currentCtx();
     //
-    // 收集所有被删元件的端口世界坐标
-    QSet<QString> portPositions;
     // 倒序遍历元件，便于原地删除
     for (int i = ctx.components.size() - 1; i >= 0; --i) {
         // 取出元件 map
         QVariantMap c = ctx.components[i].toMap();
         // 不在删除集合里则跳过
         if (!idSet.contains(c.value("id").toString())) continue;
-        // 在删除前先收集它的端口位置，供后面清理 T 型线
-        collectPortWorldPositions(c, portPositions);
         // 若删的是时钟元件
         if (c.value("type").toString() == "clock")
             // 同步清掉其输出状态
@@ -383,25 +312,44 @@ void Circuit::removeComponents(const QStringList& ids) {
     // 元件集合变化，子电路实例缓存失效
     m_ctxSubInstCache.clear();
     //
+    // 批量删除同样采用"ortho 保留 + bezier 删除"的策略：
+    // 逐个判断每条线的线型，ortho 线只清除指向被删元件的绑定，
+    // bezier 线才整条删除。详见 removeComponent 处的详细说明。
+    //
     // 倒序遍历连线
     for (int i = ctx.wires.size() - 1; i >= 0; --i) {
         // 取出连线 map
-        auto w = ctx.wires[i].toMap();
-        // 是否删除标记
-        bool shouldRemove = false;
-        // 起点在被删集合里
-        if (idSet.contains(w.value("fromComp").toString()) ||
-            // 或终点在被删集合里
-            idSet.contains(w.value("toComp").toString())) {
-            // 端点被删则删线
-            shouldRemove = true;
-            // 否则检查是否顶在被删元件的端口上
-        } else if (wireTouchesPositions(w, portPositions)) {
-            // 是则删，清理 T 型接入
-            shouldRemove = true;
+        QVariantMap w = ctx.wires[i].toMap();
+        // 取线型，缺省回退 bezier
+        QString wt = w.value("wireType").toString();
+        if (wt.isEmpty()) wt = "bezier";
+        // 起点是否指向被删集合中的某个元件
+        bool fromHits = idSet.contains(w.value("fromComp").toString());
+        // 终点是否指向被删集合中的某个元件
+        bool toHits   = idSet.contains(w.value("toComp").toString());
+        // 两端都不指向被删集合：无关，直接跳过
+        if (!fromHits && !toHits) continue;
+
+        // 【分支】正交线：不删除，只清除对已删元件的绑定
+        if (wt == "ortho") {
+            // 起点绑定被删元件：清除起点绑定字段
+            if (fromHits) {
+                w.remove("fromComp");
+                w.remove("fromPort");
+            }
+            // 终点绑定被删元件：清除终点绑定字段
+            if (toHits) {
+                w.remove("toComp");
+                w.remove("toPort");
+            }
+            // 写回修改后的连线（path 顶点保留原位）
+            ctx.wires[i] = w;
+            // 继续检查下一条
+            continue;
         }
-        // 满足则移除
-        if (shouldRemove) ctx.wires.removeAt(i);
+
+        // 【分支】贝塞尔线：端点指向被删元件则删除
+        ctx.wires.removeAt(i);
     }
     //
     // 重新全量求值
@@ -412,8 +360,15 @@ void Circuit::removeComponents(const QStringList& ids) {
     emit structureChanged();
 }
 
-// 定义"元件移动后修正其相连 ortho 线端点/相邻拐点"的辅助函数
-void Circuit::updateWiresForMovedComponent(Context& ctx, const QString& movedId) {
+// 定义"移动元件/元件组后修正其相连 ortho 线"的辅助函数
+// 修复点：签名由"单个 movedId"扩展为"移动集合 + 位移"，用于区分两种场景：
+//   · 两端元件都在 movedIds 内 → 该 ortho 线整条 path 逐顶点平移 (dx, dy)，
+//     保持折线形状不变。解决多段折线拖动时"只有两头跟随、中间拐点全不动"
+//     的脱节问题。
+//   · 只有一端在 movedIds 内 → 走原逻辑，只调整该端首/末顶点与其
+//     相邻拐点，保持直角，不破坏另一端的形态。
+void Circuit::updateWiresForMovedComponent(Context& ctx, const QSet<QString>& movedIds,
+                                           double dx, double dy) {
     // 遍历当前上下文所有连线
     for (int i = 0; i < ctx.wires.size(); ++i) {
         // 取出连线 map
@@ -424,18 +379,42 @@ void Circuit::updateWiresForMovedComponent(Context& ctx, const QString& movedId)
         QString fromComp = w.value("fromComp").toString();
         // 连线终点元件 id
         QString toComp = w.value("toComp").toString();
-        // 起点是否就是被移动的元件
-        bool fromIsMoved = (fromComp == movedId);
-        // 终点是否就是被移动的元件
-        bool toIsMoved = (toComp == movedId);
-        // 两端都不是被移动元件，这条线不用管
-        if (!fromIsMoved && !toIsMoved) continue;
+        // 起点是否在本次移动集合内（空 fromComp 不参与判定，
+        // 防止把"悬空端"误判为被移动元件）
+        bool fromMoved = !fromComp.isEmpty() && movedIds.contains(fromComp);
+        // 终点是否在本次移动集合内（空 toComp 同理不参与判定）
+        bool toMoved   = !toComp.isEmpty() && movedIds.contains(toComp);
+        // 两端都不在集合内，这条线不用管
+        if (!fromMoved && !toMoved) continue;
         //
         // 取出 ortho 线顶点列表
         QVariantList path = w.value("path").toList();
         // 少于两个顶点不是有效线，跳过
         if (path.size() < 2) continue;
+
+        // 核心修复：两端元件都在移动集合内 → 整条折线整体平移，
+        // 保持所有中间拐点与原形状一致。
+        if (fromMoved && toMoved) {
+            // 逐顶点累加位移，保持 path 的每一段长度与拐角方向不变
+            for (int j = 0; j < path.size(); ++j) {
+                // 取顶点 map
+                QVariantMap pt = path[j].toMap();
+                // 累加 x 位移
+                pt["x"] = pt.value("x").toDouble() + dx;
+                // 累加 y 位移
+                pt["y"] = pt.value("y").toDouble() + dy;
+                // 写回顶点
+                path[j] = pt;
+            }
+            // 写回整条 path
+            w["path"] = path;
+            // 写回上下文
+            ctx.wires[i] = w;
+            // 该线处理完毕，继续下一条
+            continue;
+        }
         //
+        // 走到这里说明只有一端被移动：保持原有"首/末 + 相邻点"修正逻辑。
         // 内联 lambda：求某元件某端口移动后的新世界坐标
         auto getNewPortPos = [&](const QString& compId, int port, bool isOut) -> QPointF {
             // 按 id 查元件索引
@@ -456,14 +435,14 @@ void Circuit::updateWiresForMovedComponent(Context& ctx, const QString& movedId)
         };
         //
         // 如果移动的是起点元件
-        if (fromIsMoved) {
+        if (fromMoved) {
             // 取出起点端口索引
             int fp = w.value("fromPort").toInt();
-            // 求该输出端口移动后的新坐标
-            QPointF np = getNewPortPos(movedId, fp, true);
+            // 用 fromComp 查新端口坐标
+            QPointF np = getNewPortPos(fromComp, fp, true);
             // 取出旧的首顶点
             QVariantMap oldP0 = path[0].toMap();
-            // 记录旧首顶点 x，用于判断与第二点之间原本是横还是竖
+            // 记录旧首顶点 x
             double oldX = oldP0.value("x").toDouble();
             // 准备新的首顶点
             QVariantMap newP0;
@@ -478,11 +457,11 @@ void Circuit::updateWiresForMovedComponent(Context& ctx, const QString& movedId)
                 QVariantMap p1 = path[1].toMap();
                 // 取第二点 x
                 double p1x = p1.value("x").toDouble();
-                // 首段原本是否竖直（第二点 x 与旧首点 x 几乎相等即竖直）
+                // 首段原本是否竖直
                 bool wasVertical = (qAbs(p1x - oldX) < 0.5);
-                // 原本竖直：保持竖直，第二点 x 跟着新首点 x 走
+                // 原本竖直：第二点 x 跟着新首点 x
                 if (wasVertical) p1["x"] = np.x();
-                // 原本水平：保持水平，第二点 y 跟着新首点 y 走
+                // 原本水平：第二点 y 跟着新首点 y
                 else p1["y"] = np.y();
                 // 写回 path[1]
                 path[1] = p1;
@@ -490,16 +469,16 @@ void Circuit::updateWiresForMovedComponent(Context& ctx, const QString& movedId)
         }
         //
         // 如果移动的是终点元件
-        if (toIsMoved) {
+        if (toMoved) {
             // 取出终点端口索引
             int tp = w.value("toPort").toInt();
-            // 求该输入端口移动后的新坐标
-            QPointF np = getNewPortPos(movedId, tp, false);
+            // 用 toComp 查新端口坐标
+            QPointF np = getNewPortPos(toComp, tp, false);
             // 顶点总数
             int n = path.size();
             // 取出旧的末顶点
             QVariantMap oldPn = path[n-1].toMap();
-            // 记录旧末顶点 x，用于判断与倒数第二点之间原本是横还是竖
+            // 记录旧末顶点 x
             double oldX = oldPn.value("x").toDouble();
             // 准备新的末顶点
             QVariantMap newPn;
@@ -546,23 +525,30 @@ void Circuit::moveComponent(const QString& id, double x, double y) {
     QVariantMap c = ctx.components[idx].toMap();
     // 记录旧坐标
     double ox = c.value("x").toDouble(), oy = c.value("y").toDouble();
-    // 新旧坐标几乎相同就当作没移动，避免无意义的撤销入栈和求值
+    // 新旧坐标几乎相同就当作没移动
     if (qAbs(ox - x) < 1e-9 && qAbs(oy - y) < 1e-9) return;
-    // 压撤销快照，合并键 "move:元件id"：对同一元件连续拖动在 500ms 内会合并成一次撤销
+    // 压撤销快照，合并键 "move:元件id"
     pushUndo("move:" + id);
     // 更新元件坐标
     c["x"] = x; c["y"] = y;
     // 写回上下文
     ctx.components[idx] = c;
-    // 修正与该元件相连的 ortho 线 path，保持连线跟随
-    updateWiresForMovedComponent(ctx, id);
-    // 位置可能影响几何但不影响逻辑值；这里仍调求值保持一致（也同步子电路 pins）
+    // 构造单元素移动集合，并传入精确位移
+    {
+        // 构造移动集合
+        QSet<QString> movedSet;
+        // 加入本次被移动的元件 id
+        movedSet.insert(id);
+        // 调用共享实现：位移 = 新坐标 - 旧坐标
+        updateWiresForMovedComponent(ctx, movedSet, x - ox, y - oy);
+    }
+    // 位置可能影响几何但不影响逻辑值；这里仍调求值保持一致
     evaluateAll();
-    // 通知只关心几何的 QML 组件（可只重算布局）
+    // 通知只关心几何的 QML 组件
     emit geometryChanged();
-    // 通知数据变化，需要重绘
+    // 通知数据变化
     emit changed();
-    // 连线的端口索引/几何结构也可能变了，发结构信号让 QML 重建网络
+    // 通知结构变化
     emit structureChanged();
 }
 
@@ -572,11 +558,11 @@ void Circuit::moveSelection(const QStringList& ids, double dx, double dy) {
     if (m_viewOnly) return;
     // 空选择直接返回
     if (ids.isEmpty()) return;
-    // 位移几乎为 0 直接返回，避免无意义操作
+    // 位移几乎为 0 直接返回
     if (qAbs(dx) < 1e-9 && qAbs(dy) < 1e-9) return;
     // 取当前上下文
     Context& ctx = currentCtx();
-    // 选择集合，便于 O(1) 判断
+    // 选择集合
     QSet<QString> idSet;
     // 填充集合
     for (const auto& id : ids) idSet.insert(id);
@@ -589,7 +575,7 @@ void Circuit::moveSelection(const QStringList& ids, double dx, double dy) {
     }
     // 一个都不存在则不做任何事
     if (!any) return;
-    // 压撤销快照，合并键 "moveSel"：连续拖动整组在 500ms 内合并为一次撤销
+    // 压撤销快照，合并键 "moveSel"
     pushUndo("moveSel");
     // 遍历元件
     for (int i = 0; i < ctx.components.size(); ++i) {
@@ -605,12 +591,19 @@ void Circuit::moveSelection(const QStringList& ids, double dx, double dy) {
             ctx.components[i] = c;
         }
     }
-    // 遍历被选 id（只为修正连线）
-    for (const auto& id : ids) {
-        // 元件仍存在才需要修正
-        if (ctx.indexOfComponent(id) >= 0) {
-            // 逐个修正与该元件相连的 ortho 线
-            updateWiresForMovedComponent(ctx, id);
+    // 一次性把"本次移动集合 + 相对位移"交给共享实现
+    {
+        // 构造真实存在且被本次移动的元件集合
+        QSet<QString> movedSet;
+        // 逐 id 判定
+        for (const auto& id : ids) {
+            // 元件仍存在才纳入集合
+            if (ctx.indexOfComponent(id) >= 0) movedSet.insert(id);
+        }
+        // 集合非空才调用
+        if (!movedSet.isEmpty()) {
+            // 传相对位移 dx/dy
+            updateWiresForMovedComponent(ctx, movedSet, dx, dy);
         }
     }
     // 重新全量求值保持一致
@@ -625,12 +618,12 @@ void Circuit::moveSelection(const QStringList& ids, double dx, double dy) {
 
 /// 语义化接口：带线移动单个元件
 void Circuit::moveComponentWithWires(const QString& id, double x, double y) {
-    // 当前 ortho 线随动已内置在 moveComponent 里，直接转调即可；保留此接口是为了 QML 语义清晰
+    // 当前 ortho 线随动已内置在 moveComponent 里，直接转调即可
     moveComponent(id, x, y);
 }
 // 语义化接口：带线批量相对移动选中元件
 void Circuit::moveSelectionWithWires(const QStringList& ids, double dx, double dy) {
-    // 当前 ortho 线随动已内置在 moveSelection 里，直接转调即可；保留此接口是为了 QML 语义清晰
+    // 当前 ortho 线随动已内置在 moveSelection 里，直接转调即可
     moveSelection(ids, dx, dy);
 }
 
@@ -663,6 +656,23 @@ void Circuit::toggleInput(const QString& id) {
     for (int i = 0; i < bits.size(); ++i) bits[i] = v;
     // 写回位列表
     c["inputBits"] = bits;
+
+    // 同步 outputPorts 与 inputPortValues：即使未开始仿真，
+    // input 元件自身的显示值（端口颜色、位方块）也立即响应；
+    // 但下游元件保持不变，符合"未开始仿真不传播"的语义。
+    // 同时提前算出 binStr，供后面 event 已运行分支复用，避免重复计算。
+    QString binStr;
+    binStr.reserve(bw);
+    for (int i = 0; i < bw; ++i) binStr += v ? '1' : '0';
+    // 输出端口值同步
+    QVariantList outPorts;
+    outPorts.append(binStr);
+    c["outputPorts"] = outPorts;
+    // 输入端口值同步（input 元件在引擎里也有 1 个输入端口，与输出同值）
+    QVariantList inPortVals;
+    inPortVals.append(binStr);
+    c["inputPortValues"] = inPortVals;
+
     // 写回上下文
     ctx.components[idx] = c;
 
@@ -681,12 +691,6 @@ void Circuit::toggleInput(const QString& id) {
             // 把引擎输出回写到上下文
             applyEngineOutputsToContexts();
         }
-        // 准备二进制串
-        QString binStr;
-        // 预分配位宽容量
-        binStr.reserve(bw);
-        // 按新值逐位拼 '1'/'0'
-        for (int i = 0; i < bw; ++i) binStr += v ? '1' : '0';
         // 取该元件在引擎里对应的所有 qid（可能因层级展开有多个）
         QStringList qids = engineQidsFor(m_currentCtxId, id);
         // 对每个 qid 触发输入串
@@ -702,10 +706,16 @@ void Circuit::toggleInput(const QString& id) {
         applyEngineOutputsToContexts();
         // 通知 QML 仿真推进
         emit simulationTick();
-        // 事件引擎模式下但未运行：只标记脏，下次运行时重建
+        // 事件引擎模式下但未运行：只标记脏，不传播
     } else if (m_engineType == "event") {
         m_engineDirty = true;
-        // 非事件引擎：直接全量求值
+        // 关键修复：这里不再调用 IterEngine::evaluateAll。
+        // 用户已明确要求："event 引擎未开始仿真不能传播"。input 自身的
+        // outputPorts 已在上面同步为最新值（画布上 input 元件立即响应），
+        // 但下游 output/LED/门 保持原值，直到 startSimulation 后事件队列
+        // 真正推进。原实现调用 IterEngine::evaluateAll 会造成"未运行即
+        // 传播"——即使只有一层 input→wire→output 也会立即把新值送到 output。
+        // 非事件引擎：全量求值
     } else {
         evaluateAll();
     }
@@ -748,6 +758,22 @@ void Circuit::setBitValue(const QString& id, int bit, bool value) {
     bits[bit] = value;
     // 写回位列表
     c["inputBits"] = bits;
+
+    // 同步 outputPorts 与 inputPortValues：无论是否在仿真中，
+    // input/const 元件自身显示立即响应；未开始仿真时下游不传播。
+    // 提前算出 binStr，供后面 event 已运行分支复用。
+    QString binStr;
+    binStr.reserve(bw);
+    for (int i = 0; i < bw; ++i) binStr += bits[i].toBool() ? '1' : '0';
+    // 输出端口值同步
+    QVariantList outPorts;
+    outPorts.append(binStr);
+    c["outputPorts"] = outPorts;
+    // 输入端口值同步
+    QVariantList inPortVals;
+    inPortVals.append(binStr);
+    c["inputPortValues"] = inPortVals;
+
     // 写回上下文
     ctx.components[idx] = c;
 
@@ -781,9 +807,12 @@ void Circuit::setBitValue(const QString& id, int bit, bool value) {
         applyEngineOutputsToContexts();
         // 通知 QML 仿真推进
         emit simulationTick();
-        // 事件引擎模式但未运行：只标记脏
+        // 事件引擎模式但未运行：只标记脏，不传播
     } else if (m_engineType == "event") {
         m_engineDirty = true;
+        // 关键修复：删除 IterEngine::evaluateAll 调用。
+        // 与 toggleInput 同理：event 未运行时不允许传播，input/const
+        // 自身的 outputPorts 已更新，下游等到 startSimulation 后再更新。
         // 非事件引擎：全量求值
     } else {
         evaluateAll();
@@ -827,7 +856,7 @@ void Circuit::setComponentProp(const QString& id, const QString& key, const QVar
         c["bitWidth"] = bw;
         // 取出位列表
         QVariantList bits = c.value("inputBits").toList();
-        // 位宽变大：在最高位侧补 0（prepend 保持低位对齐）
+        // 位宽变大：在最高位侧补 0
         while (bits.size() < bw) bits.prepend(false);
         // 位宽变小：从最高位侧裁掉
         while (bits.size() > bw) bits.removeFirst();
