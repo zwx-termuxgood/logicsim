@@ -32,7 +32,8 @@
 ## 二、`circuit/` —— C++ 电路模型层
 
 ### 2.1 `circuit/Circuit.h` / `circuit/Circuit.cpp`
-- **Circuit.h**：`Circuit` 类的完整声明，继承 `QObject`，是整个应用的模型核心。暴露大量 `Q_PROPERTY`（components、wires、contextId、subcircuits、errors、engineType、simTime、gateDelay 等）与 `Q_INVOKABLE` 方法（增删元件/连线、移动、撤销重做、保存加载、子电路进出、仿真控制等）。定义了信号（changed、structureChanged、contextChanged、clockChanged、simulationTick 等）与私有成员（根上下文、子电路表、时钟状态、引擎指针、定时器、撤销数据等）。
+- **Circuit.h**：`Circuit` 类的完整声明，继承 `QObject`，是整个应用的模型核心。暴露大量 `Q_PROPERTY`（它的核心作用是让普通的 C++ 成员变量（或读写函数）能够被 Qt 的元对象系统识别和访问）（components、wires、contextId、subcircuits、errors、engineType、simTime、gateDelay 等）与 `Q_INVOKABLE` （用于将普通的 C++ 成员函数注册到元对象系统中，使其能够被反射机制（如 QMetaObject::invokeMethod()）或 QML 调用。
+）方法（增删元件/连线、移动、撤销重做、保存加载、子电路进出、仿真控制等）。定义了信号（changed、structureChanged、contextChanged、clockChanged、simulationTick 等）与私有成员（根上下文、子电路表、时钟状态、引擎指针、定时器、撤销数据等）。
 - **Circuit.cpp**：构造/析构、全局设置读写（loadSettings/saveSettings）、撤销数据指针存取、canUndo/canRedo、上下文访问（currentCtx/ctxById）、indexOfComponent/Wire、仿真时间与门延迟 getter/setter、速度设置、线型模式设置等基础实现。
 
 ### 2.2 `circuit/core/` —— 基础数据结构与工具

@@ -40,6 +40,20 @@ class Circuit : public QObject
     Q_DISABLE_COPY_MOVE(Circuit)
     // 禁用拷贝构造、拷贝赋值、移动构造、移动赋值：Circuit 持有大量资源与定时器，拷贝没有语义
 
+
+    /*```cpp
+Q_PROPERTY(QVariantList components READ components NOTIFY changed)
+```
+
+逐 token 看：
+
+· Q_PROPERTY —— 宏名，固定。
+· QVariantList —— 属性的 C++ 类型。必须是 moc 能识别的类型（Qt 内置类型或已用 Q_DECLARE_METATYPE 注册的类型）。
+· components —— 属性的 名字，字符串层面就是这个。QML 里写 obj.components 用的就是它，和 property("components") 的 key 一致。
+· READ components —— 指定读取函数名为 components。注意：这里写的是函数名，不是调用。moc 会去你的类里找 QVariantList components() const 这个函数。这个函数是真实存在的普通 C++ 函数，QML 读属性时引擎通过元表找到它并调用。
+· NOTIFY changed —— 指定通知信号名为 changed。同理，moc 找类里的 void changed() 信号，把"属性变化 → 发这个信号"登记进元表。*/
+
+
     Q_PROPERTY(QVariantList components READ components NOTIFY changed)
     // 暴露给 QML 的只读属性 components：读取调用 components()，数据变化时发 changed 信号
     Q_PROPERTY(QVariantList wires READ wires NOTIFY changed)
@@ -175,6 +189,10 @@ public:
     // 返回 switchable 模式下的当前线型
     void setCurrentWireType(const QString& t);
     // 设置当前线型：仅接受 bezier/ortho
+    
+    /*
+    Q_INVOKABLE 是 Qt 的宏，写在成员函数声明前，作用是把普通成员函数注册进元对象系统
+    */
     Q_INVOKABLE QString effectiveWireType() const;
     // 综合出实际生效线型：ortho 模式强制 ortho，bezier 模式强制 bezier，否则用 currentWireType
 

@@ -21,7 +21,7 @@ inline QString id(const QVariantMap& w)       { return w.value("id").toString();
 // 读取连线唯一 ID（如 W1）；inline 省去跨 TU 调用开销
 
 inline QString fromComp(const QVariantMap& w) { return w.value("fromComp").toString(); }
-// 读取源端元件 ID；ortho 线的 T 型引出端可能没有源元件，此时返回空串，调用方需容忍空值
+// 读取源端元件 ID；ortho（折线） 线的 T 型引出端可能没有源元件，此时返回空串，调用方需容忍空值
 
 inline QString toComp(const QVariantMap& w)   { return w.value("toComp").toString(); }
 // 读取目标端元件 ID；同理可能为空（只连到另一根线的悬空端）
