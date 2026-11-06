@@ -5,66 +5,40 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 
-find_package(Qt6 6.5 REQUIRED COMPONENTS Quick QuickControls2 Qml)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Core Qml Quick QuickControls2 Test)
 qt_standard_project_setup(REQUIRES 6.5)
 
-set(CIRCUIT_SOURCES
-    circuit/Circuit.cpp
-    circuit/core/CircuitContext.cpp
-    circuit/core/ValueCodec.cpp
-    circuit/core/IdAllocator.cpp
-    circuit/logic/ComponentLogic.cpp
-    circuit/logic/WireNetworkSolver.cpp
-    circuit/logic/event/EventEngine.cpp
-    circuit/logic/event/EventEngine_build.cpp
-    circuit/logic/event/EventEngine_run.cpp
-    circuit/logic/event/EventEngine_trigger.cpp
-    circuit/logic/iter/IterEngine.cpp
-    circuit/logic/move/MoveGesture.cpp
-    circuit/logic/move/Connector.cpp
-    circuit/logic/move/ConnectorThread.cpp
-    circuit/logic/move/AvoidanceMap.cpp
-    circuit/logic/move/SearchNode.cpp
-    circuit/io/JsonCodec.cpp
-    circuit/io/ClipboardCodec.cpp
-    circuit/io/RecentStore.cpp
-    circuit/app/Circuit_lifecycle.cpp
-    circuit/app/Circuit_component.cpp
-    circuit/app/Circuit_wire.cpp
-    circuit/app/Circuit_subcircuit.cpp
-    circuit/app/Circuit_simulation.cpp
-    circuit/app/Circuit_selection.cpp
-    circuit/app/Circuit_query.cpp
-    circuit/app/Circuit_catalog.cpp
+if(QT_KNOWN_POLICY_QTP0004)
+    qt_policy(SET QTP0004 NEW)
+endif()
+
+set(LOGICSIM_INCLUDE_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+add_subdirectory(src/core)
+add_subdirectory(src/logic)
+add_subdirectory(src/io)
+add_subdirectory(src/move)
+add_subdirectory(src/engine)
+add_subdirectory(src/model)
+
+# ── 可执行文件在顶层创建 ────────────────────────────────────
+# target 的 source dir = 项目根，Qt Creator 才会把 qml/ 显示在根下
+qt_add_executable(LogicSim src/app/main.cpp)
+
+target_link_libraries(LogicSim PRIVATE
+    logicsim_model
+    Qt6::Quick
+    Qt6::QuickControls2
+    Qt6::Qml
 )
 
-set(CIRCUIT_HEADERS
-    circuit/Circuit.h
-    circuit/core/CircuitContext.h
-    circuit/core/Component.h
-    circuit/core/Wire.h
-    circuit/core/IdAllocator.h
-    circuit/core/UndoData.h
-    circuit/core/ValueCodec.h
-    circuit/io/JsonCodec.h
-    circuit/io/ClipboardCodec.h
-    circuit/io/RecentStore.h
-    circuit/logic/ComponentLogic.h
-    circuit/logic/WireNetworkSolver.h
-    circuit/logic/SimEngine.h
-    circuit/logic/event/EventEngine.h
-    circuit/logic/iter/IterEngine.h
-    circuit/logic/move/MoveGesture.h
-    circuit/logic/move/Connector.h
-    circuit/logic/move/ConnectorThread.h
-    circuit/logic/move/AvoidanceMap.h
-    circuit/logic/move/SearchNode.h
-    circuit/logic/move/ConnectionData.h
-    circuit/logic/move/MoveResult.h
-    circuit/logic/move/MoveRequest.h
-)
+if(ANDROID)
+    set_property(TARGET LogicSim PROPERTY
+        QT_ANDROID_PACKAGE_SOURCE_DIR "${CMAKE_SOURCE_DIR}/android")
+endif()
 
-set(QML_SOURCES
+# ── QML 模块 ────────────────────────────────────────────────
+set(QML_FILES
     qml/Main.qml
     qml/Theme.qml
     qml/views/bars/TopBar.qml
@@ -90,28 +64,28 @@ set(QML_SOURCES
     qml/views/dialogs/ImportedFilesPopup.qml
 )
 
-set_source_files_properties(qml/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
+set(QML_RESOURCES
+    qml/views/canvas/Geometry.js
+    qml/views/canvas/Painter.js
+    qml/views/canvas/interactions/CanvasInteraction.js
+)
 
-qt_add_executable(LogicSim main.cpp ${CIRCUIT_SOURCES} ${CIRCUIT_HEADERS})
+# 资源别名去掉 "qml/" 前缀，让 loadFromModule("LogicSim", "Main") 找到 Main.qml
+foreach(f ${QML_FILES} ${QML_RESOURCES})
+    string(REPLACE "qml/" "" alias "${f}")
+    set_source_files_properties(${f} PROPERTIES QT_RESOURCE_ALIAS "${alias}")
+endforeach()
+
+# Theme.qml 是 singleton
+set_source_files_properties(qml/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 
 qt_add_qml_module(LogicSim
     URI LogicSim
     VERSION 1.0
     OUTPUT_DIRECTORY LogicSimQml
-    QML_FILES ${QML_SOURCES}
-    RESOURCES
-        qml/views/canvas/Geometry.js
-        qml/views/canvas/Painter.js
-        qml/views/canvas/interactions/CanvasInteraction.js
-    SOURCES ${CIRCUIT_HEADERS}
+    QML_FILES ${QML_FILES}
+    RESOURCES ${QML_RESOURCES}
 )
 
-target_include_directories(LogicSim PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/circuit)
-target_link_libraries(LogicSim PRIVATE Qt6::Quick Qt6::QuickControls2 Qt6::Qml)
-
-if(ANDROID)
-    set_property(TARGET LogicSim PROPERTY
-        QT_ANDROID_PACKAGE_SOURCE_DIR
-        "${CMAKE_CURRENT_SOURCE_DIR}/android"
-    )
-endif()
+enable_testing()
+add_subdirectory(tests)
