@@ -7,6 +7,7 @@
 #include <QVector>
 #include <cmath>
 #include <limits>
+#include <algorithm>
 
 namespace {
 
@@ -62,11 +63,12 @@ struct Topology {
     QVector<Location> locations;
     QVector<Segment> segments;
     QVector<Port> ports;
-    QHash<QString, int> locationIds;
+    QHash<quint64, int> locationIds;
     QHash<QString, int> portIds;
 
     int location(Point point) {
-        const QString key = QString::number(point.x) + ',' + QString::number(point.y);
+        // 两个有符号 32 位坐标按位拼接，不分配字符串且不会碰撞。
+        const quint64 key = (quint64(quint32(point.x)) << 32) | quint32(point.y);
         auto it = locationIds.constFind(key);
         if (it != locationIds.constEnd()) return it.value();
         const int id = locations.size();
@@ -158,9 +160,25 @@ struct Topology {
 
         // 每个真实顶点（含折点）/端口接入经过它的所有正交段。
         // 共线重叠必有至少一个端点在另一段上，因而也由同一规则自然合并。
+        QHash<int, QVector<int>> horizontalRows, verticalColumns;
+        for (int i = 0; i < segments.size(); ++i) {
+            const auto& segment = segments[i];
+            if (segment.a.y == segment.b.y) horizontalRows[segment.a.y].append(i);
+            else verticalColumns[segment.a.x].append(i);
+        }
+        const QVector<int> empty;
         for (auto& loc : locations) {
             const Point p = loc.point;
-            for (const auto& segment : segments) {
+            const auto row = horizontalRows.constFind(p.y);
+            const auto column = verticalColumns.constFind(p.x);
+            const auto& horizontal = row == horizontalRows.constEnd() ? empty : row.value();
+            const auto& vertical = column == verticalColumns.constEnd() ? empty : column.value();
+            qsizetype h = 0, v = 0;
+            while (h < horizontal.size() || v < vertical.size()) {
+                // 归并原始索引，保持并查集合并及虚拟线生成的原有顺序。
+                const bool useHorizontal = v == vertical.size()
+                    || (h < horizontal.size() && horizontal[h] < vertical[v]);
+                const auto& segment = segments[useHorizontal ? horizontal[h++] : vertical[v++]];
                 const Point a = segment.a, b = segment.b;
                 if (!Grid::onSegment(p.x, p.y, a.x, a.y, b.x, b.y)) continue;
                 dsu.unite(loc.node, segment.node);
@@ -176,8 +194,7 @@ struct Topology {
 
 namespace WireNetworkSolver {
 
-QVariantList generateVirtualWires(const QVariantList& components, const QVariantList& wires) {
-    Topology topology(components, wires);
+static QVariantList virtualWiresFrom(Topology& topology) {
     QHash<int, QVector<int>> outputs, inputs;
     for (int i = 0; i < topology.ports.size(); ++i) {
         const Port& port = topology.ports[i];
@@ -201,8 +218,7 @@ QVariantList generateVirtualWires(const QVariantList& components, const QVariant
     return result;
 }
 
-QVariantList connectionDots(const QVariantList& components, const QVariantList& wires) {
-    const Topology topology(components, wires);
+static QVariantList dotsFrom(const Topology& topology) {
     QVariantList result;
     for (const auto& loc : topology.locations) {
         // 支路按方向去重，端口按身份去重；直通/普通折角为两路，T 为三路，
@@ -212,6 +228,20 @@ QVariantList connectionDots(const QVariantList& components, const QVariantList& 
         if (count >= 3) result.append(Grid::point(loc.point.x, loc.point.y));
     }
     return result;
+}
+
+Analysis analyze(const QVariantList& components, const QVariantList& wires) {
+    Topology topology(components, wires);
+    return {virtualWiresFrom(topology), dotsFrom(topology)};
+}
+
+QVariantList generateVirtualWires(const QVariantList& components, const QVariantList& wires) {
+    Topology topology(components, wires);
+    return virtualWiresFrom(topology);
+}
+
+QVariantList connectionDots(const QVariantList& components, const QVariantList& wires) {
+    return dotsFrom(Topology(components, wires));
 }
 
 } // namespace WireNetworkSolver

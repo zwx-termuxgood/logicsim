@@ -177,8 +177,11 @@ QVariantList Circuit::allWireSegments() const {
 
 // 定义"计算连接圆点"接口：委托 WireNetworkSolver，连接数 >= 3 才返回
 QVariantList Circuit::connectionDots() const {
-    // 委托求解器根据元件与连线计算连接圆点位置
-    return WireNetworkSolver::connectionDots(currentCtx().components, currentCtx().wires);
+    if (!m_connectionDotsValid) {
+        m_connectionDotsCache = WireNetworkSolver::connectionDots(currentCtx().components, currentCtx().wires);
+        m_connectionDotsValid = true;
+    }
+    return m_connectionDotsCache;
 }
 
 // ============================================================

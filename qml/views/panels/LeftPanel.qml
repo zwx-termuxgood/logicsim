@@ -78,63 +78,7 @@ Rectangle {
         groupExpanded = g
     }
 
-    readonly property var elementGroups: [
-        // 元件库分组数据：每组含名称与元件项列表
-        { name: "输入输出", items: [
-            // 输入输出组
-            { type: "input", name: "输入开关" },
-            // 输入开关
-            { type: "const", name: "常量" },
-            // 常量
-            { type: "output", name: "输出端口" },
-            // 输出端口
-            { type: "led", name: "LED" }
-            // LED
-        ]},
-        { name: "基本逻辑门", items: [
-            // 基本逻辑门组
-            { type: "and", name: "与门" },
-            // 与门
-            { type: "or", name: "或门" },
-            // 或门
-            { type: "not", name: "非门" }
-            // 非门
-        ]},
-        { name: "复合逻辑门", items: [
-            // 复合逻辑门组
-            { type: "nand", name: "与非" },
-            // 与非门
-            { type: "nor", name: "或非" },
-            // 或非门
-            { type: "xor", name: "异或" },
-            // 异或门
-            { type: "xnor", name: "同或" }
-            // 同或门
-        ]},
-        { name: "传输门 / 晶体管", items: [
-            // 传输门/晶体管组
-            { type: "tgate", name: "传输门" },
-            // 传输门
-            { type: "ntran", name: "NMOS 管" },
-            // NMOS
-            { type: "ptran", name: "PMOS 管" }
-            // PMOS
-        ]},
-        { name: "工具", items: [
-            // 工具组
-            { type: "splitter", name: "分线器" },
-            // 分线器
-            { type: "hub", name: "集线器" }
-            // 集线器
-        ]},
-        { name: "控制", items: [
-            // 控制组
-            { type: "clock", name: "时钟" },
-            // 时钟
-            { type: "text", name: "文字" }
-            // 文字
-        ]}
-    ]
+    readonly property var elementGroups: ComponentRegistry.libraryGroups
 
     ColumnLayout {
         // 面板纵向布局

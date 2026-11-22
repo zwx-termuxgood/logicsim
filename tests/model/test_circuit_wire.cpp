@@ -7,6 +7,20 @@ class TestCircuitWire : public QObject {
     Q_OBJECT
 
 private slots:
+    void connectionDotsInvalidateAfterEdits() {
+        Circuit c;
+        c.addOrthoWire(0, 0, 100, 0, 1);
+        QVERIFY(c.connectionDots().isEmpty());
+        QCOMPARE(c.connectionDots(), c.connectionDots());
+        const auto branch = c.addOrthoWire(50, 0, 50, 100, 1);
+        const auto dots = c.connectionDots();
+        QCOMPARE(dots.size(), 1);
+        QCOMPARE(dots.first().toMap().value("x").toInt(), 50);
+        c.removeWire(branch);
+        QVERIFY(c.connectionDots().isEmpty());
+        c.undo();
+        QCOMPARE(c.connectionDots(), dots);
+    }
     // 辅助函数：检查整条线是否绝对正交（无斜线）
     void assertStrictlyOrthogonal(const QVariantList& path, const QString& msg = "") {
         for (int i = 0; i < path.size() - 1; ++i) {

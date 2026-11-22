@@ -38,7 +38,7 @@ void EventEngine::triggerInputBit(const QString& compId, int bit, bool value) {
         n.raw["inputBits"] = bits;
     }
     // 记录该节点为脏，供 Circuit 侧增量更新
-    markDirty(n.qid);
+    markDirtyNode(idx);
 
     // 下游事件时间 = 当前时间 + 线延迟
     quint64 at = m_time + m_opts.wireDelay;
@@ -84,7 +84,7 @@ void EventEngine::triggerInputString(const QString& compId, const QString& binSt
         n.raw["inputBits"] = bits;
     }
     // 记录该节点为脏
-    markDirty(n.qid);
+    markDirtyNode(idx);
 
     // 下游事件时间 = 当前时间 + 线延迟
     quint64 at = m_time + m_opts.wireDelay;
@@ -136,7 +136,7 @@ void EventEngine::triggerClockToggle(const QString& compId) {
         n.raw["outputPorts"] = ops;
     }
     // 记录该节点为脏
-    markDirty(n.qid);
+    markDirtyNode(idx);
 
     // 下游事件时间 = 当前时间 + 线延迟
     quint64 at = m_time + m_opts.wireDelay;
@@ -172,7 +172,7 @@ void EventEngine::triggerForceOutput(const QString& compId, int port, const QStr
     // 写入新值
     n.outVals[port] = value;
     // 记录该节点为脏
-    markDirty(n.qid);
+    markDirtyNode(idx);
 
     // 下游事件时间 = 当前时间 + 线延迟
     quint64 at = m_time + m_opts.wireDelay;

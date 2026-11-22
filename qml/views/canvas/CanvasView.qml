@@ -54,40 +54,17 @@ Item {
         // 子电路输出端口数
         var subOut = comp.subOutputNames ? comp.subOutputNames.length : 0
         // 尺寸签名：任一影响尺寸的字段变化即失效缓存
-        var sig = t + "|" + bw + "|" + rot + "|" + ic + "|" + splits + "|" + subIn + "|" + subOut
+        var sig = t + "|" + bw + "|" + rot + "|" + ic + "|" + splits + "|" + subIn + "|" + subOut + "|" + (ComponentRegistry.get(t) ? ComponentRegistry.get(t).sizeSignature(comp) : "")
 
         // 取缓存
         var cached = _sizeCache[comp.id]
         // 缓存存在且签名一致则直接返回
         if (cached !== undefined && cached._sig === sig) return cached
 
-        // 未旋转时的宽高
-        var w0, h0
-        // 文本元件
-        if (t === "text") { w0 = 140; h0 = 44 }
-        // 时钟元件
-        else if (t === "clock") { w0 = 60; h0 = 40 }
-        // LED：宽度随位宽增长
-        else if (t === "led") { w0 = Math.max(50, bw * 22 + 8); h0 = 40 }
-        // 输入/输出/常量：宽度随位宽增长
-        else if (t === "input" || t === "output" || t === "const")
-            { w0 = Math.max(60, bw * 22 + 8); h0 = 40 }
-        // 分线器/集线器：高度随分段数增长
-        else if (t === "splitter" || t === "hub") {
-            // 分段数，缺省用位宽
-            var oc = splits || bw
-            w0 = 80; h0 = Math.max(60, oc * 24)
-        }
-        // 非门：固定尺寸
-        else if (t === "not") { w0 = 80; h0 = 60 }
-        // 晶体管/传输门：固定尺寸
-        else if (t === "tgate" || t === "ntran" || t === "ptran") { w0 = 80; h0 = 60 }
-        // 子电路实例：高度随端口数增长
-        else if (t === "sub") {
-            w0 = 110; h0 = Math.max(60, Math.max(subIn, subOut) * 24)
-        }
-        // 其它门：高度随输入端口数增长
-        else { w0 = 80; h0 = Math.max(60, ic * 24) }
+        var definition = ComponentRegistry.get(t)
+        var dimensions = definition ? definition.size(comp)
+                                    : { w: 80, h: Math.max(60, ic * 24) }
+        var w0 = dimensions.w, h0 = dimensions.h
 
         // 结果
         var result
@@ -426,7 +403,7 @@ Item {
                                   main.viewScale, main.viewX, main.viewY,
                                   main.outPortsById, main.inPortsById,
                                   main.selectedCompId, main.selectedIds,
-                                  simplify, main.circuitRef)
+                                  simplify, main.circuitRef, ComponentRegistry)
         }
         // 回写可见元件数
         main.visibleComponentCount = visibleCount

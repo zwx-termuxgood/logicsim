@@ -304,14 +304,16 @@ ApplicationWindow {
         // 到时刷新错误列表
     }
 
-    // 定义"增量更新缓存"函数：仅更新元件 map 与列表
+    property string cachedRenderRevision: ""
+
+    // 同步取快照：重复模型信号只桥接版本，不重复传列表或更新 id map。
     function updateCachesValues() {
-        // 取元件与连线列表
-        var comps = circuit.components
-        var wrs = circuit.wires
-        // 写入缓存
+        var snapshot = circuit.renderSnapshot(cachedRenderRevision)
+        if (snapshot.revision === cachedRenderRevision) return
+        var comps = snapshot.components
         cachedComps = comps
-        cachedWires = wrs
+        cachedWires = snapshot.wires
+        cachedRenderRevision = snapshot.revision
         // 复用现有 map 增量更新
         var m = compById
         // 逐个元件更新
@@ -326,12 +328,9 @@ ApplicationWindow {
     function rebuildCachesFull() {
         // 结构变化时清空尺寸缓存
         canvasView.clearSizeCache()
-        // 取元件与连线列表
-        var comps = circuit.components
-        var wrs = circuit.wires
-        // 写入缓存
-        cachedComps = comps
-        cachedWires = wrs
+        // 保持同步刷新；structure 仍重建端口，即使列表版本已经消费。
+        updateCachesValues()
+        var comps = cachedComps
         // 一次性取所有端口几何
         var allPorts = circuit.allPortsInfo()
         // 准备新缓存
@@ -367,23 +366,15 @@ ApplicationWindow {
         lastCompProps = props
     }
 
-    Timer {
-        // 重绘节流定时器
-        id: repaintTimer
-        // 定时器 id
-        interval: 16; repeat: false
-        // 16ms 单次
-        onTriggered: canvasView.requestPaint()
-        // 到时请求重绘
-    }
-    // 定义"触发重绘"函数：通过节流定时器合并多次请求
-    function triggerRepaint() { repaintTimer.restart() }
+    // Canvas 自身合并同帧 dirty 请求；不要再加 16ms 定时器延迟或持续 restart。
+    function triggerRepaint() { canvasView.requestPaint() }
     onWidthChanged: triggerRepaint()
     // 窗口宽变化时重绘
     onHeightChanged: triggerRepaint()
     // 窗口高变化时重绘
 
     Component.onCompleted: {
+        ComponentRegistry.validate(circuit)
         // 组件加载完成初始化
         subList = circuit.subcircuits
         // 初始化子电路列表

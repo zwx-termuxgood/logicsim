@@ -43,8 +43,10 @@ void EventEngine::buildRecursive(const QVariantList& comps,
         QVariantMap c = cv.toMap();
         // 取类型
         QString type = c.value("type").toString();
+        const auto role = ComponentLogic::role(type);
+        using Role = ComponentLogic::Role;
         // 文本元件没有端口、不参与求值，跳过不建节点
-        if (type == "text") continue;
+        if (role == Role::Text) continue;
 
         // 取本地 ID
         QString localId = c.value("id").toString();
@@ -67,22 +69,22 @@ void EventEngine::buildRecursive(const QVariantList& comps,
         // 保存元件原始 map，供 computeOutputs 读取 outputSplits 等字段
         n.raw = c;
         // 标记数据源类型
-        if (type == "input" || type == "const") n.isInput  = true;
+        if (role == Role::Input || role == Role::Constant) n.isInput = true;
         // 标记时钟
-        else if (type == "clock")  n.isClock  = true;
+        else if (role == Role::Clock) n.isClock = true;
         // 标记输出探针
-        else if (type == "output") n.isOutput = true;
+        else if (role == Role::Output) n.isOutput = true;
         // 标记 LED
-        else if (type == "led")    n.isLed    = true;
+        else if (role == Role::Led) n.isLed = true;
 
         // 数据源/输出探针：固定 1 进 1 出（各自一个位宽宽度的值）
-        if (type == "input" || type == "const" || type == "output") {
+        if (n.isInput || n.isOutput) {
             // 一个输入端口占位
             n.inVals.append(QString(n.bitWidth, '0'));
             // 一个输出端口占位
             n.outVals.append(QString(n.bitWidth, '0'));
             // LED 只有输入端口，没有输出
-        } else if (type == "led") {
+        } else if (n.isLed) {
             // 取输入端口数量
             int ic = ComponentLogic::inputCount(c);
             // 按各端口位宽初始化输入占位值

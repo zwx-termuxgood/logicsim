@@ -4,6 +4,12 @@
 #include <QVariantList>
 
 namespace WireNetworkSolver {
+struct Analysis {
+    QVariantList virtualWires;
+    QVariantList dots;
+};
+// 同一几何快照需要两种结果时，只构建一次拓扑。
+Analysis analyze(const QVariantList& components, const QVariantList& wires);
 // 无状态接口共用同一个整数拓扑构建器，不修改真实线路或拆分用户折线。
 QVariantList generateVirtualWires(const QVariantList& components,
                                   const QVariantList& wires);

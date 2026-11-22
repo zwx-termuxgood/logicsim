@@ -38,7 +38,27 @@ if(ANDROID)
 endif()
 
 # ── QML 模块 ────────────────────────────────────────────────
+# Discover QML component definitions at configure time; adding a definition only
+# requires creating its QML file and rerunning CMake.
+file(GLOB_RECURSE COMPONENT_QML_FILES CONFIGURE_DEPENDS
+    RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/qml/components/*.qml")
+file(GLOB_RECURSE COMPONENT_DEFINITIONS CONFIGURE_DEPENDS
+    RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}/qml/components"
+    "${CMAKE_CURRENT_SOURCE_DIR}/qml/components/builtin/*.qml")
+list(SORT COMPONENT_DEFINITIONS)
+set(DEFINITION_MANIFEST ".pragma library\nvar files = [\n")
+foreach(definition IN LISTS COMPONENT_DEFINITIONS)
+    string(APPEND DEFINITION_MANIFEST "    \"${definition}\",\n")
+endforeach()
+string(APPEND DEFINITION_MANIFEST "]\n")
+set(DEFINITION_MANIFEST_PATH "${CMAKE_CURRENT_BINARY_DIR}/DefinitionManifest.js")
+file(WRITE "${DEFINITION_MANIFEST_PATH}" "${DEFINITION_MANIFEST}")
+set_source_files_properties("${DEFINITION_MANIFEST_PATH}" PROPERTIES
+    QT_RESOURCE_ALIAS "components/DefinitionManifest.js")
+
 set(QML_FILES
+    ${COMPONENT_QML_FILES}
     qml/Main.qml
     qml/Theme.qml
     qml/views/bars/TopBar.qml
@@ -77,14 +97,15 @@ foreach(f ${QML_FILES} ${QML_RESOURCES})
 endforeach()
 
 # Theme.qml 是 singleton
-set_source_files_properties(qml/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
+set_source_files_properties(qml/Theme.qml qml/components/ComponentRegistry.qml
+    PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 
 qt_add_qml_module(LogicSim
     URI LogicSim
     VERSION 1.0
     OUTPUT_DIRECTORY LogicSimQml
     QML_FILES ${QML_FILES}
-    RESOURCES ${QML_RESOURCES}
+    RESOURCES ${QML_RESOURCES} "${DEFINITION_MANIFEST_PATH}"
 )
 
 enable_testing()

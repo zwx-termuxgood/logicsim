@@ -3,6 +3,7 @@
 #include "core/Component.h"
 // 引入元件存取器：集中约定元件 map 的字段名与取值方式
 #include "logic/ComponentLogic.h"
+#include "components/ComponentDefinition.h"
 // 引入元件逻辑库：查询端口几何/端口数量等的唯一来源
 #include "engine/event/EventEngine.h"
 // 引入事件引擎：构造函数创建它，各 getter/setter 转发它的参数
@@ -21,6 +22,12 @@ static const char* kUndoPropName = "__logicsim_undo_v1";
 
 // 构造函数：初始化撤销数据、最近文件、时钟定时器、事件引擎、仿真定时器与全局设置
 Circuit::Circuit(QObject* parent) : QObject(parent) {
+    // 保守失效：编辑/加载/撤销及值回灌都会清缓存，纯视图重绘不重建拓扑。
+    const auto invalidateDots = [this] { m_connectionDotsValid = false; };
+    connect(this, &Circuit::changed, this, invalidateDots);
+    connect(this, &Circuit::geometryChanged, this, invalidateDots);
+    connect(this, &Circuit::structureChanged, this, invalidateDots);
+    connect(this, &Circuit::contextChanged, this, invalidateDots);
     // 新建撤销数据容器
     CircuitUndoData* d = new CircuitUndoData();
     // 以 void* 形式挂到动态属性上
@@ -46,6 +53,10 @@ Circuit::Circuit(QObject* parent) : QObject(parent) {
 
     // 读取引擎/速度/时钟/连线模式等全局设置
     loadSettings();
+}
+
+QStringList Circuit::registeredComponentTypes() const {
+    return Components::typeIds();
 }
 
 // 析构函数：释放撤销数据与事件引擎
@@ -258,6 +269,31 @@ const Circuit::Context* Circuit::ctxById(const QString& id) const {
 QVariantList Circuit::components() const { return currentCtx().components; }
 // 定义"返回当前上下文连线列表"接口
 QVariantList Circuit::wires() const { return currentCtx().wires; }
+
+QVariantMap Circuit::renderSnapshot(const QString& knownRevision) const {
+    const auto& ctx = currentCtx();
+    // Compare shared storage, not QVariant value equality (which can coerce
+    // types). Owning copies force subsequent model writes to detach, including
+    // writes between synchronous/reentrant reads. Repeated signals for unchanged
+    // storage do not create a new version; actual writes are never deferred.
+    if (!m_renderSnapshotValid || m_renderContextId != m_currentCtxId
+        || !m_renderComponents.isSharedWith(ctx.components)
+        || !m_renderWires.isSharedWith(ctx.wires)) {
+        m_renderComponents = ctx.components;
+        m_renderWires = ctx.wires;
+        m_renderContextId = m_currentCtxId;
+        ++m_renderRevision;
+        m_renderSnapshotValid = true;
+    }
+    // Use a string token so QML never rounds a 64-bit revision to a JS number.
+    const QString revision = QString::number(m_renderRevision);
+    QVariantMap result{{QStringLiteral("revision"), revision}};
+    if (knownRevision != revision) {
+        result.insert(QStringLiteral("components"), m_renderComponents);
+        result.insert(QStringLiteral("wires"), m_renderWires);
+    }
+    return result;
+}
 
 // 定义"返回当前上下文显示名"接口
 QString Circuit::contextName() const {

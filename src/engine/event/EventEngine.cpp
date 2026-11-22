@@ -12,6 +12,31 @@ EventEngine::EventEngine() {}
 // 析构函数：QVector/QHash 等成员自动析构，无需手动释放
 EventEngine::~EventEngine() {}
 
+void EventEngine::clearDirtyQids() {
+    m_dirtyQids.clear();
+    m_dirtyNodes.clear();
+    m_dirtyUnknownQids.clear();
+}
+
+void EventEngine::markDirtyNode(int idx) {
+    if (m_dirtyNodes.contains(idx)) return;
+    m_dirtyNodes.insert(idx);
+    m_dirtyQids.append(m_nodes[idx].qid);
+}
+
+void EventEngine::markDirty(const QString& qid) {
+    const int idx = idxOf(qid);
+    if (idx >= 0) {
+        if (m_dirtyNodes.contains(idx)) return;
+        m_dirtyNodes.insert(idx);
+    } else {
+        if (m_dirtyUnknownQids.contains(qid)) return;
+        m_dirtyUnknownQids.insert(qid);
+    }
+    // 保留首次传入的 QString，包括空串的 null 状态。
+    m_dirtyQids.append(qid);
+}
+
 // 定义"设置全局门延迟"接口
 void EventEngine::setGlobalGateDelay(quint64 d) {
     // 下限钳到 1：零延迟会让同一时刻的重算无限触发
@@ -74,10 +99,8 @@ void EventEngine::clear() {
     m_seq = 0;
     // 累计处理计数归零
     m_totalEventsProcessed = 0;
-    // 清空脏节点队列
-    m_dirtyQids.clear();
-    // 清空脏节点去重集合
-    m_dirtySet.clear();
+    // 清空脏节点及去重标记
+    clearDirtyQids();
 }
 
 // 定义"软重置引擎"接口：保留输入元件当前值，其余节点值清零并重建初始事件
@@ -103,10 +126,8 @@ void EventEngine::reset() {
     m_seq = 0;
     // 累计处理计数归零
     m_totalEventsProcessed = 0;
-    // 清空脏节点队列
-    m_dirtyQids.clear();
-    // 清空脏节点去重集合
-    m_dirtySet.clear();
+    // 清空脏节点及去重标记
+    clearDirtyQids();
 
     // 遍历所有节点，把输入/输出端口值清零（保持各自位宽长度）
     for (auto& n : m_nodes) {

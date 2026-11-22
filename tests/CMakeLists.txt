@@ -24,6 +24,9 @@ logicsim_add_test(io/test_clipboard_codec        LIBS logicsim_io)
 logicsim_add_test(engine/test_iter_engine        LIBS logicsim_engine)
 logicsim_add_test(engine/test_event_engine       LIBS logicsim_engine)
 
+logicsim_add_test(logic/test_component_registry  LIBS logicsim_logic)
+logicsim_add_test(engine/test_event_equivalence  LIBS logicsim_engine)
+
 logicsim_add_test(move/test_connector            LIBS logicsim_move)
 
 logicsim_add_test(model/test_circuit_component   LIBS logicsim_model)

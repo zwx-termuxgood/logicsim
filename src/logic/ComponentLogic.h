@@ -25,7 +25,15 @@
 //     保证两引擎对同一电路输出一致，不会出现切换引擎后行为不同；
 //   - 无状态：全部是纯函数，便于单元测试，也避免引擎持有重复逻辑
 
+#include "components/ComponentDefinition.h"
+
 namespace ComponentLogic {
+using Role = Components::Role;
+// Stable sorted registry IDs, suitable for the QML bridge.
+QStringList typeIds();
+Role role(const QString& type);
+// Initialize type-specific fields and stored port values after common fields.
+void initializeDefaults(QVariantMap& comp, const QString& subId = QString());
 // 用命名空间而非类：所有函数无状态，调用形式 ComponentLogic::xxx() 更直接
 
 int inputCount(const QVariantMap& comp);

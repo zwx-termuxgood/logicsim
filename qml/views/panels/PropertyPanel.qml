@@ -27,9 +27,9 @@ Flickable {
 
     property alias inputValueField: inputValueField
     // 把输入值输入框暴露给外部
-    property alias splitterSplitsInput: splitterProps.splitterSplitsInput
+    readonly property var splitterSplitsInput: customProps.item && definition && definition.editorField === "splitterSplitsInput" ? customProps.item.splitterSplitsInput : null
     // 把分段输入框暴露给外部
-    property alias textContentField: textProps.textContentField
+    readonly property var textContentField: customProps.item && definition && definition.editorField === "textContentField" ? customProps.item.textContentField : null
     // 把文本内容输入框暴露给外部
 
     // ★ 统一安全访问（null-safe）
@@ -56,25 +56,10 @@ Flickable {
     readonly property string compName: selComp ? (selComp.name || "") : ""
     // 选中元件名称
 
-    // 定义"是否为多输入逻辑门类型"函数
-    function isGateType(t) {
-        // 与/或/与非/或非/异或/同或
-        return t === "and" || t === "or" || t === "nand" ||
-               t === "nor" || t === "xor" || t === "xnor"
-    }
-    // 定义"是否为可设置门延迟的门类元件"函数
-    function isGateLike(t) {
-        // 多输入门 + 非门 + 晶体管 + 分线/汇线器
-        return t === "and" || t === "or" || t === "nand" ||
-               t === "nor" || t === "xor" || t === "xnor" ||
-               t === "not" || t === "tgate" || t === "ntran" ||
-               t === "ptran" || t === "splitter" || t === "hub"
-    }
-    // 定义"是否为输入源类元件"函数
-    function isInputLike(t) {
-        // 输入开关与常量
-        return t === "input" || t === "const"
-    }
+    readonly property var definition: ComponentRegistry.get(selCompType)
+    function isGateType(t) { var d = ComponentRegistry.get(t); return d ? d.multiInput : false }
+    function isGateLike(t) { var d = ComponentRegistry.get(t); return d ? d.gateDelay : false }
+    function isInputLike(t) { var d = ComponentRegistry.get(t); return d ? d.inputLike : false }
 
     Column {
         // 面板内容列
@@ -384,7 +369,7 @@ Flickable {
                 // 方向选择组
                 spacing: 4; width: parent.width
                 // 间距与宽度
-                visible: propertyPanel.selComp !== null && propertyPanel.selCompType !== "text"
+                visible: propertyPanel.selComp !== null && (!propertyPanel.definition || propertyPanel.definition.rotatable)
                 // 选中非文本元件时可见
 
                 Text {
@@ -732,9 +717,7 @@ Flickable {
                 font.pixelSize: Theme.fsSmall
                 // 统一字号
                 visible: propertyPanel.selComp !== null
-                         && (propertyPanel.isInputLike(propertyPanel.selCompType)
-                             || propertyPanel.selCompType === "output"
-                             || propertyPanel.selCompType === "led")
+                         && (propertyPanel.definition && propertyPanel.definition.displayBase)
                 // 输入类/输出/LED 时可见
                 enabled: !propertyPanel.viewOnly
                 // 只读模式禁用
@@ -807,12 +790,13 @@ Flickable {
                 }
             }
 
-            LedProps {
-                // LED 颜色属性子面板
-                main: propertyPanel.main
-                // 传递主窗口引用
+            Loader {
+                id: ledCustomProps
+                focus: true
                 width: parent.width
-                // 宽度铺满
+                active: propertyPanel.definition && propertyPanel.definition.editorField === ""
+                sourceComponent: active ? propertyPanel.definition.propertyEditor : null
+                onLoaded: item.main = propertyPanel.main
             }
 
             Column {
@@ -958,50 +942,27 @@ Flickable {
                 }
             }
 
-            SplitterProps {
-                // 分线器/集线器属性子面板
-                id: splitterProps
-                // 面板 id，供 alias 暴露
-                main: propertyPanel.main
-                // 传递主窗口引用
+            Loader {
+                id: customProps
+                focus: true
                 width: parent.width
-                // 宽度铺满
-            }
-
-            TextProps {
-                // 文本元件属性子面板
-                id: textProps
-                // 面板 id，供 alias 暴露
-                main: propertyPanel.main
-                // 传递主窗口引用
-                width: parent.width
-                // 宽度铺满
-            }
-
-            Column {
-                // 晶体管/传输门端口说明组
-                visible: propertyPanel.selComp !== null
-                         && (propertyPanel.selCompType === "tgate"
-                             || propertyPanel.selCompType === "ntran"
-                             || propertyPanel.selCompType === "ptran")
-                // 选中晶体管类元件时可见
-                spacing: 4; width: parent.width
-                // 间距与宽度
-                Text {
-                    // 端口说明文字
-                    text: propertyPanel.selCompType === "tgate"
-                          ? "端口：D / EN → Y\nEN=1 时 Y=D；EN=0 时输出高阻 Z"
-                          : (propertyPanel.selCompType === "ntran"
-                            ? "端口：G(左) / D(右下) / S(右上)\nG=1 时导通 S=D；G=0 时输出高阻 Z"
-                            : "端口：G(左) / D(右上) / S(右下)\nG=0 时导通 S=D；G=1 时输出高阻 Z")
-                    // 说明文字结束
-                    color: Theme.textFaint
-                    // 极弱文字色
-                    font.pixelSize: Theme.fsTiny
-                    // 极小字号
-                    width: parent.width; wrapMode: Text.Wrap
-                    // 宽度铺满并自动换行
+                active: propertyPanel.definition && propertyPanel.definition.editorField !== ""
+                sourceComponent: active ? propertyPanel.definition.propertyEditor : null
+                onLoaded: {
+                    item.main = propertyPanel.main
+                    // Preserve the existing externally synchronized text fields.
+                    if (propertyPanel.definition.editorField === "splitterSplitsInput")
+                        item.splitterSplitsInput.text = (propertyPanel.selComp.outputSplits || []).join(",")
+                    else if (propertyPanel.definition.editorField === "textContentField")
+                        item.textContentField.text = propertyPanel.selComp.content || ""
                 }
+            }
+            Text {
+                visible: text.length > 0
+                text: propertyPanel.definition ? propertyPanel.definition.portDescription : ""
+                color: Theme.textFaint
+                font.pixelSize: Theme.fsTiny
+                width: parent.width; wrapMode: Text.Wrap
             }
 
             Rectangle {

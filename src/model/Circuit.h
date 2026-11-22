@@ -121,6 +121,8 @@ public:
     // 返回当前上下文的元件列表（每次拷贝一份 QVariantList，QML 侧只读使用）
     QVariantList wires() const;
     // 返回当前上下文的连线列表
+    Q_INVOKABLE QVariantMap renderSnapshot(const QString& knownRevision = QString()) const;
+    // 同步比较实际状态；相同版本只返回 revision，避免重复向 QML 桥接列表。
     QString contextId() const { return m_currentCtxId; }
     // 内联返回当前上下文 ID：根为空串，子电路为 S 编号
     QString contextName() const;
@@ -289,6 +291,7 @@ public:
     Q_INVOKABLE QVariantList allWireSegments() const;
     // 枚举当前上下文所有 ortho 线段，供 QML 绘制或碰撞检测
     Q_INVOKABLE QVariantList connectionDots() const;
+    Q_INVOKABLE QStringList registeredComponentTypes() const;
     // 计算连接圆点位置：委托 WireNetworkSolver，连接数 >= 3 才返回
 
     Q_INVOKABLE QVariantMap getComponent(const QString& id) const;
@@ -413,6 +416,14 @@ private slots:
     // 时钟定时器回调：翻转所有 clock 输出并触发一次求值
 
 private:
+    mutable QVariantList m_renderComponents;
+    mutable QVariantList m_renderWires;
+    mutable QString m_renderContextId;
+    mutable qulonglong m_renderRevision = 0;
+    mutable bool m_renderSnapshotValid = false;
+
+    mutable bool m_connectionDotsValid = false;
+    mutable QVariantList m_connectionDotsCache;
     // 私有区：内部状态与辅助函数
 
     using Context = CircuitContext;

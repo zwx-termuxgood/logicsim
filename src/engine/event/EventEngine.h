@@ -14,7 +14,7 @@
 #include <QHash>
 // 引入 QHash：ID→索引、驱动表、输出目标表、门延迟覆盖都用它
 #include <QSet>
-// 引入 QSet：脏节点去重集合 m_dirtySet
+// 引入 QSet：已知节点索引与未知 qid 的脏标记集合
 #include <QVector>
 // 引入 QVector：节点数组 m_nodes、输入/输出值数组、脏队列与缓冲区
 #include <QPair>
@@ -123,22 +123,16 @@ public:
         // 取走并清空脏队列：返回 swap 出的副本，同时清空去重集合
         QVector<QString> r;
         r.swap(m_dirtyQids);
-        m_dirtySet.clear();
+        clearDirtyQids();
         return r;
     }
-    void clearDirtyQids() { m_dirtyQids.clear(); m_dirtySet.clear(); }
+    void clearDirtyQids();
     // 主动清空脏集合：全量 apply 后调用，避免残留导致下次误判增量
     int dirtyCount() const { return m_dirtyQids.size(); }
     // 脏节点数量：调试观测
 
-    // 去重：同一节点一次 run() 里只追加一次
-    void markDirty(const QString& qid) {
-        // 若已记录则直接返回，保证同一节点在脏队列中最多出现一次；
-        // 避免同一帧内反复更新同一元件造成 QML 抖动
-        if (m_dirtySet.contains(qid)) return;
-        m_dirtySet.insert(qid);
-        m_dirtyQids.append(qid);
-    }
+    // 记录任意 qid，按首次标记顺序去重
+    void markDirty(const QString& qid);
 
 private:
     // 私有区：内部数据结构与算法实现
@@ -226,8 +220,11 @@ private:
 
     QVector<QString> m_dirtyQids;
     // 脏节点队列：待 Circuit 增量 apply 的节点
-    QSet<QString>    m_dirtySet;      // 去重
-    // 脏节点去重集合：与 m_dirtyQids 同步维护
+    QSet<int> m_dirtyNodes;
+    // 热路径以稳定节点索引去重，避免重复散列 qid
+    QSet<QString> m_dirtyUnknownQids;
+    // 保留公共 markDirty 对任意（包括未知）qid 的行为
+    void markDirtyNode(int idx);
     QVector<QString> m_driverValBuf;   // 复用，避免热路径堆分配
     // 多驱合并临时缓冲区：processEvent 中复用，避免每事件构造 QVector
 

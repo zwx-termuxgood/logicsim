@@ -32,12 +32,10 @@ QString EventEngine::resolveMultiDriver(const QVector<QString>& vals, int bw) {
         bool has0 = false, has1 = false, hasE = false;
         // 遍历每个驱动值
         for (const auto& v : vals) {
-            // 补齐/截断到目标位宽，便于按位比较
-            QString s = v;
-            if (s.length() < bw) s = QString(bw - s.length(), '0') + s;
-            else if (s.length() > bw) s = s.right(bw);
-            // 取该位字符，缺失按 '0' 处理
-            QChar c = (pos < s.length()) ? s[pos] : QChar('0');
+            // 右对齐读取，等价于左侧补 0 / 只保留低 bw 位；
+            // 不在每一位、每个驱动的内层循环中构造临时 QString。
+            const qsizetype sourcePos = v.size() - bw + pos;
+            const QChar c = sourcePos >= 0 ? v.at(sourcePos) : QChar('0');
             // 记录出现过的电平
             if (c == '0') has0 = true;
             else if (c == '1') has1 = true;
@@ -298,7 +296,7 @@ void EventEngine::recalcNode(int idx) {
     if (!changed) return;
 
     // 记录输出变化的节点，供 Circuit 侧增量更新（去重）
-    markDirty(n.qid);
+    markDirtyNode(idx);
 
     // 下游事件时间 = 当前时间 + 该类型门延迟
     quint64 at = m_time + gateDelayFor(n.type);

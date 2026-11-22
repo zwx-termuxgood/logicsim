@@ -71,8 +71,10 @@ bool IterEngine::evalOne(QVariantMap& c,
     const QString id = c.value("id").toString();
     // 取类型
     const QString t = c.value("type").toString();
+    const auto role = ComponentLogic::role(t);
+    using Role = ComponentLogic::Role;
     // 文本元件不参与求值
-    if (t == "text") return false;
+    if (role == Role::Text) return false;
 
     // 取位宽，钳位到 [1,64]
     int bw = c.value("bitWidth").toInt();
@@ -150,7 +152,7 @@ bool IterEngine::evalOne(QVariantMap& c,
     // 准备新输出端口值列表
     QVariantList newOutList;
     // 数据源类型：取 outputOverride（含 Z/E 时用）或 inputBits
-    if (t == "input" || t == "const") {
+    if (role == Role::Input || role == Role::Constant) {
         // 取输出覆盖值
         QVariant ov = c.value("outputOverride");
         // 转成字符串（无效则为空）
@@ -160,15 +162,15 @@ bool IterEngine::evalOne(QVariantMap& c,
         // 否则由 inputBits 生成二进制串
         else newOutList.append(ValueCodec::bitsToString(c.value("inputBits").toList(), bw));
         // 时钟：输出由外部写入 outputPorts，这里原样保留
-    } else if (t == "clock") {
+    } else if (role == Role::Clock) {
         newOutList = c.value("outputPorts").toList();
         if (newOutList.isEmpty()) newOutList.append(QString(bw, '0'));
         // LED/输出探针：输出就是第一个输入值
-    } else if (t == "led" || t == "output") {
+    } else if (role == Role::Led || role == Role::Output) {
         if (!newInList.isEmpty()) newOutList.append(newInList[0]);
         else newOutList.append(QString(bw, '0'));
         // 子电路实例：输出由 evalInstance 写入 outputPorts，这里原样保留
-    } else if (t == "sub") {
+    } else if (role == Role::Subcircuit) {
         newOutList = c.value("outputPorts").toList();
         // 纯组合逻辑：委托 ComponentLogic 统一计算
     } else {
