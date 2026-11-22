@@ -1,10 +1,108 @@
 #include "JsonCodec.h"
 // 引入 JsonCodec 命名空间声明：实现 encode/decode 前必须看到函数原型与 DecodedData 结构
+#include "core/Grid.h"
+#include "logic/ComponentLogic.h"
+#include <cmath>
+#include <limits>
 #include <QtGlobal>
+#include <QSet>
 // 引入 Qt 全局定义：qBound 等工具函数在此声明
 
 namespace JsonCodec {
 // 打开 JsonCodec 命名空间，与头文件声明保持一致
+
+namespace {
+// IO 边界先校验再调用 Grid，禁止 NaN/越界值被取整成意外连接点。
+// 留出端口偏移和距离运算余量，不允许钳位坏坐标后继续连线。
+bool validCoordinate(const QVariant& value) {
+    bool ok = false;
+    const double v = value.toDouble(&ok);
+    return ok && Grid::valid(v);
+}
+
+bool validPoint(const QVariantMap& p) {
+    return validCoordinate(p.value("x")) && validCoordinate(p.value("y"));
+}
+
+CircuitContext normalizeGeometry(CircuitContext ctx) {
+    QVariantList components;
+    QHash<QString, QVariantMap> byId;
+    QSet<QString> rejected;
+    for (const auto& cv : ctx.components) {
+        auto c = cv.toMap();
+        if (!validPoint(c)) {
+            rejected.insert(c.value("id").toString());
+            continue;
+        }
+        c["x"] = Grid::xi(c);
+        c["y"] = Grid::yi(c);
+        components.append(c);
+        byId.insert(c.value("id").toString(), c);
+    }
+    ctx.components = components;
+    QVariantList wires;
+    for (const auto& wv : ctx.wires) {
+        auto w = wv.toMap();
+        if (rejected.contains(w.value("fromComp").toString())
+            || rejected.contains(w.value("toComp").toString())) continue;
+        auto path = w.value("path").toList();
+        bool valid = true;
+        for (const auto& pv : path) valid = valid && validPoint(pv.toMap());
+        if (!valid) continue;
+        if (w.value("wireType").toString() == "ortho") {
+            if (path.size() < 2) continue;
+            path = Grid::normalizePath(path);
+            // 显式绑定以统一端口几何为准，旧端点量化后可能相差一像素。
+            // 仅在迁移边界补确定性拐点，不能把端点直接拖成斜线。
+            for (bool front : {true, false}) {
+                const QString compKey = front ? "fromComp" : "toComp";
+                const QString portKey = front ? "fromPort" : "toPort";
+                const QString id = w.value(compKey).toString();
+                if (id.isEmpty() || !byId.contains(id)) continue;
+                const auto c = byId.value(id);
+                const auto ports = front ? ComponentLogic::outputPorts(c)
+                                         : ComponentLogic::inputPorts(c);
+                bool ok = false;
+                const int index = w.value(portKey).toInt(&ok);
+                if (!ok || index < 0 || index >= ports.size()) { valid = false; break; }
+                const auto port = ports[index].toMap();
+                const double x = c.value("x").toDouble() + port.value("x").toDouble();
+                const double y = c.value("y").toDouble() + port.value("y").toDouble();
+                if (!validCoordinate(x) || !validCoordinate(y)) { valid = false; break; }
+                const QVariantMap portPoint = Grid::point(Grid::snap(x), Grid::snap(y));
+                const int firstIndex = 0;
+                const int lastIndex = path.size() - 1;
+                const auto first = path[firstIndex].toMap();
+                const auto last = path[lastIndex].toMap();
+                const bool firstMatches = Grid::xi(first) == Grid::xi(portPoint) && Grid::yi(first) == Grid::yi(portPoint);
+                const bool lastMatches = Grid::xi(last) == Grid::xi(portPoint) && Grid::yi(last) == Grid::yi(portPoint);
+                int endpoint = front ? firstIndex : lastIndex;
+                if (firstMatches != lastMatches) endpoint = firstMatches ? firstIndex : lastIndex;
+                else if (!firstMatches && !lastMatches) {
+                    const double firstDistance = std::hypot(Grid::xi(first) - Grid::xi(portPoint), Grid::yi(first) - Grid::yi(portPoint));
+                    const double lastDistance = std::hypot(Grid::xi(last) - Grid::xi(portPoint), Grid::yi(last) - Grid::yi(portPoint));
+                    if (firstDistance != lastDistance) endpoint = firstDistance < lastDistance ? firstIndex : lastIndex;
+                }
+                path[endpoint] = portPoint;
+            }
+            if (!valid) continue;
+            path = Grid::normalizePath(path);
+            if (path.size() < 2) continue;
+            w["path"] = path;
+        } else if (!path.isEmpty()) {
+            // 非正交线型保留形状，仅统一持久化顶点的整数类型。
+            for (auto& pv : path) {
+                const auto p = pv.toMap();
+                pv = Grid::point(Grid::xi(p), Grid::yi(p));
+            }
+            w["path"] = path;
+        }
+        wires.append(w);
+    }
+    ctx.wires = wires;
+    return ctx;
+}
+} // namespace
 
 // 定义"编码所有持久化状态"接口：打包成一个 QVariantMap（JSON 对象）
 QVariantMap encode(const CircuitContext& root,
@@ -26,9 +124,10 @@ QVariantMap encode(const CircuitContext& root,
     // 写入存档格式版本号，供将来兼容性判断
     result["version"] = 11;
     // 写入根上下文：元件、连线、两个计数器
+    CircuitContext normalizedRoot = normalizeGeometry(root);
     result["root"] = QVariantMap{
-        {"components", root.components},
-        {"wires", root.wires},
+        {"components", normalizedRoot.components},
+        {"wires", normalizedRoot.wires},
         {"compCounter", root.compCounter},
         {"wireCounter", root.wireCounter}
     };
@@ -43,9 +142,10 @@ QVariantMap encode(const CircuitContext& root,
         // 写入显示名（缺失回退空串）
         s["name"] = subNames.value(it.key(), "");
         // 写入元件列表
-        s["components"] = it.value().components;
+        const auto normalized = normalizeGeometry(it.value());
+        s["components"] = normalized.components;
         // 写入连线列表
-        s["wires"] = it.value().wires;
+        s["wires"] = normalized.wires;
         // 写入元件计数器
         s["compCounter"] = it.value().compCounter;
         // 写入连线计数器
@@ -140,6 +240,7 @@ DecodedData decode(const QVariantMap& data) {
         out.root.components = r.value("components").toList();
         // 恢复连线列表
         out.root.wires = r.value("wires").toList();
+        out.root = normalizeGeometry(out.root);
         // 恢复元件计数器
         out.root.compCounter = r.value("compCounter").toInt();
         // 恢复连线计数器
@@ -160,6 +261,7 @@ DecodedData decode(const QVariantMap& data) {
         c.components = s.value("components").toList();
         // 恢复连线列表
         c.wires = s.value("wires").toList();
+        c = normalizeGeometry(c);
         // 恢复元件计数器
         c.compCounter = s.value("compCounter").toInt();
         // 恢复连线计数器

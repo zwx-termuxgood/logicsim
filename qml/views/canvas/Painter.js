@@ -60,11 +60,11 @@ function pickWireColor(ctx, srcStr) {
 // ============================================================
 // 定义"绘制连线"分派函数：按线型转调具体绘制函数
 function drawWire(ctx, w, compById, outPortsById, inPortsById,
-                  viewScale, viewX, viewY, W, H, simplify, selectedWireId, wireSources) {
+                  viewScale, viewX, viewY, W, H, simplify, selectedWireId, wireSources, selectedIds) {
     // 取线型，缺省回退 bezier
     var wt = w.wireType || "bezier"
     // 是否被选中
-    var isSel = (w.id === selectedWireId)
+    var isSel = (w.id === selectedWireId || (selectedIds && selectedIds.indexOf(w.id) >= 0))
 
     // ortho 线走正交绘制
     if (wt === "ortho") {

@@ -2,6 +2,7 @@ add_library(logicsim_core STATIC
     CircuitContext.h  CircuitContext.cpp
     Component.h
     Wire.h
+    Grid.h
     IdAllocator.h     IdAllocator.cpp
     UndoData.h
     ValueCodec.h      ValueCodec.cpp

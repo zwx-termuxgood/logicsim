@@ -7,6 +7,7 @@
 #include "logic/ComponentLogic.h"
 // 引入元件逻辑库：查询端口几何，用于收集端口位置与判断连接
 #include "core/CircuitContext.h"
+#include "core/Grid.h"
 // 引入电路上下文完整定义：遍历 m_circuit 的元件与连线
 #include <QSet>
 // 引入 QSet：记录已访问 wire id、选中元件 id，避免重复遍历
@@ -64,239 +65,53 @@ const QList<ConnectionData>& MoveGesture::getConnections() const {
 
 // 定义"实际扫描连接"接口
 void MoveGesture::computeConnections() {
-    // 清空旧连接
     m_connections.clear();
-    // 没有选中元件则无连接
-    if (m_selected.isEmpty()) return;
-
-    // 收集所有选中元件的端口位置
-    QList<QPointF> locs;
-    // 遍历选中元件
+    if (!m_circuit) return;
+    QSet<QString> seen;
     for (const auto& c : m_selected) {
-        // 元件中心坐标
-        double cx = c.value("x").toDouble();
-        double cy = c.value("y").toDouble();
-        // 查询输出端口几何
-        QVariantList outs = ComponentLogic::outputPorts(c);
-        // 逐个输出端口换算成世界坐标加入列表
-        for (const auto& pv : outs) {
-            // 端口转 map
-            QVariantMap p = pv.toMap();
-            // 世界坐标 = 元件坐标 + 端口偏移
-            locs.append(QPointF(cx + p.value("x").toDouble(),
-                                cy + p.value("y").toDouble()));
-        }
-        // 查询输入端口几何
-        QVariantList ins = ComponentLogic::inputPorts(c);
-        // 逐个输入端口换算成世界坐标加入列表
-        for (const auto& pv : ins) {
-            // 端口转 map
-            QVariantMap p = pv.toMap();
-            // 世界坐标 = 元件坐标 + 端口偏移
-            locs.append(QPointF(cx + p.value("x").toDouble(),
-                                cy + p.value("y").toDouble()));
-        }
-    }
-
-    // 对每个位置，判断是否连接到非选中组件
-    for (const auto& loc : locs) {
-        // 该位置是否与非选中元件端口重合
-        bool found = false;
-        // 遍历所有"非选中组件"，检查其端口是否在 loc 上
-        for (const auto& cv : m_circuit->components) {
-            // 元件转 map
-            QVariantMap c = cv.toMap();
-            // 选中的元件跳过
-            if (isSelected(m_selected, c.value("id").toString())) continue;
-            // 元件中心坐标
-            double cx = c.value("x").toDouble();
-            double cy = c.value("y").toDouble();
-            // 检查输出端口
-            QVariantList outs = ComponentLogic::outputPorts(c);
-            for (const auto& pv : outs) {
-                // 端口转 map
-                QVariantMap p = pv.toMap();
-                // 与 loc 坐标在容差内重合即命中
-                if (qAbs(cx + p.value("x").toDouble() - loc.x()) < 0.5 &&
-                    qAbs(cy + p.value("y").toDouble() - loc.y()) < 0.5) {
-                    found = true; break;
-                }
-            }
-            // 已命中则跳出外层元件循环
-            if (found) break;
-            // 检查输入端口
-            QVariantList ins = ComponentLogic::inputPorts(c);
-            for (const auto& pv : ins) {
-                // 端口转 map
-                QVariantMap p = pv.toMap();
-                // 与 loc 坐标在容差内重合即命中
-                if (qAbs(cx + p.value("x").toDouble() - loc.x()) < 0.5 &&
-                    qAbs(cy + p.value("y").toDouble() - loc.y()) < 0.5) {
-                    found = true; break;
-                }
-            }
-            // 已命中则跳出
-            if (found) break;
-        }
-        // 该位置不与非选中元件相连，无需重连
-        if (!found) continue;
-
-        // 找 wirePath：从这个位置出发，沿非选中 wire 走
-        QList<QVariantMap> wirePath;
-        // 路径终点坐标，默认就是起点
-        QPointF pathStart = loc;
-        // 路径上最后一根 wire
-        QVariantMap lastOnPath;
-        // 已访问 wire id 集合
-        QSet<QString> visited;
-        // 当前沿链走到的坐标
-        QPointF cur = loc;
-
-        // 找第一条经过 cur 的、非选中的正交 wire
-        auto findWire = [&](const QPointF& pt, const QString& ignoreId) -> QVariantMap {
-            // 遍历所有连线
+        auto ports = ComponentLogic::outputPorts(c);
+        ports.append(ComponentLogic::inputPorts(c));
+        for (const auto& pv : ports) {
+            const auto p = pv.toMap();
+            const int x = Grid::xi(c) + Grid::xi(p), y = Grid::yi(c) + Grid::yi(p);
+            const QString key = QString::number(x) + ":" + QString::number(y);
+            if (seen.contains(key)) continue;
+            seen.insert(key);
+            const auto loc = Grid::point(x, y);
+            QList<QVariantMap> wires;
+            QString direction;
+            // 只收集端口实际接触的线，不能把整个电气网络当作可删除的链。
             for (const auto& wv : m_circuit->wires) {
-                // 连线转 map
-                QVariantMap w = wv.toMap();
-                // 连线 id
-                QString id = w.value("id").toString();
-                // 忽略指定 id
-                if (id == ignoreId) continue;
-                // 已访问过则跳过
-                if (visited.contains(id)) continue;
-                // 只处理 ortho 线
-                QString wt = w.value("wireType").toString();
-                if (wt != "ortho") continue;
-                // 检查 wire 是否有 path 顶点在 pt 上
-                QVariantList path = w.value("path").toList();
-                for (const auto& pv : path) {
-                    // 顶点转 map
-                    QVariantMap p = pv.toMap();
-                    // 与 pt 在容差内重合即命中，返回该线
-                    if (qAbs(p.value("x").toDouble() - pt.x()) < 0.5 &&
-                        qAbs(p.value("y").toDouble() - pt.y()) < 0.5) {
-                        return w;
+                const auto w = wv.toMap();
+                if (w.value("wireType").toString() != "ortho") continue;
+                const auto path = w.value("path").toList();
+                for (int j = 0; j + 1 < path.size(); ++j) {
+                    const auto a = path[j].toMap(), b = path[j + 1].toMap();
+                    if (!Grid::onSegment(x, y, Grid::xi(a), Grid::yi(a), Grid::xi(b), Grid::yi(b))) continue;
+                    wires.append(w);
+                    if (direction.isEmpty()) {
+                        const auto other = (Grid::xi(a) == x && Grid::yi(a) == y) ? b : a;
+                        if (Grid::xi(other) != x) direction = Grid::xi(other) > x ? "east" : "west";
+                        else direction = Grid::yi(other) > y ? "south" : "north";
                     }
+                    break;
                 }
             }
-            // 没找到返回空 map
-            return QVariantMap();
-        };
-
-        // 从起点找第一根 wire
-        QVariantMap first = findWire(cur, QString());
-        // 找到则开始沿链走
-        if (!first.isEmpty()) {
-            // 标记已访问
-            visited.insert(first.value("id").toString());
-            // 加入路径
-            wirePath.append(first);
-            // 记录最后走到的线
-            lastOnPath = first;
-
-            // 沿 path 向外走
-            QVariantList path = first.value("path").toList();
-            // 找 cur 在 path 中的位置
-            int curIdx = -1;
-            for (int i = 0; i < path.size(); ++i) {
-                // 顶点转 map
-                QVariantMap p = path[i].toMap();
-                // 与 cur 重合则记录索引
-                if (qAbs(p.value("x").toDouble() - cur.x()) < 0.5 &&
-                    qAbs(p.value("y").toDouble() - cur.y()) < 0.5) {
-                    curIdx = i; break;
+            bool fixedPort = false;
+            for (const auto& cv : m_circuit->components) {
+                const auto other = cv.toMap();
+                if (isSelected(m_selected, other.value("id").toString())) continue;
+                auto fixed = ComponentLogic::outputPorts(other);
+                fixed.append(ComponentLogic::inputPorts(other));
+                for (const auto& fpv : fixed) {
+                    const auto fp = fpv.toMap();
+                    if (Grid::xi(other) + Grid::xi(fp) == x && Grid::yi(other) + Grid::yi(fp) == y)
+                        fixedPort = true;
                 }
             }
-            // 定位成功则把 cur 推进到线的另一端
-            if (curIdx >= 0) {
-                // 起点是首顶点：向末顶点走
-                if (curIdx == 0) {
-                    // 从 path.first 开始，向 path.last 走
-                    QVariantMap lastP = path.last().toMap();
-                    cur = QPointF(lastP.value("x").toDouble(), lastP.value("y").toDouble());
-                    // 起点是末顶点：向首顶点走
-                } else if (curIdx == path.size() - 1) {
-                    QVariantMap firstP = path.first().toMap();
-                    cur = QPointF(firstP.value("x").toDouble(), firstP.value("y").toDouble());
-                }
-            }
-
-            // 继续向外找
-            for (int iter = 0; iter < 100; ++iter) {
-                // 从当前坐标找下一根 wire
-                QVariantMap next = findWire(cur, QString());
-                // 找不到则链结束
-                if (next.isEmpty()) break;
-                // 标记已访问
-                visited.insert(next.value("id").toString());
-                // 加入路径
-                wirePath.append(next);
-                // 取下一根线的 path
-                QVariantList p2 = next.value("path").toList();
-                // 找 cur 在该 path 中的位置
-                int idx2 = -1;
-                for (int i = 0; i < p2.size(); ++i) {
-                    // 顶点转 map
-                    QVariantMap p = p2[i].toMap();
-                    // 与 cur 重合则记录索引
-                    if (qAbs(p.value("x").toDouble() - cur.x()) < 0.5 &&
-                        qAbs(p.value("y").toDouble() - cur.y()) < 0.5) {
-                        idx2 = i; break;
-                    }
-                }
-                // 定位失败则结束
-                if (idx2 < 0) break;
-                // 推进到线的另一端
-                if (idx2 == 0) {
-                    QVariantMap lp = p2.last().toMap();
-                    cur = QPointF(lp.value("x").toDouble(), lp.value("y").toDouble());
-                } else if (idx2 == p2.size() - 1) {
-                    QVariantMap fp = p2.first().toMap();
-                    cur = QPointF(fp.value("x").toDouble(), fp.value("y").toDouble());
-                    // 起点在线的中间（T 型接入），无法继续向单方向走，结束
-                } else break;
-            }
-            // 链末端坐标作为路径终点
-            pathStart = cur;
+            if (!wires.isEmpty() || fixedPort)
+                m_connections.append(ConnectionData(loc, direction, wires, loc));
         }
-
-        // 计算方向：从最后一段 wire 的走向推断首选延伸方向
-        QString dir;
-        // 有走过的线才推断
-        if (!lastOnPath.isEmpty()) {
-            // 取该线 path
-            QVariantList lp = lastOnPath.value("path").toList();
-            // 至少两个顶点才能算方向
-            if (lp.size() >= 2) {
-                // 取 loc 附近的顶点与相邻点
-                double dx = 0, dy = 0;
-                // 首顶点
-                QVariantMap a = lp.first().toMap();
-                // 末顶点
-                QVariantMap b = lp.last().toMap();
-                // 计算首末顶点差
-                dx = a.value("x").toDouble() - b.value("x").toDouble();
-                dy = a.value("y").toDouble() - b.value("y").toDouble();
-                // 横向差为主：东/西
-                if (std::abs(dx) > std::abs(dy))
-                    dir = dx > 0 ? "east" : "west";
-                // 纵向差为主：南/北
-                else
-                    dir = dy > 0 ? "south" : "north";
-            }
-        }
-
-        // 起点坐标 map
-        QVariantMap locMap;
-        locMap["x"] = loc.x();
-        locMap["y"] = loc.y();
-        // 路径终点坐标 map
-        QVariantMap startMap;
-        startMap["x"] = pathStart.x();
-        startMap["y"] = pathStart.y();
-
-        // 组装连接描述并加入结果
-        m_connections.append(ConnectionData(locMap, dir, wirePath, startMap));
     }
 }
 

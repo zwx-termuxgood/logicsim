@@ -1,5 +1,7 @@
 #include "ComponentLogic.h"
 // 引入本文件要实现的 ComponentLogic 命名空间声明：实现其函数前必须看到函数原型
+#include "core/Grid.h"
+// 引入统一整数坐标入口：端口几何在来源处量化，绘制、命中及求解共用同一结果。
 #include <QtGlobal>
 // 引入 Qt 全局定义：qMin/qMax 等工具函数在此声明
 
@@ -149,6 +151,18 @@ static void rotatePoint(double& x, double& y, int rot) {
     x = nx; y = ny;
 }
 
+// 统一收尾：保留已有整数布局（如晶体管的 15px 偏移），只把小数偏移
+// 四舍五入到 1px；不能吸附到 10px，否则画面端口会偏离既有线路。
+static QVariantList integerPorts(QVariantList ports) {
+    for (int i = 0; i < ports.size(); ++i) {
+        QVariantMap p = ports[i].toMap();
+        p["x"] = Grid::snap(p.value("x").toDouble());
+        p["y"] = Grid::snap(p.value("y").toDouble());
+        ports[i] = p;
+    }
+    return ports;
+}
+
 // 定义"计算所有输出端口几何"接口
 QVariantList outputPorts(const QVariantMap& comp) {
     // 准备结果列表
@@ -251,7 +265,7 @@ QVariantList outputPorts(const QVariantMap& comp) {
         result[i] = p;
     }
     // 返回端口几何列表
-    return result;
+    return integerPorts(result);
 }
 
 // 定义"计算所有输入端口几何"接口
@@ -374,7 +388,7 @@ QVariantList inputPorts(const QVariantMap& comp) {
         result[i] = p;
     }
     // 返回端口几何列表
-    return result;
+    return integerPorts(result);
 }
 
 // ============================================================

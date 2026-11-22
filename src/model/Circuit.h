@@ -221,6 +221,10 @@ public:
     // 批量删除：先收集端口位置，再一次性移除元件与相关连线，减少重复遍历
     Q_INVOKABLE void moveComponent(const QString& id, double x, double y);
     // 移动元件到绝对坐标：更新 ortho 线端点并触发几何/结构信号
+    Q_INVOKABLE bool beginSelectionMove(const QStringList& ids);
+    Q_INVOKABLE bool updateSelectionMove(double totalDx, double totalDy);
+    Q_INVOKABLE void endSelectionMove();
+    // 手势移动：固定起始快照，累计 10px 位移，一次手势一次撤销。
     Q_INVOKABLE void moveSelection(const QStringList& ids, double dx, double dy);
     // 批量相对移动：逐元件平移后统一更新各自连接的 ortho 线
     Q_INVOKABLE void moveComponentWithWires(const QString& id, double x, double y);
@@ -266,8 +270,9 @@ public:
                                      double toX, double toY,
                                      int direction);
     // 添加正交线：先吸附端口，再按方向生成 L 型 path；反向时自动交换端点
-    Q_INVOKABLE bool shortenWireEnd(const QString& wireId, double newX, double newY);
-    // 缩短线的一端到新坐标：用于“从已有线拉出新线”后截断原线
+    Q_INVOKABLE bool shortenWireEnd(const QString& wireId, bool shrinkFront, double newX, double newY);
+    // 缩短正交线指定端到新坐标（Logisim 语义：新线 = 松手点 → 远端，保留中间拐点；
+    // 松手点与远端重合则整条删除）。坐标应已投影到线的精确行列上
     Q_INVOKABLE void removeWire(const QString& id);
     // 删除指定连线
     Q_INVOKABLE QString wireAtPoint(double x, double y, double tol) const;
@@ -422,6 +427,18 @@ private:
         // 进入前的实例路径（用于状态同步）
     };
     // 浏览栈帧：记录进入子电路前的三项状态，用于 leaveSubcircuit 恢复
+
+    struct SelectionMoveState {
+        bool active = false;
+        bool undoPushed = false;
+        QString ctxId;
+        Context start;
+        QSet<QString> ids;
+        int dx = 0;
+        int dy = 0;
+    } m_selectionMove;
+    QSet<QString> movableSelectionIds(const Context& ctx, const QStringList& ids) const;
+    bool buildSelectionMove(Context& next, const QSet<QString>& ids, int dx, int dy);
 
     Context m_root;
     // 根上下文：主电路的元件与连线

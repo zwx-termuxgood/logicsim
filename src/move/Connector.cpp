@@ -1,4 +1,5 @@
 #include "Connector.h"
+#include "core/Grid.h"
 // 引入本文件要实现的 Connector 类完整声明：定义其成员函数前必须看到类定义
 #include "MoveGesture.h"
 // 引入移动手势完整定义：computeWires 需要访问连接描述、选中元件、固定避让地图
@@ -83,29 +84,15 @@ static QList<QVariantMap> wireLocations(const QVariantMap& wire) {
         QVariantMap p0 = path[i].toMap();
         // 段终点
         QVariantMap p1 = path[i + 1].toMap();
-        // 段起点坐标
-        double x0 = p0.value("x").toDouble(), y0 = p0.value("y").toDouble();
-        // 段终点坐标
-        double x1 = p1.value("x").toDouble(), y1 = p1.value("y").toDouble();
-        // 段长度
-        double len = std::hypot(x1 - x0, y1 - y0);
-        // 采样步数（每 10px 一步）
-        int n = int(len / 10);
-        // 除零保护
-        if (n < 1) n = 1;
-        // 逐采样点生成
-        for (int s = 0; s <= n; ++s) {
-            // 归一化参数
-            double t = double(s) / n;
-            // 采样点 map
-            QVariantMap loc;
-            // 线性插值 x
-            loc["x"] = x0 + (x1 - x0) * t;
-            // 线性插值 y
-            loc["y"] = y0 + (y1 - y0) * t;
-            // 追加
-            out.append(loc);
-        }
+        // 正交段按整数 10px 步长采样，末端不足一步时保留精确端点。
+        const int x0 = Grid::xi(p0), y0 = Grid::yi(p0);
+        const int x1 = Grid::xi(p1), y1 = Grid::yi(p1);
+        if (x0 != x1 && y0 != y1) continue;
+        const int length = qAbs(x1 - x0) + qAbs(y1 - y0);
+        const int sx = (x1 > x0) - (x1 < x0), sy = (y1 > y0) - (y1 < y0);
+        for (int d = 0; d < length; d += Grid::STEP)
+            out.append(Grid::point(x0 + sx * d, y0 + sy * d));
+        out.append(Grid::point(x1, y1));
     }
     // 返回所有采样点
     return out;
@@ -155,8 +142,7 @@ static void processConnection(const ConnectionData& conn, int dx, int dy,
             // 查询该点占用
             QString allow = selAvoid->get(loc.value("x").toDouble(), loc.value("y").toDouble());
             // 该点是否就是目标位置
-            bool isDest = std::abs(loc.value("x").toDouble() - dest.value("x").toDouble()) < 0.01
-                          && std::abs(loc.value("y").toDouble() - dest.value("y").toDouble()) < 0.01;
+            bool isDest = Grid::xi(loc) == Grid::xi(dest) && Grid::yi(loc) == Grid::yi(dest);
             // 未被占用或是目标位置，才可作为起点
             if (allow.isEmpty() || isDest) {
                 // 去重标记
@@ -180,22 +166,15 @@ static void processConnection(const ConnectionData& conn, int dx, int dy,
                         // 末顶点
                         QVariantMap p1 = path.last().toMap();
                         // 该点是否为 wire 端点
-                        bool isEnd = (std::abs(loc.value("x").toDouble() - p0.value("x").toDouble()) < 0.01 &&
-                                      std::abs(loc.value("y").toDouble() - p0.value("y").toDouble()) < 0.01)
-                                     || (std::abs(loc.value("x").toDouble() - p1.value("x").toDouble()) < 0.01 &&
-                                         std::abs(loc.value("y").toDouble() - p1.value("y").toDouble()) < 0.01);
-                        // 端点按 wire 走向取"向外"方向
-                        if (isEnd) {
-                            // wire 走向 x 分量
-                            double wx = p1.value("x").toDouble() - p0.value("x").toDouble();
-                            // wire 走向 y 分量
-                            double wy = p1.value("y").toDouble() - p0.value("y").toDouble();
-                            // 横向为主：向远离 wire 的一侧延伸
-                            if (std::abs(wx) > std::abs(wy))
-                                dir = wx > 0 ? "west" : "east";
-                            // 纵向为主：向远离 wire 的一侧延伸
-                            else
-                                dir = wy > 0 ? "north" : "south";
+                        const bool atFront = Grid::xi(loc) == Grid::xi(p0) && Grid::yi(loc) == Grid::yi(p0);
+                        const bool atBack = Grid::xi(loc) == Grid::xi(p1) && Grid::yi(loc) == Grid::yi(p1);
+                        if (path.size() >= 2 && (atFront || atBack)) {
+                            // 端点的局部相邻段决定方向，不能用折线首末点的对角差。
+                            const auto adjacent = path[atFront ? 1 : path.size() - 2].toMap();
+                            const int wx = Grid::xi(loc) - Grid::xi(adjacent);
+                            const int wy = Grid::yi(loc) - Grid::yi(adjacent);
+                            if (wx != 0) dir = wx > 0 ? "east" : "west";
+                            else if (wy != 0) dir = wy > 0 ? "south" : "north";
                         }
                     }
                     // 以该候选起点构造搜索节点
@@ -347,76 +326,13 @@ static QList<QVariantMap> convertToPath(SearchNode* last) {
 }
 
 // 定义"把 A* 路径转成连线增删改结果"辅助函数
-static void processPath(const QList<QVariantMap>& path, const ConnectionData& conn,
-                        AvoidanceMap* avoid, MoveResult* result)
+static void processPath(const QList<QVariantMap>& path, AvoidanceMap* avoid, MoveResult* result)
 {
-    // 路径索引
-    int idx = 0;
-    // 当前段起点
-    QVariantMap loc0 = path[idx++];
-    // 连接原位置
-    QVariantMap connLoc = conn.location();
-
-    // 路径未从连接原点出发：需要处理原 wire 链的删除/缩短
-    if (loc0 != connLoc) {
-        // 沿 wire 链走到尽头的坐标
-        QVariantMap pathLoc = conn.wirePathStart();
-        // 是否已定位到接入点
-        bool found = (loc0 == pathLoc);
-
-        // 逐根遍历连接已有的 wire 链
-        for (const auto& wire : conn.wirePath()) {
-            // 取该 wire 的 path
-            QVariantList wpath = wire.value("path").toList();
-            // wire 末端坐标
-            QVariantMap wireEnd = wpath.isEmpty() ? QVariantMap() : wpath.last().toMap();
-            // 下一段接入点，默认取末端
-            QVariantMap nextLoc = wireEnd;
-            // 有顶点则根据当前 pathLoc 决定向哪一端走
-            if (wpath.size() > 0) {
-                // 首顶点
-                QVariantMap f = wpath.first().toMap();
-                // 末顶点
-                QVariantMap l = wpath.last().toMap();
-                if (pathLoc == f) nextLoc = l;
-                else nextLoc = f;
-            }
-
-            // 已定位到接入点：本 wire 及之后全部删除
-            if (found) {
-                result->removals.append(wire);
-                avoid->unmarkWire(wire, nextLoc);
-            } else {
-                // 判断接入点是否落在本 wire 路径上
-                bool contains = false;
-                for (const auto& pv : wpath) {
-                    if (pv.toMap() == loc0) { contains = true; break; }
-                }
-                // 落在本 wire 上：本 wire 需缩短，只保留远离接入点的一段
-                if (contains) {
-                    found = true;
-                    // 接入点不在末端才需缩短
-                    if (loc0 != nextLoc) {
-                        avoid->unmarkWire(wire, nextLoc);
-                        // 构造缩短后的新线
-                        QVariantMap shortened;
-                        shortened["wireType"] = "ortho";
-                        QVariantList newPath;
-                        newPath.append(pathLoc);
-                        newPath.append(loc0);
-                        shortened["path"] = newPath;
-                        // 记录替换对
-                        QVariantMap oldW = wire;
-                        result->replacements.append({oldW, shortened});
-                        // 标记缩短后的新线占用
-                        avoid->markWire(shortened, 0, 0);
-                    }
-                }
-            }
-            // 推进到下一段接入点
-            pathLoc = nextLoc;
-        }
-    }
+    // 搜索起点来自真实接触的固定线或端口，新增路径即可；
+    // 不能裁剪固定主干，更不能用两点替换多拐点路径。
+    if (path.size() < 2) return;
+    int idx = 1;
+    QVariantMap loc0 = path.first();
 
     // 剩余路径点逐段生成新线
     while (idx < path.size()) {
@@ -492,7 +408,7 @@ static MoveResult* tryList(const MoveRequest& req, MoveGesture* gesture,
         if (node) {
             result->totalDistance += node->distance();
             QList<QVariantMap> path = convertToPath(node);
-            processPath(path, conn, avoid, result);
+            processPath(path, avoid, result);
             // 搜索中被中断：放弃本次尝试
         } else if (ConnectorThread::isOverrideRequested()) {
             delete avoid; delete result; return nullptr;

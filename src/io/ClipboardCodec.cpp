@@ -1,6 +1,9 @@
 #include "ClipboardCodec.h"
 // 引入 ClipboardCodec 命名空间声明：实现 encode/paste 前必须看到函数原型与 PasteResult 结构
 #include "core/IdAllocator.h"
+#include "core/Grid.h"
+#include "JsonCodec.h"
+#include <limits>
 // 引入 ID 分配器：paste 为粘贴出的元件/连线分配新 id 时使用
 #include <QSet>
 // 引入 QSet：encode 中按 id 做 O(1) 命中判断、收集选中线 id 时使用
@@ -9,9 +12,7 @@
 #include <QVariantMap>
 // 引入 QVariantMap：单个元件/连线/点都以 map 表示
 #include <cmath>
-// 引入 C 数学库：std::round/std::abs 用于位置键取整与线段内部判断
-#include <algorithm>
-// 引入算法库：std::min/std::max 用于线段区间计算
+// 引入 C 数学库：仅在 IO 边界校验有限坐标，不用于拓扑容差判断。
 
 namespace ClipboardCodec {
 // 打开 ClipboardCodec 命名空间，与头文件声明保持一致
@@ -19,66 +20,28 @@ namespace ClipboardCodec {
 namespace {
 // 匿名命名空间：内部辅助函数只在本编译单元可见，避免符号污染
 
-// 定义"把点坐标取整拼成字符串键"的辅助函数，供顶点重合判断使用
-QString posKeyOf(const QVariantMap& p) {
-    // 对 x、y 四舍五入取整后拼成 "x,y"，容忍浮点误差
-    return QString("%1,%2").arg(int(std::round(p.value("x").toDouble())))
-        .arg(int(std::round(p.value("y").toDouble())));
+bool validCoordinate(const QVariant& value) {
+    bool ok = false;
+    const double v = value.toDouble(&ok);
+    return ok && Grid::valid(v);
 }
 
-// 定义"点是否严格落在正交线段内部（不含端点）"的辅助函数
-bool pointOnSegInterior(double px, double py,
-                        double x1, double y1, double x2, double y2) {
-    // 线段近似水平：y 需贴合线段所在行
-    if (std::abs(y1 - y2) < 0.5) {
-        // 点 y 与线段 y 差超过容差则不在线上
-        if (std::abs(py - y1) > 0.5) return false;
-        // 线段 x 区间下界
-        double lo = std::min(x1, x2);
-        // 线段 x 区间上界
-        double hi = std::max(x1, x2);
-        // 点 x 必须严格落在区间内部（排除两端点）
-        return px > lo + 0.5 && px < hi - 0.5;
-    }
-    // 线段近似竖直：x 需贴合线段所在列
-    if (std::abs(x1 - x2) < 0.5) {
-        // 点 x 与线段 x 差超过容差则不在线上
-        if (std::abs(px - x1) > 0.5) return false;
-        // 线段 y 区间下界
-        double lo = std::min(y1, y2);
-        // 线段 y 区间上界
-        double hi = std::max(y1, y2);
-        // 点 y 必须严格落在区间内部（排除两端点）
-        return py > lo + 0.5 && py < hi - 0.5;
-    }
-    // 非正交线段（斜线）不做内部判断
-    return false;
-}
-
-// 定义"点是否落在 path 任意段内部"的辅助函数
-bool pointOnPathInterior(double px, double py, const QVariantList& path) {
-    // 相邻顶点两两组成线段逐个判断
-    for (int i = 0; i + 1 < path.size(); ++i) {
-        // 线段起点
-        QVariantMap p0 = path[i].toMap();
-        // 线段终点
-        QVariantMap p1 = path[i + 1].toMap();
-        // 命中任意线段内部即返回 true
-        if (pointOnSegInterior(px, py,
-                               p0.value("x").toDouble(), p0.value("y").toDouble(),
-                               p1.value("x").toDouble(), p1.value("y").toDouble())) {
-            return true;
-        }
-    }
-    // 所有线段都未命中返回 false
-    return false;
+// 复用存档边界的几何迁移，不引入另一套端口对齐或斜段规则。
+CircuitContext normalizeGeometry(const CircuitContext& source) {
+    const auto root = JsonCodec::encode(source, {}, {}, 0, 2, 0, "event",
+                                        1, 1, 1000, 3, true, {}).value("root").toMap();
+    CircuitContext ctx = source;
+    ctx.components = root.value("components").toList();
+    ctx.wires = root.value("wires").toList();
+    return ctx;
 }
 
 } // namespace
 // 匿名命名空间结束：以上辅助函数仅本文件可用
 
 // 定义"编码选中内容"接口：抽取指定 id 的元件及其相关连线，打包成 QVariantList
-QVariantList encode(const CircuitContext& ctx, const QStringList& ids) {
+QVariantList encode(const CircuitContext& source, const QStringList& ids) {
+    const CircuitContext ctx = normalizeGeometry(source);
     // 选中 id 集合，便于 O(1) 命中判断
     QSet<QString> idSet;
     // 逐个插入集合
@@ -142,8 +105,6 @@ QVariantList encode(const CircuitContext& ctx, const QStringList& ids) {
             // 本轮是否新增了线
             changed = false;
 
-            // 已选线的所有顶点位置键集合
-            QSet<QString> selVertexKeys;
             // 已选线的 path 列表，供内部点判断使用
             QVector<QVariantList> selPaths;
             // 收集已选线的顶点键与 path
@@ -158,9 +119,6 @@ QVariantList encode(const CircuitContext& ctx, const QStringList& ids) {
                 if (path.isEmpty()) continue;
                 // 记录 path 供内部点判断
                 selPaths.append(path);
-                // 逐个顶点取位置键放入集合
-                for (auto& pv : path)
-                    selVertexKeys.insert(posKeyOf(pv.toMap()));
             }
 
             // 遍历未选中的线，判断是否与已选线连通
@@ -176,50 +134,26 @@ QVariantList encode(const CircuitContext& ctx, const QStringList& ids) {
                 // 无 path 的线不参与扩散
                 if (path.isEmpty()) continue;
 
-                // 是否匹配
+                // 所有折点都是实际段端点；端点接段/共线重叠连通，纯内部十字不连。
                 bool matched = false;
-
-                // 端点对端点：首/末顶点与已选线顶点重合即连通
-                if (selVertexKeys.contains(posKeyOf(path.first().toMap())) ||
-                    selVertexKeys.contains(posKeyOf(path.last().toMap()))) {
-                    matched = true;
-                }
-
-                // 本线端点落在已选线内部（正向 T 型接入）
-                if (!matched) {
-                    // 本线首顶点
-                    QVariantMap p0 = path.first().toMap();
-                    // 本线末顶点
-                    QVariantMap pn = path.last().toMap();
-                    // 对每条已选线判断端点是否落在其内部
-                    for (const auto& selPath : selPaths) {
-                        if (pointOnPathInterior(p0.value("x").toDouble(),
-                                                p0.value("y").toDouble(), selPath) ||
-                            pointOnPathInterior(pn.value("x").toDouble(),
-                                                pn.value("y").toDouble(), selPath)) {
+                for (const auto& selected : selPaths) {
+                    for (const auto& pv : path) {
+                        const auto p = pv.toMap();
+                        if (Grid::onPath(Grid::xi(p), Grid::yi(p), selected)) {
                             matched = true;
                             break;
                         }
                     }
-                }
-
-                // 已选线端点落在本线内部（反向 T 型接入）
-                if (!matched) {
-                    // 对每条已选线取其首末顶点
-                    for (const auto& selPath : selPaths) {
-                        // 已选线首顶点
-                        QVariantMap a = selPath.first().toMap();
-                        // 已选线末顶点
-                        QVariantMap b = selPath.last().toMap();
-                        // 判断是否落在本线内部
-                        if (pointOnPathInterior(a.value("x").toDouble(),
-                                                a.value("y").toDouble(), path) ||
-                            pointOnPathInterior(b.value("x").toDouble(),
-                                                b.value("y").toDouble(), path)) {
-                            matched = true;
-                            break;
+                    if (!matched) {
+                        for (const auto& pv : selected) {
+                            const auto p = pv.toMap();
+                            if (Grid::onPath(Grid::xi(p), Grid::yi(p), path)) {
+                                matched = true;
+                                break;
+                            }
                         }
                     }
+                    if (matched) break;
                 }
 
                 // 匹配则纳入选中集合并标记本轮有变化
@@ -265,13 +199,29 @@ PasteResult paste(CircuitContext& ctx,
     PasteResult result;
     // 数据为空则无可粘贴内容
     if (data.isEmpty()) return result;
+    if (!validCoordinate(dx) || !validCoordinate(dy)) return result;
 
-    // 取出编码数据的唯一元素（数据 map）
-    QVariantMap d = data[0].toMap();
-    // 取出元件列表
-    QVariantList comps = d.value("components").toList();
-    // 取出连线列表
-    QVariantList wires = d.value("wires").toList();
+    // 先归一化旧剪贴板，再以统一整数位移平移；无效数据不触碰目标上下文。
+    CircuitContext incoming;
+    incoming.components = data[0].toMap().value("components").toList();
+    incoming.wires = data[0].toMap().value("wires").toList();
+    incoming = normalizeGeometry(incoming);
+    dx = Grid::snap(dx);
+    dy = Grid::snap(dy);
+    for (const auto& cv : incoming.components) {
+        const auto c = cv.toMap();
+        if (!validCoordinate(c.value("x").toDouble() + dx)
+            || !validCoordinate(c.value("y").toDouble() + dy)) return result;
+    }
+    for (const auto& wv : incoming.wires) {
+        for (const auto& pv : wv.toMap().value("path").toList()) {
+            const auto p = pv.toMap();
+            if (!validCoordinate(p.value("x").toDouble() + dx)
+                || !validCoordinate(p.value("y").toDouble() + dy)) return result;
+        }
+    }
+    QVariantList comps = incoming.components;
+    QVariantList wires = incoming.wires;
 
     // 旧 id -> 新 id 映射表
     QHash<QString, QString> idMap;
@@ -288,8 +238,11 @@ PasteResult paste(CircuitContext& ctx,
         // 写入新 id
         c["id"] = newId;
         // 坐标按位移平移
-        c["x"] = c.value("x").toDouble() + dx;
-        c["y"] = c.value("y").toDouble() + dy;
+        const double x = c.value("x").toDouble() + dx;
+        const double y = c.value("y").toDouble() + dy;
+        if (!validCoordinate(x) || !validCoordinate(y)) continue;
+        c["x"] = Grid::snap(x);
+        c["y"] = Grid::snap(y);
         // 新时钟元件登记初始状态 false，供调用者同步到 m_clockStates
         if (c.value("type").toString() == "clock")
             result.newClockStates[newId] = false;
@@ -335,7 +288,7 @@ PasteResult paste(CircuitContext& ctx,
         if (!oldTo.isEmpty() && to.isEmpty()) continue;
 
         // 准备新连线 map
-        QVariantMap nw;
+        QVariantMap nw = w;
         // ★ 先取新 id 存入局部变量：Bug 1 修复需要把它追加进 newIds，
         //   不能只在 nw 里写，否则调用方 / 测试拿不到线 ID。
         QString newWireId = IdAllocator::nextWireId(ctx);
@@ -356,7 +309,7 @@ PasteResult paste(CircuitContext& ctx,
         }
 
         // ortho 线需要平移 path 顶点
-        if (wt == "ortho") {
+        if (wt == "ortho" || w.contains("path")) {
             // 取出原 path
             QVariantList path = w.value("path").toList();
             // 准备新 path
@@ -370,8 +323,8 @@ PasteResult paste(CircuitContext& ctx,
                 // 准备新顶点
                 QVariantMap np;
                 // 坐标按位移平移
-                np["x"] = p.value("x").toDouble() + dx;
-                np["y"] = p.value("y").toDouble() + dy;
+                np["x"] = Grid::snap(p.value("x").toDouble() + dx);
+                np["y"] = Grid::snap(p.value("y").toDouble() + dy);
                 // 追加到新 path
                 newPath.append(np);
             }

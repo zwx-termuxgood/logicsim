@@ -1,6 +1,11 @@
 .pragma library
 // 声明为共享 JS 库：供多个 QML 文件 import 使用，不绑定到某个 QML 实例
 
+// 与后端 Grid::snap/llround 一致：负半值也远离零取整。
+function roundInteger(value) {
+    return value < 0 ? -Math.round(-value) : Math.round(value)
+}
+
 // 定义"在屏幕坐标附近查找最近端口"辅助函数
 function findPortAt(main, cv, sx, sy) {
     // 取缓存的元件列表
@@ -85,12 +90,17 @@ function snapWorldPoint(main, cv, mouse) {
     }
     // 未命中端口：世界坐标按 10px 网格取整
     var wp = cv.screenToWorld(mouse.x, mouse.y)
+    var hit = main.circuitRef.wireAtPoint(wp.x, wp.y, 15 / Math.max(0.1, main.viewScale))
+    if (hit) {
+        var segmentPoint = snapToWire(main, hit, wp.x, wp.y)
+        if (segmentPoint) return { x: segmentPoint.x, y: segmentPoint.y, port: null }
+    }
     // 返回取整后的世界坐标，port 为 null 表示未命中端口
     return {
         // x 网格化到 10px
-        x: Math.round(wp.x / 10) * 10,
+        x: roundInteger(wp.x / 10) * 10,
         // y 网格化到 10px
-        y: Math.round(wp.y / 10) * 10,
+        y: roundInteger(wp.y / 10) * 10,
         // 未命中端口
         port: null
     }
@@ -98,79 +108,60 @@ function snapWorldPoint(main, cv, mouse) {
 
 // 定义"把点吸附到某根 ortho 线的最近点上"辅助函数
 function snapToWire(main, wireId, wx, wy) {
-    // 取连线 map
-    var w = main.circuitRef.getWire(wireId)
-    // 不是有效 ortho 线则返回 null
-    if (!w || !w.path || w.path.length < 2) return null
-    // 取路径
-    var path = w.path
-    // 最近点 x 坐标
-    var bestX = 0, bestY = 0, bestD = 1e18
-    // 最近点所在段是否水平
-    var bestIsHorizontal = false
-    // 遍历每段求点到线段最近点
-    for (var i = 0; i + 1 < path.length; i++) {
-        // 段起点
-        var p0 = path[i], p1 = path[i + 1]
-        // 段两端坐标
-        var x1 = p0.x, y1 = p0.y, x2 = p1.x, y2 = p1.y
-        // 段方向向量
-        var dx = x2 - x1, dy = y2 - y1
-        // 段长度平方
-        var len2 = dx*dx + dy*dy
-        // 投影参数
-        var t = 0
-        // 非退化段才计算投影
-        if (len2 > 1e-9) {
-            // 点在直线上的投影参数
-            t = ((wx - x1) * dx + (wy - y1) * dy) / len2
-            // 钳到 [0,1]，限制在线段内
-            if (t < 0) t = 0; else if (t > 1) t = 1
-        }
-        // 段上最近点
-        var cx = x1 + t * dx, cy = y1 + t * dy
-        // 距离平方
-        var d = (wx - cx) * (wx - cx) + (wy - cy) * (wy - cy)
-        // 更近则更新
-        if (d < bestD) {
-            // 更新最佳距离
-            bestD = d
-            // 更新最近点坐标
-            bestX = cx
-            bestY = cy
-            // 判断该段是否水平
-            bestIsHorizontal = Math.abs(y1 - y2) < 0.5
-        }
+    var wire = main.circuitRef.getWire(wireId)
+    return wire && wire.path ? projectToPath(wire.path, wx, wy, true) : null
+}
+
+// 只在原整数正交段上投影；钳位使用命中段而非整条线首尾。
+function projectToPath(path, wx, wy, freeGrid) {
+    var gx = freeGrid ? roundInteger(wx / 10) * 10 : roundInteger(wx)
+    var gy = freeGrid ? roundInteger(wy / 10) * 10 : roundInteger(wy)
+    var best = null, bestD = Infinity
+    for (var i = 0; i + 1 < path.length; ++i) {
+        var a = path[i], b = path[i + 1], x, y
+        if (a.y === b.y) {
+            x = Math.max(Math.min(a.x, b.x), Math.min(Math.max(a.x, b.x), gx))
+            y = a.y
+        } else if (a.x === b.x) {
+            x = a.x
+            y = Math.max(Math.min(a.y, b.y), Math.min(Math.max(a.y, b.y), gy))
+        } else continue
+        var d = (wx - x) * (wx - x) + (wy - y) * (wy - y)
+        if (d < bestD) { bestD = d; best = { x: x, y: y, segment: i } }
     }
-    // 水平段：x 网格化并限制在该段区间内
-    if (bestIsHorizontal) {
-        // x 网格化到 10px
-        var snappedX = Math.round(bestX / 10) * 10
-        // 路径 x 区间下界
-        var lo = Math.min(path[0].x, path[path.length-1].x)
-        // 路径 x 区间上界
-        var hi = Math.max(path[0].x, path[path.length-1].x)
-        // 下界钳位
-        if (snappedX < lo) snappedX = lo
-        // 上界钳位
-        if (snappedX > hi) snappedX = hi
-        // 返回吸附点
-        return { x: snappedX, y: bestY }
-    // 垂直段：y 网格化并限制在该段区间内
-    } else {
-        // y 网格化到 10px
-        var snappedY = Math.round(bestY / 10) * 10
-        // 路径 y 区间下界
-        var lo2 = Math.min(path[0].y, path[path.length-1].y)
-        // 路径 y 区间上界
-        var hi2 = Math.max(path[0].y, path[path.length-1].y)
-        // 下界钳位
-        if (snappedY < lo2) snappedY = lo2
-        // 上界钳位
-        if (snappedY > hi2) snappedY = hi2
-        // 返回吸附点
-        return { x: bestX, y: snappedY }
+    return best
+}
+
+// 预览与提交共享裁剪结果，保留未裁剪侧的每个原始拐点。
+function shortenPreview(main, wx, wy) {
+    var candidates = main.shortenWireCandidates || []
+    for (var i = 0; i < candidates.length; ++i) {
+        var c = candidates[i], p = projectToPath(c.path, wx, wy)
+        if (!p) continue
+        // 距离仅用于鼠标命中，不参与整数拓扑判断。
+        var tolerance = 15 / Math.max(0.1, main.viewScale)
+        if (Math.abs(wx - p.x) > tolerance || Math.abs(wy - p.y) > tolerance) continue
+        var operated = c.shrinkFront ? c.path[0] : c.path[c.path.length - 1]
+        if (p.x === operated.x && p.y === operated.y) continue
+        // 自交/重复坐标从被操作端搜索，必须与后端 clippedPath 完全一致。
+        for (var n = 0; n + 1 < c.path.length; ++n) {
+            var segment = c.shrinkFront ? n : c.path.length - 2 - n
+            var a = c.path[segment], b = c.path[segment + 1]
+            if ((a.x === b.x && p.x === a.x && p.y >= Math.min(a.y, b.y) && p.y <= Math.max(a.y, b.y)) ||
+                (a.y === b.y && p.y === a.y && p.x >= Math.min(a.x, b.x) && p.x <= Math.max(a.x, b.x))) {
+                p.segment = segment
+                break
+            }
+        }
+        var endpoint = { x: p.x, y: p.y }
+        var clipped = c.shrinkFront ? [endpoint].concat(c.path.slice(p.segment + 1))
+                                   : c.path.slice(0, p.segment + 1).concat([endpoint])
+        clipped = clipped.filter(function(point, index, points) {
+            return index === 0 || point.x !== points[index - 1].x || point.y !== points[index - 1].y
+        })
+        return { id: c.id, shrinkFront: c.shrinkFront, x: p.x, y: p.y, path: clipped }
     }
+    return null
 }
 
 // 定义"更新正交连线预览的拐角方向"辅助函数
@@ -178,9 +169,9 @@ function updateWiringDirection(main, sx, sy, wx, wy) {
     // 方向常量：1 横优先，2 竖优先
     var H = 1, V = 2
     // 起终点是否同 x
-    var sameX = Math.abs(wx - sx) < 0.5
+    var sameX = wx === sx
     // 起终点是否同 y
-    var sameY = Math.abs(wy - sy) < 0.5
+    var sameY = wy === sy
     // 当前方向
     var dir = main.wiringDirection
     // 尚未确定方向：按位移主分量确定
@@ -206,34 +197,10 @@ function updateWiringDirection(main, sx, sy, wx, wy) {
     main.wiringDirection = dir
 }
 
-// 定义"点是否严格落在正交线段内部"辅助函数（容差 2.0，吸收缩放误差）
+// 整数世界坐标的严格段内判断，不使用屏幕命中容差。
 function pointOnSegInterior(px, py, x1, y1, x2, y2) {
-    // 内部判断容差
-    var tol = 2.0
-    // 水平段：y 需贴合，x 需严格在区间内部
-    if (Math.abs(y1 - y2) < 0.5) {
-        // 点 y 与线段 y 差超过容差则不在线上
-        if (Math.abs(py - y1) > 0.5) return false
-        // 线段 x 区间下界
-        var lo = Math.min(x1, x2)
-        // 线段 x 区间上界
-        var hi = Math.max(x1, x2)
-        // 点 x 必须严格落在区间内部
-        return px > lo + tol && px < hi - tol
-    }
-    // 垂直段：x 需贴合，y 需严格在区间内部
-    if (Math.abs(x1 - x2) < 0.5) {
-        // 点 x 与线段 x 差超过容差则不在线上
-        if (Math.abs(px - x1) > 0.5) return false
-        // 线段 y 区间下界
-        var lo2 = Math.min(y1, y2)
-        // 线段 y 区间上界
-        var hi2 = Math.max(y1, y2)
-        // 点 y 必须严格落在区间内部
-        return py > lo2 + tol && py < hi2 - tol
-    }
-    // 非正交段不做判断
-    return false
+    return (y1 === y2 && py === y1 && px > Math.min(x1, x2) && px < Math.max(x1, x2)) ||
+           (x1 === x2 && px === x1 && py > Math.min(y1, y2) && py < Math.max(y1, y2))
 }
 
 // 定义"查找起点处可缩短的连线"辅助函数：起点落在某线端点附近即为其缩短候选
@@ -252,11 +219,10 @@ function findShortenTargetAt(main, wx, wy) {
         var p0 = w.path[0]
         // 末顶点
         var pn = w.path[w.path.length - 1]
-        // 起点与首/末顶点在 3px 内重合则记为候选
-        if ((Math.abs(p0.x - wx) < 3 && Math.abs(p0.y - wy) < 3) ||
-            (Math.abs(pn.x - wx) < 3 && Math.abs(pn.y - wy) < 3)) {
-            // 加入候选列表
-            wids.push(w.id)
+        // 操作端由手势起点精确确定；保存原路径供整个手势裁剪。
+        if ((p0.x === wx && p0.y === wy) || (pn.x === wx && pn.y === wy)) {
+            wids.push({ id: w.id, shrinkFront: p0.x === wx && p0.y === wy,
+                        path: w.path.map(function(p) { return { x: p.x, y: p.y } }) })
         }
     }
     // 返回候选列表
@@ -289,6 +255,7 @@ function startWiringFromPort(main, cv, onPort) {
     main.wiringDirection = 0
     // 清空选中连线
     main.selectedWireId = ""
+    main.selectedIds = []
 }
 
 // 定义"从连线中间开始拉线（T 型接入）"辅助函数
@@ -315,6 +282,7 @@ function startWiringFromWire(main, cv, snapPt) {
     main.wiringDirection = 0
     // 清空选中连线
     main.selectedWireId = ""
+    main.selectedIds = []
 }
 
 // 定义"控制模式下非二进制输入框递增"辅助函数
@@ -397,6 +365,13 @@ function incrementNonBinaryInput(main, comp, base) {
     }
 }
 
+// 前后端各记录一次起点，后续只传累计目标，不假定被拒绝的更新已应用。
+function beginSelectionDrag(main, wp) {
+    main.draggingSelection = main.circuitRef.beginSelectionMove(main.selectedIds)
+    main.lastDragWorldX = wp.x
+    main.lastDragWorldY = wp.y
+}
+
 // 定义"鼠标按下"处理函数
 function onPressed(main, cv, mouse) {
     // 记录鼠标 x，供平移使用
@@ -459,11 +434,12 @@ function onPressed(main, cv, mouse) {
             // 记录选中连线 id
             main.selectedWireId = wid
             // 清空多选
-            main.selectedIds = []
+            if (main.selectedIds.indexOf(wid) < 0) main.selectedIds = [wid]
             // 清空单选元件
             main.selectedCompId = ""
             // 状态提示
-            main.statusText = "已选中连线（Delete 删除，Ctrl+C 复制）"
+            main.statusText = "已选中连线（拖动移动整线，Delete 删除）"
+            if (editable) beginSelectionDrag(main, wp)
             // 请求重绘
             cv.requestPaint()
             // 处理结束
@@ -481,14 +457,8 @@ function onPressed(main, cv, mouse) {
                 if (main.selectedIds.indexOf(c.id) < 0) main.selectedIds = [c.id]
                 // 清空选中连线
                 main.selectedWireId = ""
-                // 打断撤销合并，开始新的拖动会话
-                main.circuitRef.breakUndoMerge()
-                // 进入拖动选中状态
-                main.draggingSelection = true
-                // 记录拖动起点世界 x
-                main.lastDragWorldX = wp.x
-                // 记录拖动起点世界 y
-                main.lastDragWorldY = wp.y
+                main.selectedCompId = ""
+                if (editable) beginSelectionDrag(main, wp)
                 // 请求重绘
                 cv.requestPaint()
                 // 处理结束
@@ -497,6 +467,7 @@ function onPressed(main, cv, mouse) {
         }
         // 空白处按下：清空选择
         main.selectedIds = []
+        main.selectedCompId = ""
         // 清空选中连线
         main.selectedWireId = ""
         // 进入框选状态
@@ -515,14 +486,6 @@ function onPressed(main, cv, mouse) {
         return
     }
 
-    // 编辑模式：先探测起点处的缩短候选
-    var shortenCandidates = []
-    // 仅在可编辑的编辑模式下探测
-    if (editable && main.mode === "edit") {
-        // 查找起点处可缩短的连线
-        shortenCandidates = findShortenTargetAt(main, wp.x, wp.y)
-    }
-
     // 编辑模式：端口优先于元件
     if (editable && main.mode === "edit") {
         // 命中端口
@@ -531,8 +494,8 @@ function onPressed(main, cv, mouse) {
         if (onPort) {
             // 从端口开始拉线
             startWiringFromPort(main, cv, onPort)
-            // 记录缩短候选
-            main.shortenWireCandidates = shortenCandidates
+            // 候选列表在这里捕获，并在整个拉线手势中保持原折线路径。
+            main.shortenWireCandidates = findShortenTargetAt(main, main.wiringStartX, main.wiringStartY)
             // 状态提示
             main.statusText = "从端口引出（拖回原线内部可缩短）"
             // 请求重绘
@@ -556,7 +519,7 @@ function onPressed(main, cv, mouse) {
                     // 从线中间开始拉线
                     startWiringFromWire(main, cv, snapPt)
                     // 保留缩短候选：用户可能想拖回原线内部缩短
-                    main.shortenWireCandidates = shortenCandidates
+                    main.shortenWireCandidates = findShortenTargetAt(main, main.wiringStartX, main.wiringStartY)
                     // 状态提示
                     main.statusText = "从线引出（T 型接入，拖回线上方可缩短）"
                     // 请求重绘
@@ -580,6 +543,7 @@ function onPressed(main, cv, mouse) {
         // 点落在元件包围盒内
         if (Math.abs(wp.x - c4.x) < size4.w/2 && Math.abs(wp.y - c4.y) < size4.h/2) {
             // 选中元件
+            main.selectedIds = []
             main.selectedCompId = c4.id
             // 清空选中连线
             main.selectedWireId = ""
@@ -628,6 +592,7 @@ function onPressed(main, cv, mouse) {
     }
 
     // 空白处：清空选择
+    main.selectedIds = []
     main.selectedCompId = ""
     // 清空选中连线
     main.selectedWireId = ""
@@ -655,19 +620,10 @@ function onPositionChanged(main, cv, mouse) {
     if (main.draggingSelection) {
         // 鼠标世界坐标
         var wp = cv.screenToWorld(mouse.x, mouse.y)
-        // 相对上次的世界位移 x
-        var dwx = wp.x - main.lastDragWorldX
-        // 相对上次的世界位移 y
-        var dwy = wp.y - main.lastDragWorldY
-        // 有实际位移才移动
-        if (Math.abs(dwx) > 0.001 || Math.abs(dwy) > 0.001) {
-            // 批量相对移动选中元件
-            main.circuitRef.moveSelection(main.selectedIds, dwx, dwy)
-            // 更新上次拖动世界 x
-            main.lastDragWorldX = wp.x
-            // 更新上次拖动世界 y
-            main.lastDragWorldY = wp.y
-        }
+        // 从手势起点计算累计网格位移，后端始终从起始几何计算。
+        var totalX = roundInteger((wp.x - main.lastDragWorldX) / 10) * 10
+        var totalY = roundInteger((wp.y - main.lastDragWorldY) / 10) * 10
+        main.circuitRef.updateSelectionMove(totalX, totalY)
         // 拖动选中处理结束
         return
     }
@@ -699,7 +655,7 @@ function onPositionChanged(main, cv, mouse) {
         // 鼠标世界坐标
         var wp3 = cv.screenToWorld(mouse.x, mouse.y)
         // 移动元件到该坐标
-        main.circuitRef.moveComponent(cv.dragCompId, wp3.x, wp3.y)
+        main.circuitRef.moveComponent(cv.dragCompId, roundInteger(wp3.x / 10) * 10, roundInteger(wp3.y / 10) * 10)
         // 拖动元件处理结束
         return
     }
@@ -721,6 +677,7 @@ function onPositionChanged(main, cv, mouse) {
 
 // 定义"鼠标释放"处理函数
 function onReleased(main, cv, mouse) {
+    if (main.draggingSelection) onPositionChanged(main, cv, mouse)
     // 框选结束：根据框范围选中元件
     if (main.boxSelecting) {
         // 框左上角 x
@@ -748,10 +705,23 @@ function onReleased(main, cv, mouse) {
                 if (sp.x >= x1 && sp.x <= x2 && sp.y >= y1 && sp.y <= y2)
                     ids.push(c.id)
             }
-            // 写回多选
+            // 整条折线顶点全部落在框内才加入，保持线路整体身份。
+            for (var wi = 0; wi < main.cachedWires.length; ++wi) {
+                var wire = main.cachedWires[wi]
+                var points = wire.path || []
+                if (points.length < 2 && wire.fromComp && wire.toComp)
+                    points = [cv.portPos(wire.fromComp, wire.fromPort, true), cv.portPos(wire.toComp, wire.toPort, false)]
+                var contained = points.length >= 2
+                for (var pi = 0; pi < points.length && contained; ++pi) {
+                    var ps = cv.worldToScreen(points[pi].x, points[pi].y)
+                    contained = ps.x >= x1 && ps.x <= x2 && ps.y >= y1 && ps.y <= y2
+                }
+                if (contained) ids.push(wire.id)
+            }
+            // 写回元件与线路混合集合
             main.selectedIds = ids
             // 状态提示
-            main.statusText = "已选中 " + ids.length + " 个元件"
+            main.statusText = "已选中 " + ids.length + " 项"
         }
         // 退出框选
         main.boxSelecting = false
@@ -770,43 +740,12 @@ function onReleased(main, cv, mouse) {
         // 终点命中的端口（可能为 null）
         var endPort = sp2.port
 
-        // 取缩短候选线
-        var cands = main.shortenWireCandidates || []
-        // 是否已执行缩短
-        var didShorten = false
-        // 遍历缩短候选
-        for (var ci = 0; ci < cands.length; ci++) {
-            // 候选线 id
-            var candId = cands[ci]
-            // 取候选线 map
-            var sw = main.circuitRef.getWire(candId)
-            // 无效候选跳过
-            if (!sw || !sw.path || sw.path.length < 2) continue
-            // 终点是否落在该线内部
-            var inside = false
-            // 遍历该线每段
-            for (var k = 0; k + 1 < sw.path.length; k++) {
-                // 判断终点是否落在该段内部
-                if (pointOnSegInterior(endX, endY,
-                                       sw.path[k].x, sw.path[k].y,
-                                       sw.path[k+1].x, sw.path[k+1].y)) {
-                    // 命中内部
-                    inside = true
-                    // 停止遍历
-                    break
-                }
-            }
-            // 命中内部则缩短该线
-            if (inside) {
-                // 缩短该线末端到终点
-                main.circuitRef.shortenWireEnd(candId, endX, endY)
-                // 状态提示
-                main.statusText = "已缩短连线"
-                // 标记已缩短
-                didShorten = true
-                // 只缩短一条，跳出
-                break
-            }
+        // 与预览使用同一原路径投影和显式操作端。
+        var shortened = shortenPreview(main, endX, endY)
+        var didShorten = shortened !== null
+        if (shortened) {
+            main.circuitRef.shortenWireEnd(shortened.id, shortened.shrinkFront, shortened.x, shortened.y)
+            main.statusText = "已缩短连线"
         }
 
         // 未缩短则按线型创建连线
@@ -872,8 +811,7 @@ function onReleased(main, cv, mouse) {
                     }
                 }
                 // 有实际拖动距离才创建
-                var hasDragged = (Math.abs(endX - startX) > 0.5 ||
-                                  Math.abs(endY - startY) > 0.5)
+                var hasDragged = (endX !== startX || endY !== startY)
                 // 有拖动才创建
                 if (hasDragged) {
                     // 取拐角方向，未定则默认横优先
@@ -909,12 +847,14 @@ function onReleased(main, cv, mouse) {
     cv.dragCompId = ""
     // 清理拖动选中状态
     main.draggingSelection = false
-    // 打断撤销合并，结束本次手势
+    // 结束移动手势，并隔离其他交互的撤销合并
+    main.circuitRef.endSelectionMove()
     main.circuitRef.breakUndoMerge()
 }
 
 // 定义"操作被取消"处理函数：清理所有临时交互状态
 function onCanceled(main, cv) {
+    main.circuitRef.endSelectionMove()
     // 清理平移
     cv.panning = false
     // 清理拖动元件

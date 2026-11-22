@@ -120,14 +120,14 @@ ApplicationWindow {
     // 正交拉线拐角方向：0 未定，1 横优先，2 竖优先
     // ★ 新增：起点处命中的 wire 端点（缩短候选）
     property var shortenWireCandidates: []
-    // 起点处可缩短的连线 id 列表
+    // 候选 {id, shrinkFront, path}：保存操作端及原始整数折线
 
     property string selectedCompId: ""
     // 单选元件 id
     property var selectedComp: null
     // 单选元件 map
     property var selectedIds: []
-    // 多选元件 id 列表
+    // 多选元件/线路 id 列表（按模型 ID 区分）
     property string selectedSubId: ""
     // 选中子电路 id
     property string selectedWireId: ""
@@ -165,9 +165,9 @@ ApplicationWindow {
     property bool draggingSelection: false
     // 是否正在拖动选中集合
     property real lastDragWorldX: 0
-    // 上次拖动世界 x
+    // 手势起始世界 x
     property real lastDragWorldY: 0
-    // 上次拖动世界 y
+    // 手势起始世界 y
 
     readonly property int windowHeight: height
     // 窗口高度只读别名
@@ -234,6 +234,7 @@ ApplicationWindow {
             // 刷新选中信息
         }
         onContextChanged: {
+            circuit.endSelectionMove()
             // 上下文切换（进入/离开子电路等）
             canvasView.requestPaint()
             // 请求重绘
@@ -241,6 +242,8 @@ ApplicationWindow {
             // 清空单选元件
             root.selectedComp = null
             // 清空单选元件引用
+            root.draggingSelection = false
+            root.boxSelecting = false
             root.wiring = false
             // 取消拉线
             root.placingType = ""
@@ -441,7 +444,12 @@ ApplicationWindow {
         // 非只读时启用
         onActivated: {
             // 触发删除
-            if (selectedWireId !== "") {
+            if (selectedIds.length > 0) {
+                // 元件与线路统一批量删除，一次撤销恢复整个选中集合。
+                circuit.removeComponents(selectedIds.slice())
+                selectedIds = []
+                selectedWireId = ""
+            } else if (selectedWireId !== "") {
                 // 有选中连线则删连线
                 circuit.removeWire(selectedWireId)
                 // 删除该连线
@@ -502,6 +510,8 @@ ApplicationWindow {
             // 无剪贴板内容则忽略
             var newIds = circuit.pasteSelection(clipboardData, 30, 30)
             // 粘贴并偏移 30,30
+            selectedCompId = ""
+            selectedWireId = ""
             selectedIds = newIds
             // 选中新粘贴的元件
             statusText = "已粘贴 " + newIds.length + " 项"
@@ -520,15 +530,7 @@ ApplicationWindow {
         // 触发全选
     }
 
-    // 定义"全选当前上下文所有元件"函数
-    // 说明：
-    //   · 只选择元件（含子电路实例），不选连线——连线的多选在现有 UI 里
-    //     没有独立的集合，用 selectedWireId 单条操作更简单；
-    //   · 同时清空 selectedCompId / selectedWireId / selectedSubId，
-    //     保证"全选"这一动作不会与单选/连线/子电路的属性面板互相打架；
-    //   · 走 selectedIds 这条路，是与框选多选（onReleased 里 boxSelecting
-    //     分支）完全一致的机制，右键菜单/复制/删除等都已按 selectedIds
-    //     处理，无需新增分支。
+    // 全选使用元件/线路混合集合，与框选、移动、复制保持一致。
     function doSelectAll() {
         // 只读模式忽略
         if (circuit.isViewOnly) return
@@ -538,6 +540,7 @@ ApplicationWindow {
         var comps = circuit.components
         // 逐个收集
         for (var i = 0; i < comps.length; i++) ids.push(comps[i].id)
+        for (var wi = 0; wi < cachedWires.length; ++wi) ids.push(cachedWires[wi].id)
         // 写回多选集合
         selectedIds = ids
         // 清空单选元件
@@ -549,13 +552,19 @@ ApplicationWindow {
         // 清空选中子电路
         selectedSubId = ""
         // 状态栏提示
-        statusText = "已全选 " + ids.length + " 个元件"
+        statusText = "已全选 " + ids.length + " 项"
         // 请求重绘（让画布上的选中高亮刷新）
         canvasView.requestPaint()
     }
 
     // 定义"刷新选中信息"函数：清理失效选中并同步属性面板
     function refreshSel() {
+        // 删除、撤销及上下文变化后，清理元件/线路混合集合。
+        var valid = {}
+        for (var ci = 0; ci < cachedComps.length; ++ci) valid[cachedComps[ci].id] = true
+        for (var wi = 0; wi < cachedWires.length; ++wi) valid[cachedWires[wi].id] = true
+        var retained = selectedIds.filter(function(id) { return valid[id] === true })
+        if (retained.length !== selectedIds.length) selectedIds = retained
         // 选中元件已被删除则清空
         if (selectedCompId !== "" && !compById[selectedCompId]) {
             selectedCompId = ""

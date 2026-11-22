@@ -1,5 +1,7 @@
 #include "model/Circuit.h"
 // 引入本文件要实现的 Circuit 类完整声明：定义成员函数前必须看到类定义
+#include "core/Grid.h"
+// 引入整数网格几何：模型中的连接判断只使用离散位置
 #include "core/IdAllocator.h"
 // 引入 ID 分配器：addOrthoWire/addWire 给新连线分配唯一 id 时使用
 #include "logic/ComponentLogic.h"
@@ -21,12 +23,7 @@
 namespace {
 // 定义"构造一个 {x,y} 点 map"的辅助函数，供 path 顶点复用
 QVariantMap makePoint(double x, double y) {
-    // 准备点 map
-    QVariantMap p;
-    // 写入 x 坐标
-    p["x"] = x; p["y"] = y;
-    // 返回点 map
-    return p;
+    return Grid::point(Grid::snap(x), Grid::snap(y));
 }
 // 定义"点到线段最短距离平方"的辅助函数，用于 ortho 线命中测试
 double pointSegDistSq(double px, double py, double x1, double y1, double x2, double y2) {
@@ -197,13 +194,27 @@ QString Circuit::addOrthoWire(double fromX, double fromY,
                               double toX, double toY,
                               int direction)
 {
-    // 只读浏览模式禁止添加连线，返回空 id
-    if (m_viewOnly) return QString();
+    // 非法世界坐标不能进入持久化拓扑。
+    if (m_viewOnly || !Grid::valid(fromX) || !Grid::valid(fromY) ||
+        !Grid::valid(toX) || !Grid::valid(toY)) return QString();
 
-    // 起点处做端口命中测试（容差 15px）
-    QVariantMap fPort = findPortAt(fromX, fromY, 15.0);
-    // 终点处做端口命中测试（容差 15px）
-    QVariantMap tPort = findPortAt(toX, toY, 15.0);
+    // 端口命中使用精确整数位置；鼠标容差只应由前端命中层处理。
+    fromX = Grid::snap(fromX); fromY = Grid::snap(fromY);
+    toX = Grid::snap(toX); toY = Grid::snap(toY);
+    QVariantMap fPort = findPortAt(fromX, fromY, 1);
+    QVariantMap tPort = findPortAt(toX, toY, 1);
+    // 自由端吸附 10px；已在线上的整数目标保留原行列。
+    auto snapFree = [&](double& x, double& y, const QVariantMap& port) {
+        if (!port.isEmpty()) return;
+        for (const auto& value : currentCtx().wires) {
+            auto wire = value.toMap();
+            if (wire.value("wireType").toString() == "ortho" &&
+                Grid::onPath(int(x), int(y), wire.value("path").toList())) return;
+        }
+        x = Grid::snapStep(x); y = Grid::snapStep(y);
+    };
+    snapFree(fromX, fromY, fPort);
+    snapFree(toX, toY, tPort);
 
     // 起点元件 id（未命中端口时为空）
     QString fromComp, toComp;
@@ -260,7 +271,7 @@ QString Circuit::addOrthoWire(double fromX, double fromY,
     }
 
     // 起终点几乎重合视为无效线，返回空 id
-    if (qAbs(fromX - toX) < 0.5 && qAbs(fromY - toY) < 0.5) return QString();
+    if (fromX == toX && fromY == toY) return QString();
 
     // 取当前上下文引用
     Context& ctx = currentCtx();
@@ -273,22 +284,17 @@ QString Circuit::addOrthoWire(double fromX, double fromY,
     path.append(makePoint(fromX, fromY));
 
     // 两端是否同一行
-    bool sameRow = qAbs(fromY - toY) < 0.5;
+    bool sameRow = fromY == toY;
     // 两端是否同一列
-    bool sameCol = qAbs(fromX - toX) < 0.5;
+    bool sameCol = fromX == toX;
     // 不在同一行也不在同一列：需要插入拐点形成 L 型
     if (!sameRow && !sameCol) {
-        // 准备拐点
-        QVariantMap corner;
-        // direction==2：先竖后横，拐点在 (fromX,toY)
+        // 方向仅决定首个拐点的离散走向；所有坐标均已经是整数。
         if (direction == 2) {
-            corner["x"] = fromX; corner["y"] = toY;
-            // 其它方向：先横后竖，拐点在 (toX,fromY)
+            path.append(Grid::point(int(fromX), int(toY)));
         } else {
-            corner["x"] = toX; corner["y"] = fromY;
+            path.append(Grid::point(int(toX), int(fromY)));
         }
-        // 插入拐点
-        path.append(corner);
     }
     // 最后放入终点
     path.append(makePoint(toX, toY));
@@ -325,97 +331,51 @@ QString Circuit::addOrthoWire(double fromX, double fromY,
 }
 
 // 定义"缩短线的一端到新坐标"接口：用于从已有线拉出新线后截断原线
-bool Circuit::shortenWireEnd(const QString& wireId, double newX, double newY) {
-    // 只读模式禁止修改
-    if (m_viewOnly) return false;
-    // 查连线索引
+bool Circuit::shortenWireEnd(const QString& wireId, bool shrinkFront, double newX, double newY) {
+    // 目标必须已经投影到原线；这里只做整数转换，不再次吸附到其它行列。
+    if (m_viewOnly || !Grid::valid(newX) || !Grid::valid(newY)) return false;
     int idx = indexOfWire(wireId);
-    // 连线不存在返回失败
     if (idx < 0) return false;
-    // 取当前上下文
     Context& ctx = currentCtx();
-    // 取出连线 map
     QVariantMap w = ctx.wires[idx].toMap();
-    // 只有 ortho 线支持缩短
     if (w.value("wireType").toString() != "ortho") return false;
-    // 取顶点列表
     QVariantList path = w.value("path").toList();
-    // 少于两个顶点不是有效线
     if (path.size() < 2) return false;
-    // 压撤销快照，合并键 "shorten:连线id"
+    const int x = Grid::snap(newX), y = Grid::snap(newY);
+    QVariantList cropped = Grid::clippedPath(path, shrinkFront, x, y);
+    // 空结果表示目标不在原路径上；相同路径表示没有发生裁剪。
+    if (cropped.isEmpty() || cropped == path) return false;
     pushUndo("shorten:" + wireId);
-    // 取首顶点（原前端）
-    QVariantMap p0 = path.first().toMap();
-    // 取末顶点（原末端）
-    QVariantMap p1 = path.last().toMap();
-    // 原前端坐标
-    double x0 = p0.value("x").toDouble(), y0 = p0.value("y").toDouble();
-    // 原末端坐标
-    double x1 = p1.value("x").toDouble(), y1 = p1.value("y").toDouble();
-    // 新坐标网格化到 10px
-    newX = std::round(newX / 10.0) * 10.0;
-    newY = std::round(newY / 10.0) * 10.0;
-    // 新点到原前端的距离
-    double d0 = std::hypot(x0 - newX, y0 - newY);
-    // 新点到原末端的距离
-    double d1 = std::hypot(x1 - newX, y1 - newY);
-    // 离前端更近则缩短前端，否则缩短末端
-    bool shrinkFront = (d0 <= d1);
-    // 保留不动的那一端坐标
-    double ox, oy;
-    // 缩短前端：保留原末端
-    if (shrinkFront) { ox = x1; oy = y1; }
-    // 缩短末端：保留原前端
-    else { ox = x0; oy = y0; }
-    // 新点与保留端几乎重合：整条线退化，直接删除
-    if (qAbs(ox - newX) < 0.5 && qAbs(oy - newY) < 0.5) {
-        // 从连线列表移除
+    if (cropped.size() < 2) {
         ctx.wires.removeAt(idx);
-        // 全量求值
-        evaluateAll(); emit changed(); emit structureChanged();
-        // 返回成功
-        return true;
-    }
-    // 准备新的顶点列表
-    QVariantList newPath;
-    // 缩短前端：新点作首顶点
-    if (shrinkFront) {
-        // 放入新首顶点
-        newPath.append(makePoint(newX, newY));
-        // 新点与保留端既不同行也不同列：插入拐点保持正交
-        if (qAbs(newX - ox) > 0.5 && qAbs(newY - oy) > 0.5) {
-            QVariantMap mid; mid["x"] = newX; mid["y"] = oy;
-            newPath.append(mid);
-        }
-        // 放入保留端
-        newPath.append(makePoint(ox, oy));
-        // 前端不再是端口绑定，清除 fromComp/fromPort
-        w.remove("fromComp"); w.remove("fromPort");
-        // 缩短末端：新点作末顶点
     } else {
-        // 放入保留端作首顶点
-        newPath.append(makePoint(ox, oy));
-        // 保留端与新点既不同行也不同列：插入拐点保持正交
-        if (qAbs(newX - ox) > 0.5 && qAbs(newY - oy) > 0.5) {
-            QVariantMap mid; mid["x"] = ox; mid["y"] = newY;
-            newPath.append(mid);
-        }
-        // 放入新末顶点
-        newPath.append(makePoint(newX, newY));
-        // 末端不再是端口绑定，清除 toComp/toPort
-        w.remove("toComp"); w.remove("toPort");
+        w["path"] = cropped;
+        auto bindingStillAtEndpoint = [&](const QString& side) {
+            const QString compKey = side + "Comp", portKey = side + "Port";
+            const QString compId = w.value(compKey).toString();
+            if (compId.isEmpty() || !w.contains(portKey)) return false;
+            const int ci = indexOfComponent(compId);
+            if (ci < 0) return false;
+            const auto component = ctx.components[ci].toMap();
+            const auto ports = side == "from" ? ComponentLogic::outputPorts(component)
+                                                 : ComponentLogic::inputPorts(component);
+            const int portIndex = w.value(portKey).toInt();
+            if (portIndex < 0 || portIndex >= ports.size()) return false;
+            const auto port = ports[portIndex].toMap();
+            const int px = Grid::snap(component.value("x").toDouble() + port.value("x").toDouble());
+            const int py = Grid::snap(component.value("y").toDouble() + port.value("y").toDouble());
+            const auto first = cropped.first().toMap(), last = cropped.last().toMap();
+            return (Grid::xi(first) == px && Grid::yi(first) == py)
+                || (Grid::xi(last) == px && Grid::yi(last) == py);
+        };
+        if (!bindingStillAtEndpoint("from")) { w.remove("fromComp"); w.remove("fromPort"); }
+        if (!bindingStillAtEndpoint("to")) { w.remove("toComp"); w.remove("toPort"); }
+        ctx.wires[idx] = w;
     }
-    // 写回新 path
-    w["path"] = newPath;
-    // 写回上下文
-    ctx.wires[idx] = w;
-    // 全量求值
     evaluateAll();
-    // 通知数据变化
+    emit geometryChanged();
     emit changed();
-    // 通知结构变化
     emit structureChanged();
-    // 返回成功
     return true;
 }
 
@@ -582,41 +542,26 @@ bool Circuit::setWirePathPoint(const QString& id, int index, double x, double y)
     if (index < 0 || index >= path.size()) return false;
     // 首末顶点是端口绑定点，不允许直接拖动
     if (index == 0 || index == path.size() - 1) return false;
-    // 压撤销快照，合并键 "editPath:连线id"
+    if (!Grid::valid(x) || !Grid::valid(y)) return false;
+    const int nx = Grid::snapStep(x), ny = Grid::snapStep(y);
+    const auto old = path[index].toMap();
+    if (Grid::xi(old) == nx && Grid::yi(old) == ny) return false;
+    QVariantList edited;
+    auto append = [&](const QVariantMap& p) {
+        auto q = Grid::point(Grid::xi(p), Grid::yi(p));
+        if (edited.isEmpty() || edited.last().toMap() != q) edited.append(q);
+    };
+    for (int i = 0; i < index; ++i) append(path[i].toMap());
+    const auto prev = path[index - 1].toMap(), next = path[index + 1].toMap();
+    // 两侧分别沿编辑前的方向接续，绑定端点不变；不按新点距离猜方向。
+    if (Grid::yi(prev) == Grid::yi(old)) append(Grid::point(nx, Grid::yi(prev)));
+    else append(Grid::point(Grid::xi(prev), ny));
+    append(Grid::point(nx, ny));
+    if (Grid::yi(next) == Grid::yi(old)) append(Grid::point(Grid::xi(next), ny));
+    else append(Grid::point(nx, Grid::yi(next)));
+    for (int i = index + 1; i < path.size(); ++i) append(path[i].toMap());
     pushUndo("editPath:" + id);
-    // 新坐标网格化到 10px
-    x = std::round(x / 10.0) * 10.0;
-    y = std::round(y / 10.0) * 10.0;
-    // 取出被拖动顶点
-    QVariantMap pt = path[index].toMap();
-    // 写入新坐标
-    pt["x"] = x; pt["y"] = y;
-    // 写回顶点列表
-    path[index] = pt;
-    // 存在前后相邻点则联动修正，保持正交
-    if (index - 1 >= 0 && index + 1 < path.size()) {
-        // 前一点
-        QVariantMap prev = path[index - 1].toMap();
-        // 后一点
-        QVariantMap next = path[index + 1].toMap();
-        // 前一点坐标
-        double px = prev.value("x").toDouble(), py = prev.value("y").toDouble();
-        // 判断与前一点之间原本更偏横向还是纵向：横向距离小于等于纵向即视为横向
-        bool horiz = (qAbs(px - x) <= qAbs(py - y));
-        // 横向段：保持水平，前一点 y 跟新 y，后一点 x 跟新 x
-        if (horiz) {
-            // 前一点非首点才联动（首点是端口绑定点不能动）
-            if (index - 1 != 0) { prev["y"] = y; path[index - 1] = prev; }
-            // 后一点非末点才联动（末点是端口绑定点不能动）
-            if (index + 1 != (int)path.size() - 1) { next["x"] = x; path[index + 1] = next; }
-            // 纵向段：保持竖直，前一点 x 跟新 x，后一点 y 跟新 y
-        } else {
-            // 前一点非首点才联动
-            if (index - 1 != 0) { prev["x"] = x; path[index - 1] = prev; }
-            // 后一点非末点才联动
-            if (index + 1 != (int)path.size() - 1) { next["y"] = y; path[index + 1] = next; }
-        }
-    }
+    path = edited;
     // 写回 path
     w["path"] = path;
     // 写回上下文

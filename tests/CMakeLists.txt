@@ -10,6 +10,7 @@ function(logicsim_add_test path)
     add_test(NAME ${target_name} COMMAND ${target_name})
 endfunction()
 
+logicsim_add_test(core/test_grid                 LIBS logicsim_core)
 logicsim_add_test(core/test_value_codec          LIBS logicsim_core)
 logicsim_add_test(core/test_circuit_context      LIBS logicsim_core)
 logicsim_add_test(core/test_id_allocator         LIBS logicsim_core)

@@ -2690,6 +2690,7 @@ void Circuit::breakUndoMerge() {
 // ——
 
 void Circuit::undo() {
+    endSelectionMove();
     // 定义 undo：撤销一步
 
     CircuitUndoData* d = und();
@@ -2751,6 +2752,7 @@ void Circuit::undo() {
 // ——
 
 void Circuit::redo() {
+    endSelectionMove();
     // 定义 redo：重做一步
 
     CircuitUndoData* d = und();

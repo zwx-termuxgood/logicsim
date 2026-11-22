@@ -2,6 +2,8 @@
 #include "model/Circuit.h"
 // 引入 ID 分配器：addComponent 里给新元件分配唯一 id、addOrthoWire 等给连线分配 id 都要用它
 #include "core/IdAllocator.h"
+// 统一使用整数坐标与 10px 移动网格
+#include "core/Grid.h"
 // 引入元件逻辑库：查询元件端口几何（outputPorts/inputPorts）以及端口数量都委托给它，保证端口规则唯一来源
 #include "logic/ComponentLogic.h"
 // 引入事件引擎：仿真运行时需要 rebuildEventEngine、triggerInputString/Bit、run 等接口
@@ -13,27 +15,19 @@
 #include "move/MoveResult.h"
 // 引入 QVariantMap：每个元件/连线都以 map 表示，用字符串 key 存取字段
 #include <QVariantMap>
-// 引入 QSet：用于去重集合，如删除元件时收集端口位置、批量删除时收集 id、
-// 移动时收集"本次移动的元件集合"
+// 引入 QSet：用于去重、记录本次移动的元件和连线 ID
 #include <QSet>
-// 引入 QString：元件 id、类型、名称、二进制串等都用它
 #include <QString>
-// 引入 Qt 全局定义：qAbs、qMax、qBound 等工具函数在此声明
 #include <QtGlobal>
-// 引入 QDebug：调试输出用（本文件保留 include 以便后续加日志）
-#include <QDebug>
-// 引入 QPointF：计算端口新坐标、返回浮点二维点时使用
-#include <QPointF>
-// 引入 QList：QList<QPointF> 收集端口坐标点用
 #include <QList>
-// 引入 C 数学库：std::round 用于端口位置取整做键、比较坐标是否相等
-#include <cmath>
+#include <algorithm>
+#include <utility>
 
 // 定义"添加元件"接口：类型、位置、位宽、输入数、子电路 id（仅 sub 类型用）
 QString Circuit::addComponent(const QString& type, double x, double y,
                               int bitWidth, int inputCount, const QString& subId) {
     // 浏览子电路（只读）模式下禁止编辑，直接返回空 id 表示失败
-    if (m_viewOnly) return QString();
+    if (m_viewOnly || !Grid::valid(x) || !Grid::valid(y)) return QString();
     // 位宽下限钳到 1：0 位或负位没有意义，会破坏位运算/格式化逻辑
     if (bitWidth < 1) bitWidth = 1;
     // 位宽上限钳到 64：内部用 quint64/二进制串表示，超过 64 位无法安全承载
@@ -56,7 +50,7 @@ QString Circuit::addComponent(const QString& type, double x, double y,
     // 写入类型字段
     c["type"] = type;
     // 写入世界坐标位置
-    c["x"] = x; c["y"] = y;
+    c["x"] = Grid::snap(x); c["y"] = Grid::snap(y);
     // 写入（已钳位的）位宽
     c["bitWidth"] = bitWidth;
     // 写入（已钳位的）输入端口数
@@ -288,8 +282,15 @@ void Circuit::removeComponents(const QStringList& ids) {
         // 命中任一即置 true 并提前退出
         if (idSet.contains(cv.toMap().value("id").toString())) { any = true; break; }
     }
+    // 选择集合也包含线路；仅选线时同样允许批量删除。
+    if (!any) {
+        for (const auto& wv : currentCtx().wires) {
+            if (idSet.contains(wv.toMap().value("id").toString())) { any = true; break; }
+        }
+    }
     // 一个都不存在就没必要压撤销/改数据
     if (!any) return;
+    endSelectionMove();
     // 压撤销快照（整批一次快照，撤销时整批恢复）
     pushUndo();
     // 取当前上下文
@@ -312,14 +313,13 @@ void Circuit::removeComponents(const QStringList& ids) {
     // 元件集合变化，子电路实例缓存失效
     m_ctxSubInstCache.clear();
     //
-    // 批量删除同样采用"ortho 保留 + bezier 删除"的策略：
-    // 逐个判断每条线的线型，ortho 线只清除指向被删元件的绑定，
-    // bezier 线才整条删除。详见 removeComponent 处的详细说明。
-    //
-    // 倒序遍历连线
+    // 显式选中的线路整条删除；其余线路沿用元件删除后的绑定清理规则。
     for (int i = ctx.wires.size() - 1; i >= 0; --i) {
-        // 取出连线 map
         QVariantMap w = ctx.wires[i].toMap();
+        if (idSet.contains(w.value("id").toString())) {
+            ctx.wires.removeAt(i);
+            continue;
+        }
         // 取线型，缺省回退 bezier
         QString wt = w.value("wireType").toString();
         if (wt.isEmpty()) wt = "bezier";
@@ -360,259 +360,226 @@ void Circuit::removeComponents(const QStringList& ids) {
     emit structureChanged();
 }
 
-// 定义"移动元件/元件组后修正其相连 ortho 线"的辅助函数
-// 修复点：签名由"单个 movedId"扩展为"移动集合 + 位移"，用于区分两种场景：
-//   · 两端元件都在 movedIds 内 → 该 ortho 线整条 path 逐顶点平移 (dx, dy)，
-//     保持折线形状不变。解决多段折线拖动时"只有两头跟随、中间拐点全不动"
-//     的脱节问题。
-//   · 只有一端在 movedIds 内 → 走原逻辑，只调整该端首/末顶点与其
-//     相邻拐点，保持直角，不破坏另一端的形态。
+// 移动前的真实端口决定随动范围，不沿整个电气网络传播位移。
 void Circuit::updateWiresForMovedComponent(Context& ctx, const QSet<QString>& movedIds,
                                            double dx, double dy) {
-    // 遍历当前上下文所有连线
+    const int sx = Grid::snap(dx), sy = Grid::snap(dy);
+    QList<QVariantMap> oldPorts;
+    for (const auto& cv : ctx.components) {
+        const auto c = cv.toMap();
+        if (!movedIds.contains(c.value("id").toString())) continue;
+        auto ports = ComponentLogic::outputPorts(c);
+        ports.append(ComponentLogic::inputPorts(c));
+        for (const auto& pv : ports) {
+            const auto p = pv.toMap();
+            const auto pos = Grid::point(Grid::xi(c) + Grid::xi(p) - sx,
+                                         Grid::yi(c) + Grid::yi(p) - sy);
+            if (!oldPorts.contains(pos)) oldPorts.append(pos);
+        }
+    }
+    auto same = [](const QVariantMap& a, const QVariantMap& b) {
+        return Grid::xi(a) == Grid::xi(b) && Grid::yi(a) == Grid::yi(b);
+    };
+    auto movedPort = [&](const QVariantMap& p) {
+        for (const auto& port : oldPorts) if (same(p, port)) return true;
+        return false;
+    };
+    auto translated = [&](const QVariantMap& p) {
+        return Grid::point(Grid::xi(p) + sx, Grid::yi(p) + sy);
+    };
+    // 单端移动时先按原首段方向接到原相邻点，远端及后续折点不动。
+    auto moveEnd = [&](QVariantList path, bool front) {
+        if (!front) std::reverse(path.begin(), path.end());
+        const auto a = path[0].toMap(), b = path[1].toMap();
+        const auto n = translated(a);
+        const bool vertical = Grid::xi(a) == Grid::xi(b);
+        const auto corner = vertical ? Grid::point(Grid::xi(n), Grid::yi(b))
+                                     : Grid::point(Grid::xi(b), Grid::yi(n));
+        path[0] = n;
+        if (!same(corner, n) && !same(corner, b)) path.insert(1, corner);
+        // 折回原顶点时去零长段，不调用会补斜段的通用规范化掩盖错误。
+        for (int j = path.size() - 1; j > 0; --j)
+            if (same(path[j].toMap(), path[j - 1].toMap())) path.removeAt(j);
+        if (!front) std::reverse(path.begin(), path.end());
+        return path;
+    };
+    const QVariantList originalWires = ctx.wires;
     for (int i = 0; i < ctx.wires.size(); ++i) {
-        // 取出连线 map
-        QVariantMap w = ctx.wires[i].toMap();
-        // 只有 ortho 线有显式 path 需要随动；bezier 两端实时算，无需修正
+        auto w = ctx.wires[i].toMap();
         if (w.value("wireType").toString() != "ortho") continue;
-        // 连线起点元件 id
-        QString fromComp = w.value("fromComp").toString();
-        // 连线终点元件 id
-        QString toComp = w.value("toComp").toString();
-        // 起点是否在本次移动集合内（空 fromComp 不参与判定，
-        // 防止把"悬空端"误判为被移动元件）
-        bool fromMoved = !fromComp.isEmpty() && movedIds.contains(fromComp);
-        // 终点是否在本次移动集合内（空 toComp 同理不参与判定）
-        bool toMoved   = !toComp.isEmpty() && movedIds.contains(toComp);
-        // 两端都不在集合内，这条线不用管
-        if (!fromMoved && !toMoved) continue;
-        //
-        // 取出 ortho 线顶点列表
-        QVariantList path = w.value("path").toList();
-        // 少于两个顶点不是有效线，跳过
+        auto path = w.value("path").toList();
         if (path.size() < 2) continue;
-
-        // 核心修复：两端元件都在移动集合内 → 整条折线整体平移，
-        // 保持所有中间拐点与原形状一致。
-        if (fromMoved && toMoved) {
-            // 逐顶点累加位移，保持 path 的每一段长度与拐角方向不变
-            for (int j = 0; j < path.size(); ++j) {
-                // 取顶点 map
-                QVariantMap pt = path[j].toMap();
-                // 累加 x 位移
-                pt["x"] = pt.value("x").toDouble() + dx;
-                // 累加 y 位移
-                pt["y"] = pt.value("y").toDouble() + dy;
-                // 写回顶点
-                path[j] = pt;
-            }
-            // 写回整条 path
-            w["path"] = path;
-            // 写回上下文
-            ctx.wires[i] = w;
-            // 该线处理完毕，继续下一条
+        const bool selected = movedIds.contains(w.value("id").toString());
+        const bool front = movedPort(path.first().toMap());
+        const bool back = movedPort(path.last().toMap());
+        if (selected || (front && back)) {
+            // 显式选线与双端随动共用一次平移，混合选择绝不重复变换。
+            for (auto& pv : path) pv = translated(pv.toMap());
+        } else if (front || back) {
+            path = moveEnd(path, front);
+        } else {
             continue;
         }
-        //
-        // 走到这里说明只有一端被移动：保持原有"首/末 + 相邻点"修正逻辑。
-        // 内联 lambda：求某元件某端口移动后的新世界坐标
-        auto getNewPortPos = [&](const QString& compId, int port, bool isOut) -> QPointF {
-            // 按 id 查元件索引
-            int ci = ctx.indexOfComponent(compId);
-            // 元件不存在（可能刚被删）返回空点
-            if (ci < 0) return QPointF();
-            // 取出元件 map
-            QVariantMap c = ctx.components[ci].toMap();
-            // 按输出/输入取端口几何列表
-            QVariantList ports = isOut ? ComponentLogic::outputPorts(c) : ComponentLogic::inputPorts(c);
-            // 端口索引越界返回空点
-            if (port < 0 || port >= ports.size()) return QPointF();
-            // 取出该端口相对偏移
-            QVariantMap p = ports[port].toMap();
-            // 新世界 x = 元件新 x + 端口偏移 x；新世界 y = 元件新 y + 端口偏移 y
-            return QPointF(c.value("x").toDouble() + p.value("x").toDouble(),
-                           c.value("y").toDouble() + p.value("y").toDouble());
-        };
-        //
-        // 如果移动的是起点元件
-        if (fromMoved) {
-            // 取出起点端口索引
-            int fp = w.value("fromPort").toInt();
-            // 用 fromComp 查新端口坐标
-            QPointF np = getNewPortPos(fromComp, fp, true);
-            // 取出旧的首顶点
-            QVariantMap oldP0 = path[0].toMap();
-            // 记录旧首顶点 x
-            double oldX = oldP0.value("x").toDouble();
-            // 准备新的首顶点
-            QVariantMap newP0;
-            // 首顶点更新到新端口坐标
-            newP0["x"] = np.x(); newP0["y"] = np.y();
-            // 写回 path[0]
-            path[0] = newP0;
-            //
-            // 若还有第二点
-            if (path.size() >= 2) {
-                // 取出第二点
-                QVariantMap p1 = path[1].toMap();
-                // 取第二点 x
-                double p1x = p1.value("x").toDouble();
-                // 首段原本是否竖直
-                bool wasVertical = (qAbs(p1x - oldX) < 0.5);
-                // 原本竖直：第二点 x 跟着新首点 x
-                if (wasVertical) p1["x"] = np.x();
-                // 原本水平：第二点 y 跟着新首点 y
-                else p1["y"] = np.y();
-                // 写回 path[1]
-                path[1] = p1;
-            }
-        }
-        //
-        // 如果移动的是终点元件
-        if (toMoved) {
-            // 取出终点端口索引
-            int tp = w.value("toPort").toInt();
-            // 用 toComp 查新端口坐标
-            QPointF np = getNewPortPos(toComp, tp, false);
-            // 顶点总数
-            int n = path.size();
-            // 取出旧的末顶点
-            QVariantMap oldPn = path[n-1].toMap();
-            // 记录旧末顶点 x
-            double oldX = oldPn.value("x").toDouble();
-            // 准备新的末顶点
-            QVariantMap newPn;
-            // 末顶点更新到新端口坐标
-            newPn["x"] = np.x(); newPn["y"] = np.y();
-            // 写回 path[n-1]
-            path[n-1] = newPn;
-            //
-            // 若还有倒数第二点
-            if (n >= 2) {
-                // 取出倒数第二点
-                QVariantMap pn1 = path[n-2].toMap();
-                // 取倒数第二点 x
-                double pn1x = pn1.value("x").toDouble();
-                // 末段原本是否竖直
-                bool wasVertical = (qAbs(pn1x - oldX) < 0.5);
-                // 原本竖直：倒数第二点 x 跟着新末点 x
-                if (wasVertical) pn1["x"] = np.x();
-                // 原本水平：倒数第二点 y 跟着新末点 y
-                else pn1["y"] = np.y();
-                // 写回 path[n-2]
-                path[n-2] = pn1;
-            }
-        }
-        //
-        // 把修正后的 path 写回连线 map
         w["path"] = path;
-        // 把连线 map 写回上下文
+        // from/to 表示输出/输入而非 path 首尾，必须按实际端口几何验绑定。
+        for (const QString prefix : {QStringLiteral("from"), QStringLiteral("to")}) {
+            const QString key = prefix + "Comp";
+            if (!w.contains(key)) continue;
+            const int ci = ctx.indexOfComponent(w.value(key).toString());
+            bool aligned = false;
+            if (ci >= 0) {
+                const auto c = ctx.components[ci].toMap();
+                const auto ports = prefix == "from" ? ComponentLogic::outputPorts(c)
+                                                     : ComponentLogic::inputPorts(c);
+                const int pi = w.value(prefix + "Port").toInt();
+                if (pi >= 0 && pi < ports.size()) {
+                    const auto p = ports[pi].toMap();
+                    const auto pos = Grid::point(Grid::xi(c) + Grid::xi(p), Grid::yi(c) + Grid::yi(p));
+                    aligned = same(pos, path.first().toMap()) || same(pos, path.last().toMap());
+                }
+            }
+            if (!aligned) { w.remove(key); w.remove(prefix + "Port"); }
+        }
         ctx.wires[i] = w;
     }
+    // 端口原本接在线段内部时保留固定主干，只补一条端口接续支线。
+    // 不复制/移动整网，也不把未选中的主干折点拖走。
+    for (const auto& p : oldPorts) {
+        bool attached = false;
+        for (const auto& wv : originalWires) {
+            const auto w = wv.toMap();
+            if (w.value("wireType").toString() != "ortho" || movedIds.contains(w.value("id").toString())) continue;
+            const auto path = w.value("path").toList();
+            if (path.size() < 2 || same(p, path.first().toMap()) || same(p, path.last().toMap())) continue;
+            for (int j = 0; j + 1 < path.size(); ++j) {
+                const auto a = path[j].toMap(), b = path[j + 1].toMap();
+                if (Grid::onSegment(Grid::xi(p), Grid::yi(p), Grid::xi(a), Grid::yi(a), Grid::xi(b), Grid::yi(b))) {
+                    attached = true;
+                    break;
+                }
+            }
+            if (attached) break;
+        }
+        const auto n = translated(p);
+        for (int i = 0; attached && i < originalWires.size(); ++i) {
+            const auto old = originalWires[i].toMap();
+            const auto current = ctx.wires[i].toMap();
+            if (old != current || current.value("wireType").toString() != "ortho") continue;
+            // 沿主干移动时，新端口仍在线上，不生成重叠支线。
+            if (Grid::onPath(Grid::xi(n), Grid::yi(n), current.value("path").toList())) attached = false;
+        }
+        if (!attached) continue;
+        QVariantList path{p};
+        if (sx != 0 && sy != 0) path.append(Grid::point(Grid::xi(n), Grid::yi(p)));
+        path.append(n);
+        ctx.wires.append(QVariantMap{{"id", IdAllocator::nextWireId(ctx)},
+                                     {"wireType", "ortho"}, {"path", path}});
+    }
 }
 
-// 定义"把元件移动到绝对坐标"接口
+// 绝对位置只取整；位移吸附 10px，保留旧元件所在的精确整数行列。
 void Circuit::moveComponent(const QString& id, double x, double y) {
-    // 只读模式禁止移动
-    if (m_viewOnly) return;
-    // 查元件索引
-    int idx = indexOfComponent(id);
-    // 不存在则返回
+    if (m_viewOnly || !Grid::valid(x) || !Grid::valid(y)) return;
+    const int idx = indexOfComponent(id);
     if (idx < 0) return;
-    // 取当前上下文
-    Context& ctx = currentCtx();
-    // 取出元件 map
-    QVariantMap c = ctx.components[idx].toMap();
-    // 记录旧坐标
-    double ox = c.value("x").toDouble(), oy = c.value("y").toDouble();
-    // 新旧坐标几乎相同就当作没移动
-    if (qAbs(ox - x) < 1e-9 && qAbs(oy - y) < 1e-9) return;
-    // 压撤销快照，合并键 "move:元件id"
-    pushUndo("move:" + id);
-    // 更新元件坐标
-    c["x"] = x; c["y"] = y;
-    // 写回上下文
-    ctx.components[idx] = c;
-    // 构造单元素移动集合，并传入精确位移
-    {
-        // 构造移动集合
-        QSet<QString> movedSet;
-        // 加入本次被移动的元件 id
-        movedSet.insert(id);
-        // 调用共享实现：位移 = 新坐标 - 旧坐标
-        updateWiresForMovedComponent(ctx, movedSet, x - ox, y - oy);
-    }
-    // 位置可能影响几何但不影响逻辑值；这里仍调求值保持一致
-    evaluateAll();
-    // 通知只关心几何的 QML 组件
-    emit geometryChanged();
-    // 通知数据变化
-    emit changed();
-    // 通知结构变化
-    emit structureChanged();
+    const auto c = currentCtx().components[idx].toMap();
+    moveSelection({id}, x - Grid::xi(c), y - Grid::yi(c));
 }
 
-// 定义"批量相对移动"接口
-void Circuit::moveSelection(const QStringList& ids, double dx, double dy) {
-    // 只读模式禁止移动
-    if (m_viewOnly) return;
-    // 空选择直接返回
-    if (ids.isEmpty()) return;
-    // 位移几乎为 0 直接返回
-    if (qAbs(dx) < 1e-9 && qAbs(dy) < 1e-9) return;
-    // 取当前上下文
-    Context& ctx = currentCtx();
-    // 选择集合
-    QSet<QString> idSet;
-    // 填充集合
-    for (const auto& id : ids) idSet.insert(id);
-    // 标记是否至少命中一个真实元件
-    bool any = false;
-    // 遍历元件
-    for (int i = 0; i < ctx.components.size(); ++i) {
-        // 命中即提前退出
-        if (idSet.contains(ctx.components[i].toMap().value("id").toString())) { any = true; break; }
+QSet<QString> Circuit::movableSelectionIds(const Context& ctx, const QStringList& ids) const {
+    QSet<QString> moved;
+    for (const auto& id : ids) {
+        const int wi = ctx.indexOfWire(id);
+        if (ctx.indexOfComponent(id) >= 0 ||
+            (wi >= 0 && ctx.wires[wi].toMap().value("wireType").toString() == "ortho"))
+            moved.insert(id);
     }
-    // 一个都不存在则不做任何事
-    if (!any) return;
-    // 压撤销快照，合并键 "moveSel"
-    pushUndo("moveSel");
-    // 遍历元件
-    for (int i = 0; i < ctx.components.size(); ++i) {
-        // 取出元件 map
-        QVariantMap c = ctx.components[i].toMap();
-        // 只处理被选中的元件
-        if (idSet.contains(c.value("id").toString())) {
-            // x 加相对位移
-            c["x"] = c.value("x").toDouble() + dx;
-            // y 加相对位移
-            c["y"] = c.value("y").toDouble() + dy;
-            // 写回上下文
-            ctx.components[i] = c;
+    return moved;
+}
+
+// 共享纯候选计算；调用者只在所有几何通过边界检查后提交。
+bool Circuit::buildSelectionMove(Context& next, const QSet<QString>& moved, int sx, int sy) {
+    if (sx == 0 && sy == 0) return true;
+    const auto originalWires = next.wires;
+    for (int i = 0; i < next.components.size(); ++i) {
+        auto c = next.components[i].toMap();
+        if (!moved.contains(c.value("id").toString())) continue;
+        const int x = Grid::xi(c) + sx, y = Grid::yi(c) + sy;
+        if (!Grid::valid(x) || !Grid::valid(y)) return false;
+        c["x"] = x;
+        c["y"] = y;
+        next.components[i] = c;
+    }
+    updateWiresForMovedComponent(next, moved, sx, sy);
+    for (int i = 0; i < next.wires.size(); ++i) {
+        if (i < originalWires.size() && next.wires[i] == originalWires[i]) continue;
+        for (const auto& pv : next.wires[i].toMap().value("path").toList()) {
+            const auto p = pv.toMap();
+            if (!Grid::valid(p.value("x").toDouble()) || !Grid::valid(p.value("y").toDouble())) return false;
         }
     }
-    // 一次性把"本次移动集合 + 相对位移"交给共享实现
-    {
-        // 构造真实存在且被本次移动的元件集合
-        QSet<QString> movedSet;
-        // 逐 id 判定
-        for (const auto& id : ids) {
-            // 元件仍存在才纳入集合
-            if (ctx.indexOfComponent(id) >= 0) movedSet.insert(id);
-        }
-        // 集合非空才调用
-        if (!movedSet.isEmpty()) {
-            // 传相对位移 dx/dy
-            updateWiresForMovedComponent(ctx, movedSet, dx, dy);
-        }
+    return true;
+}
+
+bool Circuit::beginSelectionMove(const QStringList& ids) {
+    endSelectionMove();
+    if (m_viewOnly) return false;
+    const auto moved = movableSelectionIds(currentCtx(), ids);
+    if (moved.isEmpty()) return false;
+    m_selectionMove.active = true;
+    m_selectionMove.ctxId = m_currentCtxId;
+    m_selectionMove.start = currentCtx();
+    m_selectionMove.ids = moved;
+    return true;
+}
+
+bool Circuit::updateSelectionMove(double totalDx, double totalDy) {
+    if (!m_selectionMove.active) return false;
+    if (m_viewOnly || m_selectionMove.ctxId != m_currentCtxId) {
+        endSelectionMove();
+        return false;
     }
-    // 重新全量求值保持一致
+    if (!Grid::valid(totalDx) || !Grid::valid(totalDy)) return false;
+    const int sx = Grid::snapStep(totalDx), sy = Grid::snapStep(totalDy);
+    if (sx == m_selectionMove.dx && sy == m_selectionMove.dy) return true;
+    Context next = m_selectionMove.start;
+    if (!buildSelectionMove(next, m_selectionMove.ids, sx, sy)) return false;
+    if (!m_selectionMove.undoPushed) {
+        pushUndo();
+        m_selectionMove.undoPushed = true;
+    }
+    m_selectionMove.dx = sx;
+    m_selectionMove.dy = sy;
+    currentCtx() = std::move(next);
     evaluateAll();
-    // 通知几何变化
     emit geometryChanged();
-    // 通知数据变化
     emit changed();
-    // 通知结构变化
+    emit structureChanged();
+    return true;
+}
+
+void Circuit::endSelectionMove() {
+    m_selectionMove = SelectionMoveState{};
+}
+
+// 非手势 API 保留相对移动和原有的撤销合并行为。
+void Circuit::moveSelection(const QStringList& ids, double dx, double dy) {
+    endSelectionMove();
+    if (m_viewOnly || ids.isEmpty() || !Grid::valid(dx) || !Grid::valid(dy)) return;
+    const int sx = Grid::snapStep(dx), sy = Grid::snapStep(dy);
+    if (sx == 0 && sy == 0) return;
+    Context& ctx = currentCtx();
+    const auto moved = movableSelectionIds(ctx, ids);
+    if (moved.isEmpty()) return;
+    Context next = ctx;
+    if (!buildSelectionMove(next, moved, sx, sy)) return;
+    QStringList mergeIds(moved.begin(), moved.end());
+    mergeIds.sort();
+    pushUndo("moveSel:" + mergeIds.join(','));
+    ctx = std::move(next);
+    evaluateAll();
+    emit geometryChanged();
+    emit changed();
     emit structureChanged();
 }
 

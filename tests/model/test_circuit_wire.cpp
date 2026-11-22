@@ -91,14 +91,61 @@ private slots:
         assertStrictlyOrthogonal(path, "拖动极值拐点");
     }
 
-    void shorten_GuessesWrongEnd() {
+    void shortenPreservesOriginalBends() {
         Circuit c;
         QString w = c.addOrthoWire(130, 100, 500, 500, 1);
-        c.shortenWireEnd(w, 315, 315); // 距离两端差不多远
-        QVariantList path = c.getWirePath(w);
-        assertStrictlyOrthogonal(path, "缩短两端距离接近时");
-        QVERIFY2(path.last().toMap()["x"].toDouble() == 315 || path.first().toMap()["x"].toDouble() == 315,
-                 "【交互 BUG】缩短操作没有命中预想的一端");
+        const auto original = c.getWirePath(w);
+        QVERIFY(!c.shortenWireEnd(w, true, 315, 315));
+        QCOMPARE(c.getWirePath(w), original);
+        QVERIFY(c.shortenWireEnd(w, true, 315, 100));
+        auto path = c.getWirePath(w);
+        QCOMPARE(path.size(), 3);
+        QCOMPARE(path[0].toMap()["x"].toInt(), 315);
+        QCOMPARE(path[1], original[1]);
+        QCOMPARE(path.last(), original.last());
+        QVERIFY(c.shortenWireEnd(w, false, 500, 300));
+        QCOMPARE(c.getWirePath(w).first(), path.first());
+        QCOMPARE(c.getWirePath(w).last().toMap()["y"].toInt(), 300);
+        c.breakUndoMerge();
+        QVERIFY(c.shortenWireEnd(w, true, 500, 300));
+        QVERIFY(c.getWire(w).isEmpty());
+        c.undo();
+        QVERIFY(!c.getWire(w).isEmpty());
+    }
+
+    void shortenReversedPathKeepsUntouchedBinding() {
+        for (bool front : {true, false}) {
+            Circuit c;
+            const QString source = c.addComponent("input", 100, 100, 1, 2, "");
+            const QString target = c.addComponent("output", 500, 100, 1, 2, "");
+            const QString wire = c.addOrthoWire(130, 100, 470, 100, 1);
+            // 显式构造反向存储的合法路径，不依赖移动实现是否重排端点。
+            auto document = c.toJson();
+            auto payload = document.value("root").toMap();
+            auto wires = payload.value("wires").toList();
+            for (auto& value : wires) {
+                auto item = value.toMap();
+                if (item.value("id").toString() != wire) continue;
+                auto points = item.value("path").toList();
+                std::reverse(points.begin(), points.end());
+                item["path"] = points;
+                value = item;
+            }
+            payload["wires"] = wires;
+            document["root"] = payload;
+            QVERIFY(c.fromJson(document));
+            const QString reversedWire = wire;
+            const auto path = c.getWirePath(reversedWire);
+            QCOMPARE(path.first().toMap().value("x").toInt(), 470);
+            QCOMPARE(path.last().toMap().value("x").toInt(), 130);
+            QVERIFY(c.shortenWireEnd(reversedWire, front, 300, 100));
+            const auto shortened = c.getWire(reversedWire);
+            QCOMPARE(shortened.contains("fromComp"), front);
+            QCOMPARE(shortened.contains("fromPort"), front);
+            QCOMPARE(shortened.contains("toComp"), !front);
+            QCOMPARE(shortened.contains("toPort"), !front);
+            QCOMPARE(c.getWirePath(reversedWire)[front ? 1 : 0], path[front ? 1 : 0]);
+        }
     }
 
     void removeComponent_OverzealousTeeJunction() {
@@ -117,8 +164,21 @@ private slots:
         QString w = c.addOrthoWire(130, 100, 470, 100, 1);
         c.moveComponent(c1, 600, 100); // 把左边拖到右边
         QVariantList path = c.getWirePath(w);
-        bool reversed = path[0].toMap()["x"].toDouble() > path.last().toMap()["x"].toDouble();
-        QVERIFY2(!reversed, "【视觉 BUG】拖动元件越过目标后，线段产生反向自折叠");
+        QVERIFY(path.size() >= 2);
+        // 首尾顺序可以反向；真正的回折是连续共线段方向发生反转。
+        QCOMPARE(path.first().toMap()["x"].toInt(), 630);
+        QCOMPARE(path.last().toMap()["x"].toInt(), 470);
+        for (int i = 1; i < path.size(); ++i) {
+            const auto a = path[i - 1].toMap(), b = path[i].toMap();
+            QVERIFY(a["x"].toInt() == b["x"].toInt() || a["y"].toInt() == b["y"].toInt());
+            if (i < 2) continue;
+            const auto p = path[i - 2].toMap();
+            const qint64 ax = a["x"].toInt() - p["x"].toInt();
+            const qint64 ay = a["y"].toInt() - p["y"].toInt();
+            const qint64 bx = b["x"].toInt() - a["x"].toInt();
+            const qint64 by = b["y"].toInt() - a["y"].toInt();
+            QVERIFY2(ax * bx + ay * by >= 0, "拖动后出现反向自折叠");
+        }
     }
 
     void tJunction_LooseConnection() {

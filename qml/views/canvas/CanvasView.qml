@@ -169,32 +169,9 @@ Item {
         // 结果缓存：连线 id → 信号字符串
         var cache = {}
 
-        // 内部函数：点是否严格落在正交线段内部
+        // 拓扑由整数世界坐标精确比较，不混用屏幕命中容差。
         function pointOnSegInterior(px, py, x1, y1, x2, y2) {
-            // 水平段
-            if (Math.abs(y1 - y2) < 0.5) {
-                // y 不贴合则不在线上
-                if (Math.abs(py - y1) > 0.5) return false
-                // 区间下界
-                var lo = Math.min(x1, x2)
-                // 区间上界
-                var hi = Math.max(x1, x2)
-                // 严格落在区间内部
-                return px > lo + 0.5 && px < hi - 0.5
-            }
-            // 垂直段
-            if (Math.abs(x1 - x2) < 0.5) {
-                // x 不贴合则不在线上
-                if (Math.abs(px - x1) > 0.5) return false
-                // 区间下界
-                var lo2 = Math.min(y1, y2)
-                // 区间上界
-                var hi2 = Math.max(y1, y2)
-                // 严格落在区间内部
-                return py > lo2 + 0.5 && py < hi2 - 0.5
-            }
-            // 非正交段
-            return false
+            return CI.pointOnSegInterior(px, py, x1, y1, x2, y2)
         }
 
         // 内部函数：点是否落在折线任意段内部
@@ -256,8 +233,7 @@ Item {
                     var matched = false
                     // (a) 端点对端点：上游末顶点等于本线起点
                     var uwLast = uw.path[uw.path.length - 1]
-                    if (Math.abs(uwLast.x - startPt.x) < 0.5 &&
-                        Math.abs(uwLast.y - startPt.y) < 0.5) {
+                    if (uwLast.x === startPt.x && uwLast.y === startPt.y) {
                         matched = true
                     }
                     // (b) T 型接入：本线起点落在上游线任意段内部
@@ -289,7 +265,7 @@ Item {
                         var op = outs[k]
                         var wx = comp.x + op.x
                         var wy = comp.y + op.y
-                        if (Math.abs(wx - sp.x) < 0.5 && Math.abs(wy - sp.y) < 0.5) {
+                        if (wx === sp.x && wy === sp.y) {
                             // 命中则取该端口输出值
                             var sv2 = comp.outputPorts ? comp.outputPorts[k] : ""
                             if (sv2 && sv2.length > 0) { src = sv2; break }
@@ -390,11 +366,22 @@ Item {
         // 预计算每条连线的信号源字符串
         var wireSources = computeWireSources(wires, main.compById, main.outPortsById)
 
+        // 缩短预览也沿手势开始时的原路径裁剪，不重建 L 形。
+        var preview = null
+        if (main.wiring && resolveEffType() === "ortho") {
+            var target = screenToWorld(main.wireEndX, main.wireEndY)
+            preview = CI.shortenPreview(main, CI.roundInteger(target.x), CI.roundInteger(target.y))
+        }
         // 逐条绘制连线
         for (var i = 0; i < wires.length; i++) {
-            Painter.drawWire(ctx, wires[i], main.compById, main.outPortsById, main.inPortsById,
+            var drawing = wires[i]
+            if (preview && drawing.id === preview.id) {
+                drawing = { id: drawing.id, wireType: "ortho", path: preview.path,
+                            fromComp: drawing.fromComp, fromPort: drawing.fromPort }
+            }
+            Painter.drawWire(ctx, drawing, main.compById, main.outPortsById, main.inPortsById,
                              main.viewScale, main.viewX, main.viewY, W, H, simplify,
-                             main.selectedWireId, wireSources)
+                             main.selectedWireId, wireSources, main.selectedIds)
         }
 
         // 取连接圆点
@@ -403,7 +390,7 @@ Item {
         Painter.drawConnectionDots(ctx, dots, main.viewScale, main.viewX, main.viewY)
 
         // 正在拉线则画预览
-        if (main.wiring) {
+        if (main.wiring && !preview) {
             // 起点屏幕坐标
             var startScreen = worldToScreen(main.wiringStartX, main.wiringStartY)
             // 生效线型
