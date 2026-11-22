@@ -65,10 +65,8 @@ QString Circuit::addComponent(const QString& type, double x, double y,
     for (int i = 0; i < bitWidth; ++i) bits.append(false);
     // 写入 inputBits 字段
     c["inputBits"] = bits;
-    //
-    // Type definitions own defaults and initial stored port values.
+    // 公共字段（ID、位置、旋转、位宽等）初始化后，由类型定义补齐专属字段与端口初值。
     ComponentLogic::initializeDefaults(c, subId);
-    //
     // 把新元件追加到当前上下文元件列表
     ctx.components.append(c);
     // 元件集合变了，"上下文→子电路实例 id 列表"缓存失效，必须清空

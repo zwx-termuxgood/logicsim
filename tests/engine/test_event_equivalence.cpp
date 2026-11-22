@@ -2,6 +2,8 @@
 
 #include "engine/event/EventEngine.h"
 
+// 事件引擎兼容性回归：同时锁定输出、逻辑时间、事件计数与脏元件顺序。
+// 逐事件轨迹作为预期值直接写在测试中；并非在运行时加载另一版本引擎作比较。
 namespace {
 QVariantMap component(const QString& id, const QString& type, int width = 1)
 {
@@ -13,6 +15,8 @@ QVariantMap wire(const QString& from, const QString& to)
     return {{"fromComp", from}, {"fromPort", 0}, {"toComp", to}, {"toPort", 0}};
 }
 
+// 双驱动夹具：a/b 汇入 probe，再传到 tail；a 到 probe 的重复边刻意保留。
+// 线延迟为 2、output 门延迟为 5，使同一时刻的重复投递与后续传播可逐步断言。
 void buildMultiDriver(EventEngine& engine, int width)
 {
     engine.setWireDelay(2);
@@ -38,7 +42,8 @@ private slots:
 
 void TestEventEquivalence::multiDriverTrace()
 {
-    // Per-event observable trace checked against backup/perf-registry-20261122-165721.
+    // 逐事件可观察轨迹已与 backup/perf-registry-20261122-165721 对照。
+    // 每帧只处理一个事件，避免仅比较稳态输出而漏掉中间值、同刻事件顺序和脏标记差异。
     EventEngine engine;
     buildMultiDriver(engine, 4);
     QCOMPARE(engine.drainNow(1), 1);
@@ -62,7 +67,7 @@ void TestEventEquivalence::multiDriverTrace()
         QStringList dirty;
     } trace[] = {
         {2, "000E", "0000", {"probe"}},
-        {2, "000E", "0000", {}}, // Duplicate wire still consumes an event.
+        {2, "000E", "0000", {}}, // 重复连线仍消耗一个事件，但相同值不再新增脏标记。
         {2, "0E11", "0000", {"probe"}},
         {7, "0E11", "000E", {"tail"}},
         {7, "0E11", "0E11", {"tail"}},
@@ -80,7 +85,7 @@ void TestEventEquivalence::multiDriverTrace()
     QVERIFY(!engine.step());
     QVERIFY(engine.isIdle());
 
-    // Z and an unknown character both yield Z in the absence of 0, 1 and E.
+    // 对同一位而言，没有 0、1、E 驱动时，Z 与未知字符共同解析为 Z。
     engine.triggerInputString("a", "ZZZZ");
     engine.triggerInputString("b", "ZXZE");
     QVERIFY(!engine.run(100));
@@ -103,8 +108,8 @@ void TestEventEquivalence::multiDriverWidths()
     QVERIFY(engine.run(10));
     QCOMPARE(engine.getOutput("probe"), QStringLiteral("0000"));
 
-    // Empty delivered values fall back to the source's latest output, which can
-    // differ from the value carried by the current event.
+    // 空投递值回退到源元件的最新输出，它可能不同于当前事件入队时携带的状态。
+    // 连续入队再逐步执行，刻意让历史事件与最新源值错开，同时验证补零后的四位输出。
     engine.triggerForceOutput("b", 0, "1");
     engine.triggerForceOutput("b", 0, "");
     engine.triggerForceOutput("b", 0, "Z1");
@@ -120,6 +125,8 @@ void TestEventEquivalence::multiDriverWidths()
     QCOMPARE(engine.getOutput("tail"), QStringLiteral("00Z1"));
 }
 
+// 脏集合须去重并保留首次标记顺序；消费、清空、reset 和重新 build 均需清理跟踪状态。
+// 同时覆盖未知 ID 与空 ID，且 reset 不应误清除已设定的元件输出。
 void TestEventEquivalence::dirtyOrderAndReset()
 {
     EventEngine engine;
@@ -160,6 +167,8 @@ void TestEventEquivalence::dirtyOrderAndReset()
     QCOMPARE(engine.takeDirtyQids(), (QStringList{"b", "a"}));
 }
 
+// 自反馈非门持续振荡，不要求收敛；验证事件预算限制处理量，时间窗口仍可向前推进。
+// 随后单步应继续处理未完成的事件，不能因预算耗尽丢队列或错误宣告空闲。
 void TestEventEquivalence::feedbackBudget()
 {
     EventEngine engine;
@@ -191,6 +200,9 @@ void TestEventEquivalence::multiDriverThroughput_data()
     QTest::newRow("mixed-width") << 8;
 }
 
+// 同宽与混合宽度共用相同翻转模式；准备/初次收敛在 QBENCHMARK 计时块之外。
+// Qt Test 可重复执行计时块，因此仅验证事件增量是每批预期事件数的整数倍，不锁定总轮数。
+// 此基准检查空闲状态和工作量，不设机器相关的耗时门槛。
 void TestEventEquivalence::multiDriverThroughput()
 {
     QFETCH(int, driverWidthDelta);

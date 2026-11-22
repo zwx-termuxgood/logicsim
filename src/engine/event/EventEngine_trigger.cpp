@@ -15,7 +15,7 @@ void EventEngine::triggerInputBit(const QString& compId, int bit, bool value) {
     QString s = n.outVals.isEmpty() ? QString(n.bitWidth, '0') : n.outVals[0];
     // 长度与位宽不符则重置为全 0，保证按位写入安全
     if (s.length() != n.bitWidth) s = QString(n.bitWidth, '0');
-    // 目标位位置
+    // bit 是字符串从左到右的下标（0 为最高位），不是从最低位起的位号。
     int pos = bit;
     // 越界则返回
     if (pos < 0 || pos >= s.length()) return;

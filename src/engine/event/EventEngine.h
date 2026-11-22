@@ -224,12 +224,13 @@ private:
     // 热路径以稳定节点索引去重，避免重复散列 qid
     QSet<QString> m_dirtyUnknownQids;
     // 保留公共 markDirty 对任意（包括未知）qid 的行为
+    // 内部热路径：idx 必须是当前建图周期内的有效节点索引，不接受未知 ID。
     void markDirtyNode(int idx);
     QVector<QString> m_driverValBuf;   // 复用，避免热路径堆分配
     // 多驱合并临时缓冲区：processEvent 中复用，避免每事件构造 QVector
 
     static quint64 pkey(int idx, int port) {
-        // 端口键打包：高 32 位放节点索引，低 16 位放端口号；
+        // 端口键打包：节点索引左移 16 位，低 16 位放端口号（有效范围 0..65535）；
         // 打包成单个整数作为 QHash key，比 QPair 更快且省内存
         return (quint64(quint32(idx)) << 16) | quint64(port & 0xFFFF);
     }

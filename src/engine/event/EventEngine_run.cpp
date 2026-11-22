@@ -32,6 +32,7 @@ QString EventEngine::resolveMultiDriver(const QVector<QString>& vals, int bw) {
         bool has0 = false, has1 = false, hasE = false;
         // 遍历每个驱动值
         for (const auto& v : vals) {
+            // pos 从结果的高位侧计数；源串末位对齐结果末位，负索引表示缺失高位。
             // 右对齐读取，等价于左侧补 0 / 只保留低 bw 位；
             // 不在每一位、每个驱动的内层循环中构造临时 QString。
             const qsizetype sourcePos = v.size() - bw + pos;

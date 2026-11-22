@@ -43,7 +43,7 @@ QVariantMap encode(const CircuitContext& root,
                    const QHash<QString, quint64>& gateTypeDelays);
 // 把所有需要持久化的状态打包成一个 QVariantMap（即 JSON 对象）：
 // 参数清单刻意与 Circuit 成员一一对应，但用值传递/const 引用，
-// 保证 encode 期间不读取任何全局状态；
+// 保证 encode 期间不读取任何全局状态；几何在副本中校验并整数化，不改源上下文；
 // 输出包含 version/root/subcircuits/subCounter/时钟/引擎/速度/门延迟覆盖等键；
 // 参数多且为显式列表而非传 Circuit 指针，是为了保持 JsonCodec 与 Circuit 解耦
 

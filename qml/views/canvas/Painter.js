@@ -55,7 +55,7 @@ function pickWireColor(ctx, srcStr) {
 }
 
 // ============================================================
-// drawWire 分派（13 参数：新增 wireSources）
+// 连线绘制分派：使用模型几何与预计算线源，不改变连接关系
 //   wireSources: { wireId -> "0110" } 由 CanvasView 预先计算
 // ============================================================
 // 定义"绘制连线"分派函数：按线型转调具体绘制函数
@@ -366,9 +366,12 @@ function fillPortColor(ctx, kind) {
 }
 
 // ============================================================
-// 元件绘制（与上一版一致，无改动）
+// 元件绘制：定义负责类型外观，公共流程负责旋转、端口和自定义名称
 // ============================================================
 // 定义"绘制单个元件"函数
+// comp 为模型快照，compSize 返回世界尺寸；缩放和平移转换为屏幕位置后交给类型定义。
+// 两类端口表保存已考虑旋转的相对几何；端口在撤销外壳旋转之后按这些偏移绘制。
+// 函数无返回值，save/restore 限定本次上下文修改；定义返回 true 或 simplify 时提前结束。
 function drawComponent(ctx, comp, compSize, viewScale, viewX, viewY,
                        outPortsById, inPortsById, selectedCompId, selectedIds,
                        simplify, circuit, registry) {

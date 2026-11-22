@@ -3,6 +3,9 @@ import ".."
 import "../../views/panels/props"
 import "../../views/canvas/Geometry.js" as Geometry
 
+// 或门的共享界面定义：注册后随注册表存活，不保存各实例的仿真状态。
+// multiInput、gateDelay 开放输入数与延迟编辑；尺寸继承基类的输入数规则。
+// 以弧线绘制或门外壳，简化模式省略标签；返回 false 允许通用端口与名称处理。
 ComponentDefinition {
     typeId: "or"
     displayName: "或门"
@@ -52,7 +55,7 @@ ComponentDefinition {
             // 填充与描边
             ctx.fillStyle = "#2d2d2d"; ctx.fill(); ctx.stroke()
         }
-    // 非门：三角形 + 输出小圆
+    // 弧形外壳已绘制，简化模式跳过类型标签。
     
         if (simplify) return false
         var bw = comp.bitWidth || 1

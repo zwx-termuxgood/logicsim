@@ -1,8 +1,10 @@
 #!/bin/bash
 
 # 递归处理多个目录/文件，生成类似tree的格式并包含文件内容
-# 用法: ./merge.sh [路径1] [路径2] ...
-#   示例: ./merge.sh src/ config/ README.md
+# 用法: ./合并.sh [路径1] [路径2] ...
+#   示例: ./合并.sh src/ config/ README.md
+# OUTPUT_FILE 环境变量可指定输出位置；每次执行先清空该文件，再逐个追加输入内容。
+# 目录遍历先列子目录再列文件，各自排序；通配符默认不包含隐藏条目。
 
 # 输出文件
 OUTPUT_FILE="${OUTPUT_FILE:-output.txt}"

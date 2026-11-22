@@ -1,4 +1,5 @@
 #include <QtTest>
+// 当前为撤销测试入口占位；实际编辑往返断言分布在元件移动与连线测试中。
 class TestcircuitUndo : public QObject {
     Q_OBJECT
 private slots:

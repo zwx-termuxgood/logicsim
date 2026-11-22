@@ -4,6 +4,7 @@
 #include <QVariantList>
 
 namespace WireNetworkSolver {
+// 同一快照的电气连接与可视接点结果；两者共享拓扑但不修改输入几何。
 struct Analysis {
     QVariantList virtualWires;
     QVariantList dots;

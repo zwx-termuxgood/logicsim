@@ -3,6 +3,9 @@ import ".."
 import "../../views/panels/props"
 import "../../views/canvas/Geometry.js" as Geometry
 
+// 与非门的共享界面定义：注册后复用，实例状态由绘制参数 comp 提供。
+// 支持输入数量和门延迟编辑；继承按输入数增高的尺寸，输出小圆表示取反。
+// 绘制只负责外观，返回 false 交回通用端口与名称绘制流程。
 ComponentDefinition {
     typeId: "nand"
     displayName: "与非"
@@ -38,7 +41,7 @@ ComponentDefinition {
             // 填充与描边
             ctx.fillStyle = "#2d2d2d"; ctx.fill(); ctx.stroke()
         }
-    // 或/或非/异或/同或门：弧形
+    // 与非符号已绘制，简化模式跳过中心标签。
     
         if (simplify) return false
         var bw = comp.bitWidth || 1

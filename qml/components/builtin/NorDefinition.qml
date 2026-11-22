@@ -3,6 +3,9 @@ import ".."
 import "../../views/panels/props"
 import "../../views/canvas/Geometry.js" as Geometry
 
+// 或非门的共享界面定义：注册时创建，按传入的 comp 快照绘制不同实例。
+// 支持输入数与门延迟编辑；弧形外壳右侧小圆表示输出取反。
+// 尺寸沿用基类规则，绘制返回 false 后由公共流程补充端口和名称。
 ComponentDefinition {
     typeId: "nor"
     displayName: "或非"
@@ -52,7 +55,7 @@ ComponentDefinition {
             // 填充与描边
             ctx.fillStyle = "#2d2d2d"; ctx.fill(); ctx.stroke()
         }
-    // 非门：三角形 + 输出小圆
+    // 或非符号已绘制，简化模式跳过类型标签。
     
         if (simplify) return false
         var bw = comp.bitWidth || 1

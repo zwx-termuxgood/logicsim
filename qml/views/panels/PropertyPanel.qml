@@ -950,7 +950,7 @@ Flickable {
                 sourceComponent: active ? propertyPanel.definition.propertyEditor : null
                 onLoaded: {
                     item.main = propertyPanel.main
-                    // Preserve the existing externally synchronized text fields.
+                    // 初始化原有的外部同步文本框，使动态加载的编辑器显示当前选中元件值。
                     if (propertyPanel.definition.editorField === "splitterSplitsInput")
                         item.splitterSplitsInput.text = (propertyPanel.selComp.outputSplits || []).join(",")
                     else if (propertyPanel.definition.editorField === "textContentField")

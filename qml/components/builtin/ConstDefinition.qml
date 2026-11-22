@@ -3,6 +3,10 @@ import ".."
 import "../../views/panels/props"
 import "../../views/canvas/Geometry.js" as Geometry
 
+// 常量的共享界面定义：注册时创建，实例设置值由 comp.inputBits 提供。
+// inputLike、displayBase 使属性面板可编辑常量值和显示进制，宽度随位宽增长。
+// 二进制显示位块，其余进制使用 circuit.getInputAsString；本定义不推进或修改信号。
+// 绘制返回 false，通用端口与名称仍由公共流程处理。
 ComponentDefinition {
     typeId: "const"
     displayName: "常量"
@@ -21,7 +25,7 @@ ComponentDefinition {
         ctx.lineWidth = isSel ? 3 : 2
         // 圆角矩形
         Geometry.roundRect(ctx, sp.x, sp.y, w, h, 4 * viewScale); ctx.fill(); ctx.stroke()
-    // LED：圆形
+    // 常量外壳已绘制，下面按显示进制绘制设定值。
     
         if (simplify) return false
         var bw = comp.bitWidth || 1
@@ -71,7 +75,7 @@ ComponentDefinition {
             // 绘制字符串
             ctx.fillText(s, sp.x + w / 2, sp.y + h / 2)
         }
-    // 输出端口：按显示进制画值
+    // 常量值已绘制，返回公共流程继续绘制端口。
     
         return false
     }

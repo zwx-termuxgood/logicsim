@@ -35,7 +35,9 @@ struct DSU {
     }
 };
 
+// 已通过范围校验的整数世界坐标，不再携带浮点容差。
 struct Point { int x; int y; };
+// 一个明确的几何接入位置；node 是并查集节点，ports 存端口身份索引。
 struct Location {
     Point point;
     int node;
@@ -43,7 +45,9 @@ struct Location {
     unsigned rays = 0;
     QSet<int> ports;
 };
+// 正交导体段及所属整线节点；几何分段不改变用户折线身份。
 struct Segment { Point a; Point b; int node; };
+// 端口身份由元件、端口序号和输入/输出方向共同确定，与几何位置分离。
 struct Port { QString component; int index; bool output; int node; };
 
 // 拒绝无穷大和越界旧数据，避免取整转换及世界坐标相加溢出。
@@ -160,6 +164,7 @@ struct Topology {
 
         // 每个真实顶点（含折点）/端口接入经过它的所有正交段。
         // 共线重叠必有至少一个端点在另一段上，因而也由同一规则自然合并。
+        // 按原始线段顺序追加，行表和列表内的索引均有序，后续可归并而不重排。
         QHash<int, QVector<int>> horizontalRows, verticalColumns;
         for (int i = 0; i < segments.size(); ++i) {
             const auto& segment = segments[i];
@@ -194,6 +199,7 @@ struct Topology {
 
 namespace WireNetworkSolver {
 
+// 按并查集根归组端口，在同网内展开输出到输入的组合，保留多驱关系。
 static QVariantList virtualWiresFrom(Topology& topology) {
     QHash<int, QVector<int>> outputs, inputs;
     for (int i = 0; i < topology.ports.size(); ++i) {
@@ -218,6 +224,7 @@ static QVariantList virtualWiresFrom(Topology& topology) {
     return result;
 }
 
+// 圆点只依赖明确位置的支路和端口计数，不额外创造几何交点。
 static QVariantList dotsFrom(const Topology& topology) {
     QVariantList result;
     for (const auto& loc : topology.locations) {

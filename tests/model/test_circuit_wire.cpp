@@ -7,6 +7,7 @@ class TestCircuitWire : public QObject {
     Q_OBJECT
 
 private slots:
+    // 先重复读取以经过缓存路径，再增删 T 形分支和撤销，检查连接点缓存随编辑失效。
     void connectionDotsInvalidateAfterEdits() {
         Circuit c;
         c.addOrthoWire(0, 0, 100, 0, 1);

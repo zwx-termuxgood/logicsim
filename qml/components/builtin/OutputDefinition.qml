@@ -3,6 +3,10 @@ import ".."
 import "../../views/panels/props"
 import "../../views/canvas/Geometry.js" as Geometry
 
+// 输出端口的共享界面定义：随注册表存活，用于观察第一个输入端口的信号。
+// displayBase 开放进制编辑，宽度随 bitWidth 增长；inputPortValues[0] 是显示数据来源。
+// 二进制区分 0/1/Z/E，其余进制由 circuit.formatValue 格式化；缺失位按 0 显示。
+// 绘制返回 false 后继续通用端口与名称处理，不在此计算输出信号。
 ComponentDefinition {
     typeId: "output"
     displayName: "输出端口"
@@ -20,7 +24,7 @@ ComponentDefinition {
         ctx.lineWidth = isSel ? 3 : 2
         // 圆角矩形
         Geometry.roundRect(ctx, sp.x, sp.y, w, h, 4 * viewScale); ctx.fill(); ctx.stroke()
-    // 子电路实例：圆角矩形
+    // 输出观察元件外壳已绘制，下面读取输入端口值进行显示。
     
         if (simplify) return false
         var bw = comp.bitWidth || 1
@@ -76,7 +80,7 @@ ComponentDefinition {
             // 绘制字符串
             ctx.fillText(dispStr, sp.x + w / 2, sp.y + h / 2)
         }
-    // LED：按显示进制画值
+    // 观察值已绘制，返回公共流程继续绘制端口。
     
         return false
     }

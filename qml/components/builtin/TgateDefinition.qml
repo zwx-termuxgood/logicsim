@@ -3,6 +3,10 @@ import ".."
 import "../../views/panels/props"
 import "../../views/canvas/Geometry.js" as Geometry
 
+// 传输门的共享界面定义：注册后复用，固定世界尺寸为 80×60。
+// 模型接口以 portDescription 中的 D、EN→Y 为准；内部 CMOS 图形只作符号示意。
+// 标注回调保留按索引画 /EN 与 S 的分支，不代表模型额外增加反使能或双向端口。
+// gateDelay 开放延迟编辑，labelYOffset 下移标签；返回 false 后继续公共端口绘制。
 ComponentDefinition {
     typeId: "tgate"
     displayName: "传输门"
@@ -110,7 +114,7 @@ ComponentDefinition {
             // 下栅极竖线
             ctx.beginPath(); ctx.moveTo(gateX, nY - gateHalf); ctx.lineTo(gateX, nY + gateHalf); ctx.stroke()
         }
-    // 其它未知类型：圆角矩形兜底
+    // CMOS 示意符号已绘制，下面按标签偏移绘制类型文字。
     
         if (simplify) return false
         var bw = comp.bitWidth || 1

@@ -3,6 +3,8 @@
 #include "core/Grid.h"
 #include <limits>
 
+// 剪贴板回归：旧几何粘贴后须保持整数正交，复制范围按真实连接扩展而非视觉相交。
+// 重叠线与 T 接应随选区复制，纯交叉线不应被带入；非法偏移不得修改目标上下文。
 class TestclipboardCodec : public QObject {
     Q_OBJECT
 private slots:

@@ -29,10 +29,10 @@
 
 namespace ComponentLogic {
 using Role = Components::Role;
-// Stable sorted registry IDs, suitable for the QML bridge.
+// 返回按键排序的稳定类型 ID 列表，供 QML 桥接层展示可用元件。
 QStringList typeIds();
 Role role(const QString& type);
-// Initialize type-specific fields and stored port values after common fields.
+// 公共字段就绪后，委托类型定义初始化专属字段及已存端口值，不重新分配实例 ID。
 void initializeDefaults(QVariantMap& comp, const QString& subId = QString());
 // 用命名空间而非类：所有函数无状态，调用形式 ComponentLogic::xxx() 更直接
 

@@ -3,6 +3,9 @@ import ".."
 import "../../views/panels/props"
 import "../../views/canvas/Geometry.js" as Geometry
 
+// 文字注记的共享界面定义：随注册表存活，固定世界尺寸为 140×44。
+// TextProps 编辑 comp.content，editorField 指定需同步的输入框；禁止旋转并隐藏额外名称。
+// 简化模式省略正文但保留选中框；返回 true 直接结束，不再绘制通用端口与名称。
 ComponentDefinition {
     typeId: "text"
     displayName: "文字"

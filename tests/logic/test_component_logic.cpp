@@ -2,6 +2,8 @@
 #include "logic/ComponentLogic.h"
 #include "helpers/TestHelpers.h"
 
+// 基础元件逻辑回归：端口整数几何、输入数量边界、逐位运算及分线输出的固定预期。
+// 数据驱动用例区分请求输入数与类型实际输入数，防止默认值/上限处理发生变化。
 class TestComponentLogic : public QObject {
     Q_OBJECT
 private slots:

@@ -2,6 +2,8 @@
 #include "core/Grid.h"
 #include <limits>
 
+// 整数网格回归：覆盖负数舍入、非法坐标、折线裁剪及旧路径归一化的稳定性。
+// 路径夹具刻意保留共线接点和回折极值，防止几何简化破坏电路接入位置。
 class TestGrid : public QObject {
     Q_OBJECT
 private slots:

@@ -3,6 +3,9 @@ import ".."
 import "../../views/panels/props"
 import "../../views/canvas/Geometry.js" as Geometry
 
+// 同或门的共享界面定义：注册后由所有同类型实例复用，状态取自 comp。
+// 开放多输入和延迟编辑；左侧附加弧线及输出小圆共同构成同或符号。
+// 高度沿用基类的输入数规则；返回 false 将端口、名称交由公共流程绘制。
 ComponentDefinition {
     typeId: "xnor"
     displayName: "同或"
@@ -52,7 +55,7 @@ ComponentDefinition {
             // 填充与描边
             ctx.fillStyle = "#2d2d2d"; ctx.fill(); ctx.stroke()
         }
-    // 非门：三角形 + 输出小圆
+    // 同或符号已绘制，简化模式跳过类型标签。
     
         if (simplify) return false
         var bw = comp.bitWidth || 1

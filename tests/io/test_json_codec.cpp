@@ -4,6 +4,8 @@
 #include "logic/ComponentLogic.h"
 #include <limits>
 
+// 文档迁移夹具直接构造旧浮点/斜线路径，通过编码再解码验证整数化与正交化。
+// 同时检查 ID、显式端口绑定、反向路径端点和重复往返稳定性，而非只检查外观。
 class TestjsonCodec : public QObject {
     Q_OBJECT
 private slots:

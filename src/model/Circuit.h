@@ -416,11 +416,11 @@ private slots:
     // 时钟定时器回调：翻转所有 clock 输出并触发一次求值
 
 private:
-    mutable QVariantList m_renderComponents;
-    mutable QVariantList m_renderWires;
-    mutable QString m_renderContextId;
-    mutable qulonglong m_renderRevision = 0;
-    mutable bool m_renderSnapshotValid = false;
+    mutable QVariantList m_renderComponents; // 缓存的元件容器副本，用于检测共享存储变化并复用快照
+    mutable QVariantList m_renderWires; // 与元件列表配对的连线快照
+    mutable QString m_renderContextId; // 快照所属上下文，切换上下文即使列表相同也须换版
+    mutable qulonglong m_renderRevision = 0; // 单调递增的快照版本
+    mutable bool m_renderSnapshotValid = false; // 首次读取前缓存尚无有效内容
 
     mutable bool m_connectionDotsValid = false;
     mutable QVariantList m_connectionDotsCache;

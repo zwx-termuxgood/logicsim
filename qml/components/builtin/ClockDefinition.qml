@@ -3,6 +3,9 @@ import ".."
 import "../../views/panels/props"
 import "../../views/canvas/Geometry.js" as Geometry
 
+// 时钟的共享界面定义：注册时创建，固定世界尺寸为 60×40。
+// 仅根据 comp.outputPorts[0] 显示当前 0/1；时钟推进由电路模型控制。
+// 简化模式只保留外壳；返回 true 表示本次绘制结束，公共端口与名称均被跳过。
 ComponentDefinition {
     typeId: "clock"
     displayName: "时钟"

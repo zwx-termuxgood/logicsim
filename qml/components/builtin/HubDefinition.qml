@@ -3,6 +3,10 @@ import ".."
 import "../../views/panels/props"
 import "../../views/canvas/Geometry.js" as Geometry
 
+// 集线器的共享界面定义：注册后复用，用于多段信号汇合的外观与属性入口。
+// outputSplits 的段数决定高度，缺省回退位宽；实际端口和信号拼接由模型提供。
+// 复用 SplitterProps 编辑分段，editorField 指定同步文本框；gateDelay 开放延迟编辑。
+// 绘制返回 false，端口与自定义名称继续由公共流程绘制。
 ComponentDefinition {
     typeId: "hub"
     displayName: "集线器"
@@ -23,7 +27,7 @@ ComponentDefinition {
         ctx.lineWidth = isSel ? 3 : 2
         // 圆角矩形
         Geometry.roundRect(ctx, sp.x, sp.y, w, h, 4 * viewScale); ctx.fill(); ctx.stroke()
-    // 输出端口：圆角矩形
+    // 集线器外壳已绘制，简化模式省略中心文字。
     
         if (simplify) return false
         var bw = comp.bitWidth || 1

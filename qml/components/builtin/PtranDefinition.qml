@@ -3,6 +3,10 @@ import ".."
 import "../../views/panels/props"
 import "../../views/canvas/Geometry.js" as Geometry
 
+// PMOS 的共享界面定义：随注册表存活，固定世界尺寸为 80×60。
+// 输入索引依次标注 G、S，输出标注 D；栅极小圆表示低电平有效，状态由模型计算。
+// gateDelay 开放延迟编辑，labelYOffset 下移标签，portDescription 给出端口与导通提示。
+// paint 返回 false 后继续公共端口绘制；端口标注使用调用方给出的未旋转屏幕坐标。
 ComponentDefinition {
     typeId: "ptran"
     displayName: "PMOS 管"
@@ -109,7 +113,7 @@ ComponentDefinition {
                 ctx.stroke()
             }
         }
-    // 传输门：圆角矩形 + CMOS 符号
+    // PMOS 符号已绘制，下面按标签偏移绘制类型文字。
     
         if (simplify) return false
         var bw = comp.bitWidth || 1

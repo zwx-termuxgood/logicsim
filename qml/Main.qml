@@ -304,9 +304,14 @@ ApplicationWindow {
         // 到时刷新错误列表
     }
 
+    // 最近消费的渲染快照版本：作为不透明字符串传回模型，不能按数字递增或比较大小。
+    // 缓存在主窗口生命周期内复用，上下文切换时由全量重建同步当前电路。
     property string cachedRenderRevision: ""
 
     // 同步取快照：重复模型信号只桥接版本，不重复传列表或更新 id map。
+    // 版本不变立即返回；新版本一次替换两类列表，再刷新已有元件的 id 索引。
+    // 此增量路径不删除旧索引、不重建端口；结构变化必须走 rebuildCachesFull。
+    // 函数无返回值，绘制与选中信息读取更新后的窗口属性。
     function updateCachesValues() {
         var snapshot = circuit.renderSnapshot(cachedRenderRevision)
         if (snapshot.revision === cachedRenderRevision) return
@@ -325,6 +330,8 @@ ApplicationWindow {
     }
 
     // 定义"全量重建缓存"函数：重建元件 map、端口几何与属性快照
+    // 用新映射剔除已删除元件；allPortsInfo 一次取回当前上下文的相对端口偏移。
+    // 即使快照版本已在其他信号中消费，也必须重建几何与尺寸缓存；函数无返回值。
     function rebuildCachesFull() {
         // 结构变化时清空尺寸缓存
         canvasView.clearSizeCache()

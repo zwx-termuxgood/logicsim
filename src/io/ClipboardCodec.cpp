@@ -20,6 +20,7 @@ namespace ClipboardCodec {
 namespace {
 // 匿名命名空间：内部辅助函数只在本编译单元可见，避免符号污染
 
+// 剪贴板坐标与位移均先校验有限性及 ±10 亿范围，再允许取整。
 bool validCoordinate(const QVariant& value) {
     bool ok = false;
     const double v = value.toDouble(&ok);
@@ -144,6 +145,7 @@ QVariantList encode(const CircuitContext& source, const QStringList& ids) {
                             break;
                         }
                     }
+                    // 反向检查已选线的顶点是否落在候选线上，覆盖候选长段包住接入点的情况。
                     if (!matched) {
                         for (const auto& pv : selected) {
                             const auto p = pv.toMap();

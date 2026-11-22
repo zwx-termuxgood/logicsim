@@ -3,6 +3,10 @@ import ".."
 import "../../views/panels/props"
 import "../../views/canvas/Geometry.js" as Geometry
 
+// 指示灯的共享界面定义：注册后复用，从 comp.inputPortValues[0] 读取待显示信号。
+// displayBase 开放进制选择，LedProps 编辑颜色；comp.color 缺省使用金色。
+// 尺寸随位宽增大；二进制逐位画灯，Z/E 使用固定状态色，其余进制显示格式化文本。
+// 返回 false 使公共流程继续绘制端口和名称；本定义不改变仿真状态。
 ComponentDefinition {
     typeId: "led"
     displayName: "LED"
@@ -29,7 +33,7 @@ ComponentDefinition {
         ctx.lineWidth = isSel ? 3 : 2
         // 描边
         ctx.stroke()
-    // 输入开关：圆角矩形
+    // 指示灯底座已绘制，下面显示各位灯色或格式化数值。
     
         if (simplify) return false
         var bw = comp.bitWidth || 1
@@ -82,7 +86,7 @@ ComponentDefinition {
                 ctx.stroke()
             }
         }
-    // 其它元件：画类型标签
+    // 指示内容已绘制，返回公共流程继续绘制端口。
     
         return false
     }

@@ -3,6 +3,10 @@ import ".."
 import "../../views/panels/props"
 import "../../views/canvas/Geometry.js" as Geometry
 
+// NMOS 的共享界面定义：注册后复用，固定世界尺寸为 80×60。
+// 输入标注按索引为 G、S，输出标注为 D；导通与高阻状态由电路模型计算。
+// gateDelay 开放延迟编辑，labelYOffset 下移类型标签，portDescription 提供面板提示。
+// 绘制参数沿用基类契约，返回 false 继续画公共端口；标注回调使用未旋转的屏幕坐标。
 ComponentDefinition {
     typeId: "ntran"
     displayName: "NMOS 管"
@@ -109,7 +113,7 @@ ComponentDefinition {
                 ctx.stroke()
             }
         }
-    // 传输门：圆角矩形 + CMOS 符号
+    // NMOS 符号已绘制，下面按标签偏移绘制类型文字。
     
         if (simplify) return false
         var bw = comp.bitWidth || 1

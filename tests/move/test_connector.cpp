@@ -7,6 +7,8 @@
 class Testconnector : public QObject {
     Q_OBJECT
 private slots:
+    // 夹具包含穿过端口的主干、主干下游线和相距一像素的平行线。
+    // 移动连接器只收集直接触及端口的线，不沿网络扩散，也不以邻近容差误选。
     void findsOnlyWiresTouchingMovedPort() {
         const QVariantMap component{{"id", "C1"}, {"type", "input"}, {"x", 0}, {"y", 0}, {"bitWidth", 1}};
         const auto port = ComponentLogic::outputPorts(component).first().toMap();

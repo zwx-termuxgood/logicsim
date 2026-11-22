@@ -6,6 +6,8 @@
 #include <QJsonDocument>
 #include <QTemporaryFile>
 
+// 元件/连线混合选择的模型级回归：覆盖拖动快照、网格位移、端口绑定与撤销重做。
+// 每个用例独立创建 Circuit，避免上一操作的选择、撤销栈和几何状态污染下一场景。
 class TestcircuitComponent : public QObject {
     Q_OBJECT
     static QVariantMap port(Circuit& c, const QString& id, bool output) {
@@ -32,6 +34,8 @@ class TestcircuitComponent : public QObject {
             QVERIFY(a != p);
         }
     }
+    // 用文档加载插入任意合法折线，避免 addOrthoWire 自动选路掩盖移动算法的输入形状。
+    // 临时文件优先放 PI_SCRATCH_DIR；Qt 在对象析构时清理，不向项目目录写夹具文件。
     static QString insertWire(Circuit& c, const QVariantList& path) {
         const QString id = QString("W%1").arg(c.wires().size() + 1);
         CircuitContext ctx;
@@ -83,6 +87,7 @@ private slots:
         QTest::newRow("wire-only") << 1;
         QTest::newRow("mixed") << 2;
     }
+    // 同一手势多次更新均相对起始快照，回到零偏移必须精确恢复；结束后只产生一次撤销。
     void gestureRoundTrip() {
         QFETCH(int, selection);
         Circuit c;
@@ -138,6 +143,7 @@ private slots:
         QCOMPARE(c.wires(), wires);
         c.endSelectionMove();
     }
+    // 等待超过普通编辑合并窗口，确认手势仍作为整体撤销，而非按停顿拆为多条历史。
     void gestureSingleUndoAfterPause() {
         Circuit c;
         const auto id = insertWire(c, {Grid::point(0, 0), Grid::point(100, 0)});

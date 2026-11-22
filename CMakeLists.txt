@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 project(LogicSim VERSION 1.0 LANGUAGES CXX)
 
+# 所有子库与应用统一使用 C++17；AUTOMOC 为含 Q_OBJECT 的类生成 Qt 元对象代码。
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
@@ -38,8 +39,8 @@ if(ANDROID)
 endif()
 
 # ── QML 模块 ────────────────────────────────────────────────
-# Discover QML component definitions at configure time; adding a definition only
-# requires creating its QML file and rerunning CMake.
+# 配置阶段发现元件 QML 定义；新增定义文件后重新运行 CMake 即可更新资源清单。
+# 定义路径排序后生成构建目录内的 JS 清单，供运行时注册表按稳定顺序加载。
 file(GLOB_RECURSE COMPONENT_QML_FILES CONFIGURE_DEPENDS
     RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}"
     "${CMAKE_CURRENT_SOURCE_DIR}/qml/components/*.qml")
@@ -108,5 +109,6 @@ qt_add_qml_module(LogicSim
     RESOURCES ${QML_RESOURCES} "${DEFINITION_MANIFEST_PATH}"
 )
 
+# 顶层开启 CTest 后注册各模块单元测试；性能基准使用 tests/perf 的独立配置入口。
 enable_testing()
 add_subdirectory(tests)

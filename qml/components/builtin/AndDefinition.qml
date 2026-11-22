@@ -3,6 +3,9 @@ import ".."
 import "../../views/panels/props"
 import "../../views/canvas/Geometry.js" as Geometry
 
+// 与门的共享界面定义：注册时创建，绘制时读取各实例的 comp 快照。
+// multiInput、gateDelay 声明属性面板能力；输入数决定继承的尺寸高度。
+// 绘制 D 形外壳及标签，逻辑计算由电路模型负责；返回 false 后继续画通用端口与名称。
 ComponentDefinition {
     typeId: "and"
     displayName: "与门"
@@ -38,7 +41,7 @@ ComponentDefinition {
             // 填充与描边
             ctx.fillStyle = "#2d2d2d"; ctx.fill(); ctx.stroke()
         }
-    // 或/或非/异或/同或门：弧形
+    // 外壳已绘制，简化模式跳过中心标签。
     
         if (simplify) return false
         var bw = comp.bitWidth || 1

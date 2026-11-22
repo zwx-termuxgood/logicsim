@@ -3,6 +3,10 @@ import ".."
 import "../../views/panels/props"
 import "../../views/canvas/Geometry.js" as Geometry
 
+// 子电路实例的共享界面定义：注册后复用；category 为空，由专用子电路面板提供实例入口。
+// comp.subId 关联模型中的定义，接口名称数组决定高度；这里不展开或执行子电路。
+// label 组合实例名与模型子电路名，showName=false 避免上方再画一遍名称。
+// paint 返回 false 继续绘制端口；paintPortNames 用模型偏移与世界到屏幕换算标注接口名。
 ComponentDefinition {
     typeId: "sub"
     displayName: "子电路"
@@ -73,7 +77,7 @@ ComponentDefinition {
         ctx.lineWidth = isSel ? 3 : 2
         // 圆角矩形
         Geometry.roundRect(ctx, sp.x, sp.y, w, h, 6 * viewScale); ctx.fill(); ctx.stroke()
-    // NMOS/PMOS：圆角矩形 + 晶体管符号
+    // 子电路实例外壳已绘制，下面绘制组合后的显示名称。
     
         if (simplify) return false
         var bw = comp.bitWidth || 1

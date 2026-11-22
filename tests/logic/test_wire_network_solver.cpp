@@ -24,6 +24,8 @@ bool hasDot(const QVariantList& dots, int x, int y) {
 class TestWireNetworkSolver : public QObject {
     Q_OBJECT
 private slots:
+    // 每行同时规定电气连通性和连接点显示：T 接/显式节点接通，纯 X 交叉不接通。
+    // 重叠、重复线和零长段用于防止重复计数；相邻整数行用于排除宽松容差误连接。
     void topology_data() {
         QTest::addColumn<QVariantList>("components");
         QTest::addColumn<QVariantList>("wires");

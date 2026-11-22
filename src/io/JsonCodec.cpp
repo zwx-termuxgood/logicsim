@@ -20,10 +20,13 @@ bool validCoordinate(const QVariant& value) {
     return ok && Grid::valid(v);
 }
 
+// 两个坐标都必须可转换且位于网格允许范围，缺失字段也视为非法。
 bool validPoint(const QVariantMap& p) {
     return validCoordinate(p.value("x")) && validCoordinate(p.value("y"));
 }
 
+// 在上下文副本上统一几何：剔除非法元件及其绑定线，保留有效对象的原有顺序。
+// 编码和解码共用此迁移入口，保证旧数据进入整数拓扑前具有一致端点。
 CircuitContext normalizeGeometry(CircuitContext ctx) {
     QVariantList components;
     QHash<QString, QVariantMap> byId;
@@ -76,6 +79,8 @@ CircuitContext normalizeGeometry(CircuitContext ctx) {
                 const auto last = path[lastIndex].toMap();
                 const bool firstMatches = Grid::xi(first) == Grid::xi(portPoint) && Grid::yi(first) == Grid::yi(portPoint);
                 const bool lastMatches = Grid::xi(last) == Grid::xi(portPoint) && Grid::yi(last) == Grid::yi(portPoint);
+                // 路径存储方向可能与输入/输出绑定相反：优先选唯一精确匹配的端点；
+                // 两端都不匹配时选较近端，等距或两端都匹配才保留绑定侧默认值。
                 int endpoint = front ? firstIndex : lastIndex;
                 if (firstMatches != lastMatches) endpoint = firstMatches ? firstIndex : lastIndex;
                 else if (!firstMatches && !lastMatches) {

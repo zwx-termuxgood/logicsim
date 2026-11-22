@@ -1,6 +1,8 @@
 #include <QtTest>
 #include "core/ValueCodec.h"
 
+// 数值显示与输入解析：验证补零/截断、十六进制、补码有符号显示及非法二进制报错。
+// 使用固定短位串，使显示格式和位宽语义可以直接从断言读出。
 class TestValueCodec : public QObject {
     Q_OBJECT
 private slots:

@@ -1,5 +1,6 @@
-# File stems are factory identifiers (e.g. And.cpp -> createAndDefinition).
-# CONFIGURE_DEPENDS makes adding a builtin sufficient to regenerate this list.
+# 文件名主体决定工厂函数名（例如 And.cpp 对应 createAndDefinition），新增文件需遵循此约定。
+# CONFIGURE_DEPENDS 让新增内置元件文件触发重新配置；排序使生成的工厂调用顺序稳定。
+# 下面生成声明与显式调用，而非依赖静态对象自注册，避免静态库链接时元件实现被裁掉。
 file(GLOB component_builtins CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/../components/builtin/*.cpp")
 list(SORT component_builtins)
 set(factory_declarations "")

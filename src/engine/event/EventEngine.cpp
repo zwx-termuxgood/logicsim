@@ -12,18 +12,21 @@ EventEngine::EventEngine() {}
 // 析构函数：QVector/QHash 等成员自动析构，无需手动释放
 EventEngine::~EventEngine() {}
 
+// 同步清除有序队列和两套去重索引，取走结果后允许再次标记同一节点。
 void EventEngine::clearDirtyQids() {
     m_dirtyQids.clear();
     m_dirtyNodes.clear();
     m_dirtyUnknownQids.clear();
 }
 
+// 已知节点按本次建图的稳定索引去重，首次出现时才把限定 ID 追加到有序队列。
 void EventEngine::markDirtyNode(int idx) {
     if (m_dirtyNodes.contains(idx)) return;
     m_dirtyNodes.insert(idx);
     m_dirtyQids.append(m_nodes[idx].qid);
 }
 
+// 公共入口兼容未知限定 ID：已知项按索引、未知项按字符串分别去重，共用首次标记顺序。
 void EventEngine::markDirty(const QString& qid) {
     const int idx = idxOf(qid);
     if (idx >= 0) {

@@ -3,6 +3,9 @@ import ".."
 import "../../views/panels/props"
 import "../../views/canvas/Geometry.js" as Geometry
 
+// 异或门的共享界面定义：随注册表存活，绘制方法不持有实例状态。
+// 支持多输入和延迟编辑；左侧附加弧线区分异或符号，尺寸按输入数计算。
+// 简化模式保留符号外壳并省略文字；返回 false 继续通用端口与名称绘制。
 ComponentDefinition {
     typeId: "xor"
     displayName: "异或"
@@ -52,7 +55,7 @@ ComponentDefinition {
             // 填充与描边
             ctx.fillStyle = "#2d2d2d"; ctx.fill(); ctx.stroke()
         }
-    // 非门：三角形 + 输出小圆
+    // 异或符号已绘制，简化模式跳过类型标签。
     
         if (simplify) return false
         var bw = comp.bitWidth || 1

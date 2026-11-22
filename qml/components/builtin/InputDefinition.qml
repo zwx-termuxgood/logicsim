@@ -3,6 +3,10 @@ import ".."
 import "../../views/panels/props"
 import "../../views/canvas/Geometry.js" as Geometry
 
+// 输入开关的共享界面定义：注册后复用，实例输入值通过 comp 快照读取。
+// inputLike、displayBase 开放输入值及进制编辑；宽度按位宽为每位预留 22 个世界单位。
+// 二进制按 inputBits 的数组顺序画位块，其余进制委托 circuit 格式化；点击修改由交互层处理。
+// 简化模式省略数值；返回 false 后由公共流程绘制端口和名称。
 ComponentDefinition {
     typeId: "input"
     displayName: "输入开关"
@@ -21,7 +25,7 @@ ComponentDefinition {
         ctx.lineWidth = isSel ? 3 : 2
         // 圆角矩形
         Geometry.roundRect(ctx, sp.x, sp.y, w, h, 4 * viewScale); ctx.fill(); ctx.stroke()
-    // 与门/与非门：D 形
+    // 输入开关外壳已绘制，下面按显示进制绘制输入值。
     
         if (simplify) return false
         var bw = comp.bitWidth || 1
@@ -71,7 +75,7 @@ ComponentDefinition {
             // 绘制字符串
             ctx.fillText(s, sp.x + w / 2, sp.y + h / 2)
         }
-    // 输出端口：按显示进制画值
+    // 输入值已绘制，返回公共流程继续绘制端口。
     
         return false
     }

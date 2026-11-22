@@ -265,17 +265,17 @@ const Circuit::Context* Circuit::ctxById(const QString& id) const {
     return &it.value();
 }
 
-// 定义"返回当前上下文元件列表"接口
+// 查询当前上下文中的元件列表；QVariant 容器采用隐式共享，读取副本成本低。
 QVariantList Circuit::components() const { return currentCtx().components; }
-// 定义"返回当前上下文连线列表"接口
+// 查询连线列表，与元件列表使用同一个当前上下文。
 QVariantList Circuit::wires() const { return currentCtx().wires; }
 
+// 按调用方已知版本返回渲染数据；同版只回传版本号，减少跨 QML 桥接列表的开销。
 QVariantMap Circuit::renderSnapshot(const QString& knownRevision) const {
     const auto& ctx = currentCtx();
-    // Compare shared storage, not QVariant value equality (which can coerce
-    // types). Owning copies force subsequent model writes to detach, including
-    // writes between synchronous/reentrant reads. Repeated signals for unchanged
-    // storage do not create a new version; actual writes are never deferred.
+    // 用底层共享存储身份判断数据是否真正写过，避免 QVariant 值比较中的类型转换影响判断。
+    // 缓存持有容器副本会迫使后续模型写入触发分离；同步/重入读取之间的写入也能被发现。
+    // 未改变存储时重复信号不产生新版本，写入本身仍即时发生，不延迟到下次读取。
     if (!m_renderSnapshotValid || m_renderContextId != m_currentCtxId
         || !m_renderComponents.isSharedWith(ctx.components)
         || !m_renderWires.isSharedWith(ctx.wires)) {
@@ -285,7 +285,7 @@ QVariantMap Circuit::renderSnapshot(const QString& knownRevision) const {
         ++m_renderRevision;
         m_renderSnapshotValid = true;
     }
-    // Use a string token so QML never rounds a 64-bit revision to a JS number.
+    // 版本号用十进制字符串交给 QML，避免 JavaScript 数值精度无法精确保留 64 位整数。
     const QString revision = QString::number(m_renderRevision);
     QVariantMap result{{QStringLiteral("revision"), revision}};
     if (knownRevision != revision) {

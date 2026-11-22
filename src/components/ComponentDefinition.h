@@ -9,8 +9,9 @@
 namespace Components {
 enum class Role { Unknown, Combinational, Input, Constant, Clock, Output, Led, Text, Subcircuit };
 
-// A builtin translation unit owns its type's complete definition. Factory names
-// follow create<FileStem>Definition; CMake discovers and explicitly references them.
+// 每个内置元件的编译单元独立提供该类型的完整定义：端口、几何、默认值与计算规则。
+// 工厂函数必须命名为 create<文件名主体>Definition，由 CMake 扫描并生成显式引用。
+// 定义对象不保存某个元件实例的状态；实例数据由传入的 map 提供，注册表统一持有对象。
 class Definition {
 public:
     virtual ~Definition() = default;
@@ -29,8 +30,8 @@ public:
 const Definition& definition(const QString& typeId);
 QStringList typeIds();
 
-// Shared mechanics, not a type dispatcher. Layouts return unrotated ports;
-// ComponentLogic applies rotation and integer quantization once for every type.
+// 下列函数仅复用布局、初值和位运算机制，不负责按类型分派。
+// 布局返回未旋转的局部端口；ComponentLogic 对所有类型统一旋转并量化为整数。
 int width(const QVariantMap& c);
 int listWidth(const QVariantMap& c, const char* key, int port, int fallback);
 QVariantList sidePorts(const Definition& d, const QVariantMap& c, bool output,

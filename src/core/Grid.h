@@ -26,7 +26,8 @@ namespace Grid {
 constexpr int STEP = 10;
 
 // 定义"任意坐标取整"接口：1px 粒度，作为持久化与判定的统一入口
-// 坐标限制为 ±10 亿，两个极限点的二维距离平方仍可由 qint64 表示。
+// 坐标限制为 ±10 亿：坐标差最多 20 亿，仍在有符号 32 位整数范围内；
+// 二维距离平方最多 8×10^18，仍可由有符号 64 位整数 qint64 表示。
 constexpr int MAX_COORD = 1000000000;
 inline bool valid(double v) {
     return std::isfinite(v) && v >= -MAX_COORD && v <= MAX_COORD;
@@ -166,7 +167,7 @@ inline QVariantMap projectOnPath(int px, int py, const QVariantList& path) {
     return best;
 }
 
-// 定义"正交规范化折线"接口：网格化所有顶点、去零长段、合并共线段、
+// 定义"正交规范化折线"接口：整数化所有顶点、去相邻重复点，保留共线节点；
 // 斜段按前段走向补拐点拉直。全项目写入 path 前的最后一道保证。
 inline QVariantList normalizePath(const QVariantList& path) {
     // 内部顶点序列（整数）
@@ -221,7 +222,7 @@ inline QVariantList normalizePath(const QVariantList& path) {
         // 有上一段且为水平 → 拐点取 (cur.x, last.y)，先横后竖
         if (hasPrev && prevHoriz) elbow = qMakePair(cur.first, last.second);
         // 其它（竖直上一段或无上一段）→ 拐点取 (last.x, cur.y)
-        // 无上一段时与 addOrthoWire 默认"先横后竖"一致
+        // 无上一段时先竖后横，由当前点的纵坐标确定拐点。
         else elbow = qMakePair(last.first, cur.second);
         // 拐点与前一顶点重合则跳过拐点
         if (elbow.first != last.first || elbow.second != last.second) {

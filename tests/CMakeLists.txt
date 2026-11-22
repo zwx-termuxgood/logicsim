@@ -1,3 +1,5 @@
+# 各测试独立生成 Qt Test 可执行文件并注册到 CTest，便于按模块或名称单独运行。
+# helpers/ 通过此包含根目录提供轻量夹具；被测实现由每项 LIBS 指定的库提供。
 set(TEST_INCLUDE ${CMAKE_CURRENT_SOURCE_DIR})
 
 function(logicsim_add_test path)

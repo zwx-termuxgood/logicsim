@@ -61,7 +61,7 @@ PasteResult paste(CircuitContext& ctx,
                   double dx, double dy);
 // 把 encode 产生的数据追加到目标上下文：
 //   - 为每个元件分配新 ID（IdAllocator），建立旧→新 ID 映射
-//   - 元件坐标整体平移 (dx, dy)
+//   - 元件坐标整体平移 (dx, dy)：位移先取整，全部平移坐标通过范围检查才追加
 //   - 连线按映射重写 fromComp/toComp；ortho 线的 path 顶点同样平移
 //   - 有绑定的端点必须映射成功，否则整条线丢弃（避免脱钩死线）；
 //     原本就悬空的端点（T 型接入）照常保留，path 平移后成为合理悬空
